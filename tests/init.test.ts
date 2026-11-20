@@ -1,16 +1,40 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 import {
   parseInitArgs,
   PLANTUML_DISABLED_SERVER,
+  resolveCourseTargetRepo,
   runInit,
   SUBMODULE_PATH,
 } from '../src/commands/init.js'
-import { initRepoWithCommit } from './helpers/git.js'
+import { git, initRepoWithCommit } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
+
+/** Every file in the workspace (skipping .git internals) whose content contains `needle`. */
+function filesContaining(dir: string, needle: string): string[] {
+  const hits: string[] = []
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d)) {
+      if (entry === '.git') continue
+      const abs = path.join(d, entry)
+      if (statSync(abs).isDirectory()) walk(abs)
+      else if (readFileSync(abs, 'utf8').includes(needle)) hits.push(path.relative(dir, abs))
+    }
+  }
+  walk(dir)
+  return hits
+}
 
 function frontmatter(file: string): Record<string, unknown> {
   const text = readFileSync(file, 'utf8')
@@ -118,8 +142,64 @@ describe('course init', () => {
     expect(existsSync(path.join(outDir, 'gitignore'))).toBe(false)
   })
 
+  it('stores a workspace-relative target path, never an absolute one', async () => {
+    const { root, repoDir, outDir, course } = await initWorkspace()
+    expect(course.targetRepo).toBe('../target')
+    expect(course.targetRemote).toBeNull()
+    expect(realpathSync(resolveCourseTargetRepo(outDir, course.targetRepo))).toBe(
+      realpathSync(repoDir),
+    )
+    expect(filesContaining(outDir, root)).toEqual([])
+  })
+
+  it('records a credential-free network origin and ignores local-path origins', async () => {
+    const root = makeTempDir('init-remote')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    git(repoDir, ['remote', 'add', 'origin', 'https://user:s3cret@github.com/acme/app.git'])
+    const { course } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.targetRemote).toBe('https://github.com/acme/app.git')
+
+    git(repoDir, ['remote', 'set-url', 'origin', path.join(root, 'elsewhere')])
+    const second = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws2'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(second.course.targetRemote).toBeNull()
+  })
+
+  it('accepts a subdirectory of the target and pins its repository root', async () => {
+    const root = makeTempDir('init-subdir')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    const sub = path.join(repoDir, 'nested')
+    mkdirSync(sub)
+    const { course } = await runInit({
+      targetRepo: sub,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(course.targetRepo).toBe('../target')
+  })
+
   it('adds optional git submodule at pinned commit', async () => {
-    const { pinned, outDir, course } = await initWorkspace({ languages: ['en'], submodule: true })
+    const { root, pinned, outDir, course } = await initWorkspace({
+      languages: ['en'],
+      submodule: true,
+    })
+    expect(readFileSync(path.join(outDir, '.gitmodules'), 'utf8')).toContain('url = ../target')
+    expect(filesContaining(outDir, root)).toEqual([])
+    const staged = git(outDir, ['ls-files', '-s', SUBMODULE_PATH])
+    expect(staged).toContain(pinned)
 
     expect(course.referenceMode).toBe('submodule')
     expect(course.submodulePath).toBe(SUBMODULE_PATH)

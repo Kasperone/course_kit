@@ -27,10 +27,15 @@ published CLI lean while pushing Slidev weight into the per-course `package.json
 
 Two modes:
 
-| Mode                      | Flag          | Behaviour                                                                                                                                                      |
-| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Pinned path** (default) | _(none)_      | `course.json` stores absolute `targetRepo` path and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                                       |
-| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`. `course.json` sets `referenceMode: "submodule"`. |
+| Mode                      | Flag          | Behaviour                                                                                                                                                            |
+| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pinned path** (default) | _(none)_      | `course.json` stores `targetRepo` as a path **relative to the workspace** and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                   |
+| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`, then rewrites the `.gitmodules` URL to a portable one. |
+
+No committed file contains a machine-specific absolute path: `course.json` also records
+`targetRemote` (the target's network `origin` URL with credentials stripped, or `null`), and
+`.gitmodules` uses `targetRemote` when available, otherwise the relative path. On another machine,
+set `COURSE_TARGET_REPO` to point at a local clone.
 
 Default is **pinned path only**: cheapest, no nested git setup, sufficient for local courses where
 the target repo path is stable. Submodule is optional for teams that want the target tree vendored
