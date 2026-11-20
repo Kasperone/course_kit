@@ -99,7 +99,7 @@ describe('npm package contents', () => {
       'templates/workspace/.env.example',
       'templates/workspace/package.json',
       'templates/workspace/slides.md',
-      'templates/workspace/scripts/check-no-plantuml.mjs',
+      'templates/workspace/scripts/check-deck.mjs',
     ]) {
       expect(files).toContain(expected)
     }

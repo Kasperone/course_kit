@@ -3,7 +3,12 @@ import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:f
 import path from 'node:path'
 import type { CourseJson } from './init.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
-import { findPlantUmlFiles, findPlantUmlServerRefs } from '../lib/slidev.js'
+import {
+  findForbiddenBuildRefs,
+  findPlantUmlFiles,
+  findWebFontFiles,
+  offlineHeadmatterProblems,
+} from '../lib/slidev.js'
 import { assertInside, isPlainObject, validateLanguage, validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspaceConfig } from '../lib/workspace.js'
 
@@ -96,14 +101,33 @@ export function slidevBin(courseDir: string): string {
   return bin
 }
 
-/** Refuse to start Slidev while any deck could send diagram source to a PlantUML server. */
-export function assertNoPlantUml(courseDir: string): void {
-  const offenders = findPlantUmlFiles(courseDir)
-  if (offenders.length > 0) {
-    throw new Error(
-      `PlantUML is not allowed (Slidev would send the diagram source to a PlantUML server); use Mermaid. Offending files: ${offenders.join(', ')}`,
+/**
+ * Refuse to start Slidev unless every deck stays offline and export-free: no PlantUML (the
+ * diagram source would go to a PlantUML server), no web-font CDN references, and each entry
+ * deck's headmatter pins the data: PlantUML server, system fonts, and no browser exporter/download.
+ */
+export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
+  const errors: string[] = []
+  const plantUml = findPlantUmlFiles(courseDir)
+  if (plantUml.length > 0) {
+    errors.push(
+      `PlantUML is not allowed (Slidev would send the diagram source to a PlantUML server); use Mermaid. Offending files: ${plantUml.join(', ')}`,
     )
   }
+  const fonts = findWebFontFiles(courseDir)
+  if (fonts.length > 0) {
+    errors.push(
+      `Web fonts from a CDN are not allowed (decks use system fonts and stay offline). Offending files: ${fonts.join(', ')}`,
+    )
+  }
+  for (const deck of decks) {
+    const problems = offlineHeadmatterProblems(readFileSync(deck.entry, 'utf8'))
+    if (problems.length > 0) {
+      const rel = path.relative(courseDir, deck.entry).split(path.sep).join('/')
+      errors.push(`${rel} headmatter: ${problems.join('; ')}`)
+    }
+  }
+  if (errors.length > 0) throw new Error(errors.join('\n'))
 }
 
 export type SlidevRunner = (bin: string, args: string[], cwd: string) => void
@@ -163,12 +187,13 @@ ${items}
 
 /**
  * `course build`: static Slidev build of every lesson deck into dist/<id>/<lang>/ plus a
- * dist/index.html, after the PlantUML guard. The output is then scanned for PlantUML servers.
+ * dist/index.html, after the deck policy check. The output is then scanned for PlantUML servers
+ * and web-font CDNs.
  */
 export function runBuild(options: BuildOptions = {}): BuildResult {
   const { courseDir, course } = resolveWorkspaceConfig(options.cwd)
   const decks = listDecks(courseDir, course, options)
-  assertNoPlantUml(courseDir)
+  assertDeckPolicy(courseDir, decks)
   const bin = slidevBin(courseDir)
   const runner = options.runner ?? defaultRunner
   const distDir = path.join(courseDir, BUILD_DIR)
@@ -186,12 +211,14 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
     }
   }
 
-  // Render-time check: nothing in the built output may point at a PlantUML server.
-  const leaks = decks.flatMap((d) =>
-    findPlantUmlServerRefs(d.outDir).map((f) => path.relative(courseDir, f)),
-  )
+  // Render-time check: nothing in the built output may point at a PlantUML server or font CDN.
+  const leaks = decks.flatMap((d) => findForbiddenBuildRefs(d.outDir))
   if (leaks.length > 0) {
-    throw new Error(`Built output references a PlantUML server: ${leaks.join(', ')}`)
+    throw new Error(
+      `Built output references external servers: ${leaks
+        .map((l) => `${path.relative(courseDir, l.file)} (${l.what})`)
+        .join(', ')}`,
+    )
   }
 
   // The index lists every deck present in dist/, so a filtered build keeps earlier decks linked.
@@ -211,7 +238,7 @@ export function runDev(options: DevOptions): Promise<number> {
   const lang = options.lang ?? course.languages[0]!
   const [deck] = listDecks(courseDir, course, { lesson: options.lesson, lang })
   if (!deck) throw new Error(`No deck for ${options.lesson}/${lang}`)
-  assertNoPlantUml(courseDir)
+  assertDeckPolicy(courseDir, [deck])
   const bin = slidevBin(courseDir)
   const args = [deck.entry]
   if (options.port !== undefined) {

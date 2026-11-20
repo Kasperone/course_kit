@@ -3,7 +3,13 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runBuild, runDev } from '../src/commands/slidev.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
-import { findPlantUmlFiles, findPlantUmlServerRefs } from '../src/lib/slidev.js'
+import {
+  deckFrontmatter,
+  findForbiddenBuildRefs,
+  findPlantUmlFiles,
+  findWebFontFiles,
+  offlineHeadmatterProblems,
+} from '../src/lib/slidev.js'
 import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { makeTempDir } from './helpers/tmp.js'
@@ -97,15 +103,34 @@ describe('course build', () => {
     ).rejects.toThrow(/PlantUML is not allowed/)
   })
 
-  it('fails when the built output references a PlantUML server (render-time check)', async () => {
+  it('fails when the built output references a PlantUML server or web fonts (render-time check)', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     installFakeSlidev(workspace)
-    // Not a PlantUML block, but the fake build copies it into index.html like a leaked default.
-    writeFileSync(
-      deck(workspace, '01-placeholder', 'en'),
-      '---\nplantUmlServer: "https://www.plantuml.com/plantuml"\n---\n# x\n',
+    const file = deck(workspace, '01-placeholder', 'en')
+    const head = deckFrontmatter({ title: 'x', lang: 'en' })
+    // The fake build copies the deck into index.html, like a leaked default would appear.
+    writeFileSync(file, `${head}\n# x\n\nSee https://www.plantuml.com/plantuml for details.\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(
+      /references external servers: .*index\.html \(PlantUML server\)/,
     )
-    expect(() => runBuild({ cwd: workspace })).toThrow(/references a PlantUML server/)
+    writeFileSync(file, `${head}\n# x\n\n<!-- fonts.gstatic.com -->\n`)
+    // Caught before Slidev starts (workspace Markdown) ...
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Web fonts from a CDN are not allowed/)
+  })
+
+  it.each([
+    ['plantUmlServer', /plantUmlServer must be/],
+    ['provider', /fonts\.provider must be "none"/],
+    ['browserExporter', /browserExporter must be false/],
+  ])('refuses build and dev when the headmatter lacks %s', async (key, error) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const log = installFakeSlidev(workspace)
+    const file = deck(workspace, '01-placeholder', 'en')
+    const text = readFileSync(file, 'utf8')
+    writeFileSync(file, text.replace(new RegExp(`^\\s*${key}:.*\\n`, 'm'), ''))
+    expect(() => runBuild({ cwd: workspace })).toThrow(error)
+    expect(() => runDev({ lesson: '01-placeholder', cwd: workspace })).toThrow(error)
+    expect(calls(log)).toHaveLength(0)
   })
 
   it('asks for npm install when Slidev is missing', async () => {
@@ -163,13 +188,82 @@ describe('PlantUML scanners', () => {
     expect(findPlantUmlFiles(dir)).toEqual(['lessons/Comp.vue'])
   })
 
-  it('finds plantuml.com in built assets only', () => {
+  it('finds plantuml.com and web-font CDNs in built assets only', () => {
     const dir = makeTempDir('dist')
     mkdirSync(path.join(dir, 'assets'))
     writeFileSync(path.join(dir, 'assets', 'a.js'), 'const s="data:text/plain,plantuml-disabled"')
     writeFileSync(path.join(dir, 'assets', 'logo.png'), 'https://www.plantuml.com')
-    expect(findPlantUmlServerRefs(dir)).toEqual([])
+    expect(findForbiddenBuildRefs(dir)).toEqual([])
     writeFileSync(path.join(dir, 'assets', 'b.js'), 'src:"https://www.PlantUML.com/plantuml/svg/"')
-    expect(findPlantUmlServerRefs(dir)).toEqual([path.join(dir, 'assets', 'b.js')])
+    writeFileSync(
+      path.join(dir, 'index.html'),
+      '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans">',
+    )
+    expect(findForbiddenBuildRefs(dir)).toEqual([
+      { file: path.join(dir, 'assets', 'b.js'), what: 'PlantUML server' },
+      { file: path.join(dir, 'index.html'), what: 'web fonts' },
+    ])
+  })
+
+  it('finds web-font CDN references in workspace Markdown, Vue, CSS and HTML', () => {
+    const dir = makeTempDir('fonts')
+    mkdirSync(path.join(dir, 'styles'))
+    writeFileSync(path.join(dir, 'ok.md'), '# no fonts here\n')
+    writeFileSync(
+      path.join(dir, 'styles', 'index.css'),
+      "@import url('https://fonts.googleapis.com/css2?family=Inter');",
+    )
+    writeFileSync(path.join(dir, 'notes.txt'), 'fonts.gstatic.com')
+    expect(findWebFontFiles(dir)).toEqual(['styles/index.css'])
+  })
+})
+
+describe('offline headmatter policy', () => {
+  const deckWith = (head: string) => `---\n${head}\n---\n\n# x\n`
+  const base = 'plantUmlServer: "data:text/plain,plantuml-disabled"\nbrowserExporter: false\n'
+
+  it('accepts the generated headmatter', () => {
+    expect(offlineHeadmatterProblems(deckFrontmatter({ title: 'a: b', lang: 'en' }))).toEqual([])
+  })
+
+  it('accepts block and flow forms of fonts.provider', () => {
+    expect(
+      offlineHeadmatterProblems(deckWith(`${base}fonts:\n  sans: x\n  provider: none`)),
+    ).toEqual([])
+    expect(
+      offlineHeadmatterProblems(deckWith(`${base}fonts: { sans: 'x', provider: 'none' }`)),
+    ).toEqual([])
+  })
+
+  it.each([
+    ['no headmatter', '# x\n', /no headmatter/],
+    ['google provider', deckWith(`${base}fonts:\n  provider: google`), /fonts\.provider/],
+    ['fonts without provider', deckWith(`${base}fonts:\n  sans: Inter`), /fonts\.provider/],
+    [
+      'provider outside fonts',
+      deckWith(`${base}fonts:\n  sans: Inter\nprovider: none`),
+      /fonts\.provider/,
+    ],
+    [
+      'exporter on',
+      deckWith(`${base.replace('false', 'true')}fonts: {provider: none}`),
+      /browserExporter/,
+    ],
+    [
+      'exporter dev',
+      deckWith(`${base.replace('false', 'dev')}fonts: {provider: none}`),
+      /browserExporter/,
+    ],
+    ['download true', deckWith(`${base}fonts: {provider: none}\ndownload: true`), /download/],
+    ['download auto', deckWith(`${base}fonts: {provider: none}\ndownload: "auto"`), /download/],
+    [
+      'remote PlantUML server',
+      deckWith(
+        `${base.replace('data:text/plain,plantuml-disabled', 'https://kroki.io/plantuml')}fonts: {provider: none}`,
+      ),
+      /plantUmlServer/,
+    ],
+  ])('flags %s', (_what, text, error) => {
+    expect(offlineHeadmatterProblems(text).join('\n')).toMatch(error)
   })
 })
