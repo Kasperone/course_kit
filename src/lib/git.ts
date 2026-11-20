@@ -45,6 +45,86 @@ export function readHeadCommit(repoPath: string): string {
   return hash
 }
 
+/** A revision a user may type: `HEAD`, a branch, tag or (short) SHA; never an option. */
+const REV_RE = /^[\w./@^~{}+-]{1,200}$/
+
+/**
+ * Resolve a user-supplied revision (default HEAD) to a full commit SHA. The revision must exist
+ * as a commit in `repoPath`; it is passed after `--end-of-options`, so it can never be an option.
+ */
+export function resolveCommit(repoPath: string, rev = 'HEAD'): string {
+  if (!REV_RE.test(rev) || rev.startsWith('-') || rev.includes('..')) {
+    throw new Error(`Invalid revision ${JSON.stringify(rev)}`)
+  }
+  let hash: string
+  try {
+    hash = gitOut([
+      '-C',
+      repoPath,
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      '--end-of-options',
+      `${rev}^{commit}`,
+    ])
+  } catch {
+    throw new Error(`Commit ${JSON.stringify(rev)} not found in ${repoPath}`)
+  }
+  if (!FULL_SHA_RE.test(hash)) {
+    throw new Error(`Unexpected commit hash from ${repoPath}: ${hash}`)
+  }
+  return hash
+}
+
+/**
+ * Paths with uncommitted changes (staged, unstaged or untracked, not ignored) in a working tree.
+ * Read-only: `--no-optional-locks` keeps `git status` from refreshing and rewriting the index.
+ * Returns [] for bare repositories or when status cannot be read.
+ */
+export function uncommittedChanges(repoPath: string): string[] {
+  let out: string
+  try {
+    out = execFileSync(
+      'git',
+      [
+        '--no-optional-locks',
+        '-c',
+        'core.quotePath=false',
+        '-C',
+        repoPath,
+        'status',
+        '--porcelain=v1',
+        '-z',
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+  } catch {
+    return []
+  }
+  const paths: string[] = []
+  const records = out.split('\0')
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i]!
+    if (rec.length < 4) continue
+    paths.push(rec.slice(3))
+    // Renames and copies are followed by the original path as a separate record.
+    if (rec[0] === 'R' || rec[0] === 'C') i++
+  }
+  return paths
+}
+
+/** Human-readable warning for uncommitted changes in the target, or null if it is clean. */
+export function uncommittedWarning(repoPath: string, commit: string): string | null {
+  const changes = uncommittedChanges(repoPath)
+  if (changes.length === 0) return null
+  const shown = changes.slice(0, 5).join(', ')
+  const more = changes.length > 5 ? ` and ${changes.length - 5} more` : ''
+  return (
+    `Target repo has ${changes.length} uncommitted change(s) that are not part of the pinned commit ` +
+    `${commit.slice(0, 12)}: ${shown}${more}. Commit them and run \`course pin\` if the course should cover them.`
+  )
+}
+
 /**
  * The target's `origin` URL if it is a network remote, with any credentials stripped. Local-path
  * remotes return null so that no absolute filesystem path ends up in committed files.

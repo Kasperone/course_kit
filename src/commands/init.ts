@@ -16,6 +16,7 @@ import {
   readHeadCommit,
   readShareableRemote,
   resolveTargetRepo,
+  uncommittedWarning,
 } from '../lib/git.js'
 import { writeFileInside } from '../lib/fs-safe.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
@@ -168,10 +169,13 @@ export function resolveCourseTargetRepo(courseDir: string, targetRepo: string | 
 
 export async function runInit(
   options: InitOptions,
-): Promise<{ outDir: string; course: CourseJson }> {
+): Promise<{ outDir: string; course: CourseJson; warnings: string[] }> {
   const languages = validateLanguages(options.languages)
   const targetRepo = resolveTargetRepo(options.targetRepo)
   const pinnedCommit = readHeadCommit(targetRepo)
+  const warnings: string[] = []
+  const dirty = uncommittedWarning(targetRepo, pinnedCommit)
+  if (dirty) warnings.push(dirty)
   const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
 
   if (existsSync(outDir) && requireNotEmpty(outDir)) {
@@ -222,7 +226,7 @@ export async function runInit(
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
     }
 
-    return { outDir, course }
+    return { outDir, course, warnings }
   } catch (err) {
     // Do not leave a half-written workspace behind; it would block a re-run.
     if (existedBefore) {

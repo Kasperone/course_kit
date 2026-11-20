@@ -2,6 +2,7 @@ import { Command } from 'commander'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
+import { runPin } from './commands/pin.js'
 import { packageVersion } from './lib/paths.js'
 
 const program = new Command()
@@ -30,7 +31,8 @@ program
         lang: opts.lang,
         submodule: opts.submodule,
       })
-      const { outDir, course } = await runInit(options)
+      const { outDir, course, warnings } = await runInit(options)
+      for (const warning of warnings) console.error(`warning: ${warning}`)
       console.log(`Course workspace created at ${outDir}`)
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
@@ -87,6 +89,31 @@ program
       const message = err instanceof Error ? err.message : String(err)
       console.error(`course context failed: ${message}`)
       process.exitCode = 1
+    }
+  })
+
+function fail(command: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  console.error(`course ${command} failed: ${message}`)
+  process.exitCode = 1
+}
+
+program
+  .command('pin')
+  .description("Pin the course to a commit of the target repo (default: the target's HEAD)")
+  .argument('[commit]', 'Revision to pin: branch, tag, short or full SHA (default: HEAD)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .action((commit: string | undefined, opts: { cwd?: string }) => {
+    try {
+      const result = runPin({ commit, cwd: opts.cwd })
+      for (const warning of result.warnings) console.error(`warning: ${warning}`)
+      console.log(
+        result.changed
+          ? `pinnedCommit: ${result.previous} -> ${result.pinned}`
+          : `pinnedCommit: ${result.pinned} (unchanged)`,
+      )
+    } catch (err) {
+      fail('pin', err)
     }
   })
 
