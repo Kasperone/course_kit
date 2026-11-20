@@ -72,6 +72,7 @@ describe('npm package contents', () => {
     )
     for (const expected of [
       'templates/workspace/gitignore',
+      'templates/workspace/LICENSE-CONTENT',
       'templates/workspace/.env.example',
       'templates/workspace/package.json',
       'templates/workspace/slides.md',

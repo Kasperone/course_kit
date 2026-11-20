@@ -69,6 +69,7 @@ describe('course init', () => {
     expect(existsSync(path.join(outDir, 'course.json'))).toBe(true)
     expect(existsSync(path.join(outDir, 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, '.env.example'))).toBe(true)
+    expect(readFileSync(path.join(outDir, 'LICENSE-CONTENT'), 'utf8')).toContain('CC BY 4.0')
     expect(existsSync(path.join(outDir, 'lessons', 'pl', '01-placeholder', 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'audio', 'ATTRIBUTION.md'))).toBe(true)
