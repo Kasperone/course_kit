@@ -50,8 +50,9 @@ describe('course init', () => {
     expect(existsSync(path.join(outDir, 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'slidev.config.ts'))).toBe(true)
     expect(existsSync(path.join(outDir, '.env.example'))).toBe(true)
-    expect(existsSync(path.join(outDir, 'lessons', 'pl', '01-placeholder', 'slides.md'))).toBe(true)
-    expect(existsSync(path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'lesson.json'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'pl', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'audio', 'ATTRIBUTION.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'audio', 'local', '.gitkeep'))).toBe(true)
 

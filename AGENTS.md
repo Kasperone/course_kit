@@ -2,8 +2,8 @@
 
 ## Purpose
 
-This repository hosts the `course` CLI and templates. Agents scaffold and later generate lesson content;
-step 1 only implements `course init`.
+This repository hosts the `course` CLI and templates. Step 2 adds per-lesson **context packs** for drafting
+lesson scripts (Slidev generation remains a later step).
 
 ## Commands
 
@@ -17,16 +17,18 @@ npm run format:check
 npm run typecheck
 ```
 
-CLI:
+CLI (run from a **course workspace** for context/lesson commands):
 
 ```bash
-course --help
 course init <path-to-target-repo> [--out <dir>] [--lang pl,en] [--submodule]
+course lesson new <lesson-id>
+course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 ```
 
 ## Tests
 
-- `tests/init.test.ts` — creates temp git repos, runs `runInit`, asserts `course.json`, Slidev skeleton, lessons, audio tree, PlantUML disabled.
+- `tests/init.test.ts` — workspace scaffold and submodule mode.
+- `tests/context.test.ts` — pinned-commit packs, Java analyzer fallback, `lesson new`.
 
 Always run lint and tests before pushing.
 
@@ -34,14 +36,21 @@ Always run lint and tests before pushing.
 
 - English for code, docs, and commit messages; conventional commits (`feat:`, `fix:`, `chore:`, …).
 - Minimal dependencies; Slidev deps belong in generated workspaces, not necessarily in the root package.
-- Follow [ADR 0001](docs/adr/0001-node-typescript-cli-and-repo-reference.md) for stack and repo reference modes.
+- Follow ADR [0001](docs/adr/0001-node-typescript-cli-and-repo-reference.md) and [0002](docs/adr/0002-context-pack-format.md).
 
 ## Never commit
 
 - `.env` or real API keys (ElevenLabs, etc.)
 - Files under `audio/local/` or other generated narration
 - Secrets in `course.json` or lesson content
+- Generated audio; context packs _may_ be committed when useful for review (team choice)
 
 ## Generated course workspaces
 
-Templates live in `templates/workspace/`. After changing templates, run tests. Mermaid only; PlantUML off in `slidev.config.ts`.
+Templates live in `templates/workspace/`. Lessons use `lessons/<id>/lesson.json` plus per-language `slides.md`.
+Context packs are written next to the lesson. Mermaid only; PlantUML off in `slidev.config.ts`.
+
+## Context packs
+
+Build with `course context <id>`. Packs read the target repo via `git show <pinnedCommit>:path` — never assume an
+unchecked-out working tree. Extend `src/analyzers/` for language-specific graphs.

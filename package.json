@@ -1,6 +1,6 @@
 {
   "name": "course-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Turn a code repository into an interactive Slidev course",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "minimatch": "^11.0.9"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
