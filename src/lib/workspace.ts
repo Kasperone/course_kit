@@ -13,7 +13,7 @@ import {
 
 export type Workspace = {
   courseDir: string
-  /** course.json as written (targetRepo is workspace-relative). */
+  /** course.json as written (targetRepo is workspace-relative or null). */
   course: CourseJson
   /** Absolute path of the git repository that holds the pinned commit. */
   targetRepoPath: string
@@ -25,8 +25,9 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
   if (raw.schemaVersion !== 1) {
     throw new Error(`${file}: unsupported schemaVersion ${JSON.stringify(raw.schemaVersion)}`)
   }
-  if (typeof raw.targetRepo !== 'string' || raw.targetRepo.trim() === '') {
-    throw new Error(`${file}: "targetRepo" must be a non-empty path`)
+  const targetRepo = raw.targetRepo ?? null
+  if (targetRepo !== null && (typeof targetRepo !== 'string' || targetRepo.trim() === '')) {
+    throw new Error(`${file}: "targetRepo" must be a non-empty path or null`)
   }
   if (typeof raw.pinnedCommit !== 'string' || !FULL_SHA_RE.test(raw.pinnedCommit)) {
     throw new Error(
@@ -53,7 +54,7 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
       : null
   return {
     schemaVersion: 1,
-    targetRepo: raw.targetRepo,
+    targetRepo,
     targetRemote: remote,
     pinnedCommit: raw.pinnedCommit,
     languages,
@@ -64,7 +65,8 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
 
 /**
  * Where to read the pinned commit from: COURSE_TARGET_REPO if set; the checked-out submodule in
- * submodule mode; otherwise course.json `targetRepo` resolved against the workspace.
+ * submodule mode; otherwise course.local.json, then course.json `targetRepo` resolved against the
+ * workspace.
  */
 export function resolveTargetRepoPath(courseDir: string, course: CourseJson): string {
   if (process.env[TARGET_REPO_ENV]) return resolveCourseTargetRepo(courseDir, course.targetRepo)

@@ -135,6 +135,23 @@ describe('target repo resolution', () => {
     expect(meta.selectedFiles).toContain('README.md')
   })
 
+  it('reads the target path from course.local.json when course.json has none', async () => {
+    const fx = await makeWorkspace()
+    editJson(path.join(fx.workspace, 'course.json'), (c) => {
+      c.targetRepo = null
+    })
+    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
+      /course\.local\.json/,
+    )
+    writeFileSync(
+      path.join(fx.workspace, 'course.local.json'),
+      JSON.stringify({ targetRepo: fx.repoDir }),
+    )
+    const meta = await runContext({ lessonId: '01-placeholder', cwd: fx.workspace })
+    expect(meta.pinnedCommit).toBe(fx.pinned)
+    expect(meta.targetRepo).toBeNull()
+  })
+
   it('honours COURSE_TARGET_REPO for a clone at another path', async () => {
     const fx = await makeWorkspace()
     const moved = path.join(fx.root, 'clone-elsewhere')

@@ -25,8 +25,8 @@ import { buildTreeSummary } from './tree.js'
 export type ContextPackMeta = {
   schemaVersion: 1
   lessonId: string
-  /** course.json `targetRepo` (workspace-relative), never an absolute local path. */
-  targetRepo: string
+  /** course.json `targetRepo` (workspace-relative, or null if kept in course.local.json). */
+  targetRepo: string | null
   targetRemote: string | null
   pinnedCommit: string
   generatedAt: string
@@ -324,7 +324,11 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     '| Field | Value |',
     '|-------|-------|',
     `| Lesson | ${inlineCode(lesson.id)} |`,
-    `| Target repo | ${tableCell(inlineCode(course.targetRepo))} (relative to the workspace) |`,
+    `| Target repo | ${
+      course.targetRepo
+        ? `${tableCell(inlineCode(course.targetRepo))} (relative to the workspace)`
+        : '_machine-local path (course.local.json)_'
+    } |`,
     `| Target remote | ${course.targetRemote ? tableCell(inlineCode(course.targetRemote)) : '_none_'} |`,
     `| Pinned commit | \`${commit}\` |`,
     `| Generated | ${generatedAt} |`,

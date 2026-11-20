@@ -3,10 +3,12 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import {
   addSubmodule,
@@ -28,9 +30,11 @@ export type CourseJson = {
   schemaVersion: 1
   /**
    * Path to the target repository, relative to the workspace directory (POSIX separators), so the
-   * file never contains a machine-specific absolute path. Override locally with COURSE_TARGET_REPO.
+   * file never contains a machine-specific absolute path. null when no such path exists without
+   * revealing the local layout (e.g. workspace in /tmp, target in $HOME); the path then lives in
+   * the gitignored course.local.json. Override locally with COURSE_TARGET_REPO.
    */
-  targetRepo: string
+  targetRepo: string | null
   /** The target's network `origin` URL without credentials, if any (informational). */
   targetRemote: string | null
   pinnedCommit: string
@@ -105,17 +109,63 @@ Do not commit provider-generated audio or API keys.
 /** Env var that overrides course.json `targetRepo` on this machine (absolute or cwd-relative). */
 export const TARGET_REPO_ENV = 'COURSE_TARGET_REPO'
 
-/** Resolve course.json `targetRepo` (relative to the workspace) to an absolute path. */
-export function resolveCourseTargetRepo(courseDir: string, targetRepo: string): string {
-  const override = process.env[TARGET_REPO_ENV]
-  if (override) return path.resolve(override)
-  return path.resolve(courseDir, targetRepo)
+/** Machine-local, gitignored settings; holds the absolute target path when no portable one exists. */
+export const LOCAL_CONFIG_FILE = 'course.local.json'
+
+function isInside(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
-function relativeTargetPath(outDir: string, targetRepo: string): string {
-  const rel = path.relative(outDir, targetRepo)
-  // On Windows a different drive yields an absolute path; nothing portable is possible then.
-  return path.isAbsolute(rel) ? rel : rel.split(path.sep).join('/') || '.'
+/**
+ * Workspace-relative path to the target, or null if any relative path would expose the local
+ * layout: different drives, only the filesystem root in common, or a target inside the home
+ * directory reached from outside it (`../../home/<user>/...`).
+ */
+export function portableRelativePath(
+  fromDir: string,
+  toDir: string,
+  home: string = os.homedir(),
+): string | null {
+  const from = path.resolve(fromDir)
+  const to = path.resolve(toDir)
+  const rootFrom = path.parse(from).root
+  if (rootFrom !== path.parse(to).root) return null
+  const firstSeg = (p: string) => p.slice(rootFrom.length).split(path.sep)[0]
+  if (firstSeg(from) !== firstSeg(to)) return null
+  if (home && isInside(to, home) && !isInside(from, home)) return null
+  return path.relative(from, to).split(path.sep).join('/') || '.'
+}
+
+function readLocalTargetRepo(courseDir: string): string | null {
+  const file = path.join(courseDir, LOCAL_CONFIG_FILE)
+  if (!existsSync(file)) return null
+  let data: unknown
+  try {
+    data = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    throw new Error(`${file} is not valid JSON`)
+  }
+  const target = (data as { targetRepo?: unknown } | null)?.targetRepo
+  if (typeof target !== 'string' || !path.isAbsolute(target)) {
+    throw new Error(`${file}: "targetRepo" must be an absolute path`)
+  }
+  return target
+}
+
+/**
+ * Absolute target path for a workspace: COURSE_TARGET_REPO, then course.local.json, then
+ * course.json `targetRepo` resolved against the workspace.
+ */
+export function resolveCourseTargetRepo(courseDir: string, targetRepo: string | null): string {
+  const override = process.env[TARGET_REPO_ENV]
+  if (override) return path.resolve(override)
+  const local = readLocalTargetRepo(courseDir)
+  if (local) return local
+  if (targetRepo) return path.resolve(courseDir, targetRepo)
+  throw new Error(
+    `No target repo path for ${courseDir}: set ${TARGET_REPO_ENV} or create ${LOCAL_CONFIG_FILE} with {"targetRepo": "/abs/path"}`,
+  )
 }
 
 export async function runInit(
@@ -142,8 +192,15 @@ export async function runInit(
     writeLessonPlaceholders(outDir, languages)
     writeAudioTree(outDir)
 
-    const targetRel = relativeTargetPath(outDir, targetRepo)
+    const targetRel = portableRelativePath(outDir, targetRepo)
     const targetRemote = readShareableRemote(targetRepo)
+    if (targetRel === null) {
+      writeFileSync(
+        path.join(outDir, LOCAL_CONFIG_FILE),
+        JSON.stringify({ targetRepo }, null, 2) + '\n',
+        'utf8',
+      )
+    }
     const course: CourseJson = {
       schemaVersion: 1,
       targetRepo: targetRel,
@@ -156,8 +213,14 @@ export async function runInit(
     writeCourseJson(outDir, course)
 
     if (options.submodule) {
+      const submoduleUrl = targetRemote ?? targetRel
+      if (!submoduleUrl) {
+        throw new Error(
+          '--submodule needs a target with a network origin remote, or a workspace next to the target (e.g. --out ../<name>-course)',
+        )
+      }
       initGitRepo(outDir)
-      addSubmodule(outDir, targetRepo, SUBMODULE_PATH, targetRemote ?? targetRel)
+      addSubmodule(outDir, targetRepo, SUBMODULE_PATH, submoduleUrl)
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
     }
 
