@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { mkdirInside } from '../lib/fs-safe.js'
 import type { CourseJson } from './init.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { validateLessonId } from '../lib/validate.js'
@@ -21,7 +22,7 @@ export function runLessonNew(options: LessonNewOptions): {
   if (existsSync(root)) {
     throw new Error(`Lesson already exists: ${root}`)
   }
-  mkdirSync(root, { recursive: true })
+  mkdirInside(courseDir, root)
   writeLessonJson(root, defaultLessonJson(options.lessonId))
   writePlaceholderSlides(root, options.lessonId, course.languages)
   return { lessonRoot: root, course }

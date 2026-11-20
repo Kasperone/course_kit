@@ -6,7 +6,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,6 +17,7 @@ import {
   readShareableRemote,
   resolveTargetRepo,
 } from '../lib/git.js'
+import { writeFileInside } from '../lib/fs-safe.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
 import { validateLanguages } from '../lib/validate.js'
@@ -79,30 +79,28 @@ export function parseInitArgs(opts: {
   }
 }
 
-function writeCourseJson(outDir: string, data: CourseJson): void {
-  writeFileSync(path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n', 'utf8')
+/** Write course.json in a workspace (symlink-safe). */
+export function writeCourseJson(outDir: string, data: CourseJson): void {
+  writeFileInside(outDir, path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n')
 }
 
 function writeLessonPlaceholders(outDir: string, languages: string[]): void {
   const id = '01-placeholder'
   const lessonRoot = path.join(outDir, 'lessons', id)
-  mkdirSync(lessonRoot, { recursive: true })
   writeLessonJson(lessonRoot, defaultLessonJson(id))
   writePlaceholderSlides(lessonRoot, id, languages)
 }
 
 function writeAudioTree(outDir: string): void {
-  const localDir = path.join(outDir, 'audio', 'local')
-  mkdirSync(localDir, { recursive: true })
-  writeFileSync(path.join(outDir, 'audio', 'local', '.gitkeep'), '', 'utf8')
-  writeFileSync(
+  writeFileInside(outDir, path.join(outDir, 'audio', 'local', '.gitkeep'), '')
+  writeFileInside(
+    outDir,
     path.join(outDir, 'audio', 'ATTRIBUTION.md'),
     `# Audio attribution
 
 Generated narration clips belong in \`audio/local/\` (gitignored).
 Do not commit provider-generated audio or API keys.
 `,
-    'utf8',
   )
 }
 
@@ -195,10 +193,10 @@ export async function runInit(
     const targetRel = portableRelativePath(outDir, targetRepo)
     const targetRemote = readShareableRemote(targetRepo)
     if (targetRel === null) {
-      writeFileSync(
+      writeFileInside(
+        outDir,
         path.join(outDir, LOCAL_CONFIG_FILE),
         JSON.stringify({ targetRepo }, null, 2) + '\n',
-        'utf8',
       )
     }
     const course: CourseJson = {

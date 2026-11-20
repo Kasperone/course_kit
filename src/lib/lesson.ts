@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseLimitOverrides, type PackLimits } from './context-pack/limits.js'
+import { writeFileInside } from './fs-safe.js'
 import { deckFrontmatter } from './slidev.js'
 import { isPlainObject, readJsonFile, validateLessonId, validateRepoPattern } from './validate.js'
 
@@ -75,8 +76,17 @@ export function readLessonJson(lessonRoot: string): LessonJson {
   return parseLessonJson(readJsonFile(p, readFileSync(p, 'utf8')), p, path.basename(lessonRoot))
 }
 
+/** The workspace that holds `lessons/<id>/`; writes below it never follow symlinks. */
+export function workspaceOfLesson(lessonRoot: string): string {
+  return path.dirname(path.dirname(path.resolve(lessonRoot)))
+}
+
 export function writeLessonJson(lessonRoot: string, data: LessonJson): void {
-  writeFileSync(lessonJsonPath(lessonRoot), JSON.stringify(data, null, 2) + '\n', 'utf8')
+  writeFileInside(
+    workspaceOfLesson(lessonRoot),
+    lessonJsonPath(lessonRoot),
+    JSON.stringify(data, null, 2) + '\n',
+  )
 }
 
 export function defaultLessonJson(id: string): LessonJson {
@@ -91,12 +101,12 @@ export function defaultLessonJson(id: string): LessonJson {
 }
 
 export function writePlaceholderSlides(lessonRoot: string, id: string, languages: string[]): void {
+  const base = workspaceOfLesson(lessonRoot)
   for (const lang of languages) {
-    const dir = path.join(lessonRoot, lang)
-    mkdirSync(dir, { recursive: true })
     const title = lang === 'pl' ? `Lekcja: ${id}` : `Lesson: ${id}`
-    writeFileSync(
-      path.join(dir, 'slides.md'),
+    writeFileInside(
+      base,
+      path.join(lessonRoot, lang, 'slides.md'),
       `${deckFrontmatter({ title, lang })}
 
 # ${title}
@@ -108,7 +118,6 @@ flowchart LR
   pack[context pack] --> script[lesson script]
 \`\`\`
 `,
-      'utf8',
     )
   }
 }
