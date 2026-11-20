@@ -72,8 +72,9 @@ describe('course init', () => {
     expect(existsSync(path.join(outDir, 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, '.env.example'))).toBe(true)
     expect(readFileSync(path.join(outDir, 'LICENSE-CONTENT'), 'utf8')).toContain('CC BY 4.0')
-    expect(existsSync(path.join(outDir, 'lessons', 'pl', '01-placeholder', 'slides.md'))).toBe(true)
-    expect(existsSync(path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'lesson.json'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'pl', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'audio', 'ATTRIBUTION.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'audio', 'local', '.gitkeep'))).toBe(true)
 
@@ -89,7 +90,7 @@ describe('course init', () => {
       PLANTUML_DISABLED_SERVER,
     )
     for (const lang of ['pl', 'en']) {
-      const fm = frontmatter(path.join(outDir, 'lessons', lang, '01-placeholder', 'slides.md'))
+      const fm = frontmatter(path.join(outDir, 'lessons', '01-placeholder', lang, 'slides.md'))
       expect(fm.plantUmlServer).toBe(PLANTUML_DISABLED_SERVER)
       expect(fm.lang).toBe(lang)
       expect(typeof fm.title).toBe('string')
@@ -105,7 +106,7 @@ describe('course init', () => {
     execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe' })
     // A plantuml block anywhere in lessons fails.
     writeFileSync(
-      path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'),
+      path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md'),
       '# x\n\n```plantuml\n@startuml\nA -> B\n@enduml\n```\n',
       'utf8',
     )
@@ -136,10 +137,19 @@ describe('course init', () => {
       '.env.production',
       'keys/server.pem',
       'audio/local/clip.mp3',
+      'lessons/01-placeholder/context-pack.md',
+      'lessons/01-placeholder/context-pack.json',
     ]) {
       expect(ignored(rel), rel).toBe(true)
     }
-    for (const rel of ['.env.example', 'audio/local/.gitkeep', 'slides.md', 'course.json']) {
+    for (const rel of [
+      '.env.example',
+      'audio/local/.gitkeep',
+      'slides.md',
+      'course.json',
+      'lessons/01-placeholder/lesson.json',
+      'lessons/01-placeholder/en/slides.md',
+    ]) {
       expect(ignored(rel), rel).toBe(false)
     }
     expect(existsSync(path.join(outDir, 'gitignore'))).toBe(false)

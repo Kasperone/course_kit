@@ -13,5 +13,9 @@ dist
 audio/local/*
 !audio/local/.gitkeep
 
+# Generated context packs (may quote target-repo code; review before force-adding)
+lessons/*/context-pack.md
+lessons/*/context-pack.json
+
 # Machine-local settings (absolute paths)
 course.local.json

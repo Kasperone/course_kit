@@ -18,17 +18,13 @@ import {
   readShareableRemote,
   resolveTargetRepo,
 } from '../lib/git.js'
+import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
 import { validateLanguages } from '../lib/validate.js'
 
 export const SUBMODULE_PATH = 'target-repo'
 
-/**
- * Slidev renders ```plantuml blocks as `<img src="${plantUmlServer}/svg/...">` (default server:
- * plantuml.com). A data: URL turns that into a local no-op, so diagram source never leaves the
- * machine. The workspace also ships scripts/check-no-plantuml.mjs, which fails dev/build/export.
- */
-export const PLANTUML_DISABLED_SERVER = 'data:text/plain,plantuml-disabled'
+export { PLANTUML_DISABLED_SERVER } from '../lib/slidev.js'
 
 export type CourseJson = {
   schemaVersion: 1
@@ -88,36 +84,11 @@ function writeCourseJson(outDir: string, data: CourseJson): void {
 }
 
 function writeLessonPlaceholders(outDir: string, languages: string[]): void {
-  for (const lang of languages) {
-    const lessonDir = path.join(outDir, 'lessons', lang, '01-placeholder')
-    mkdirSync(lessonDir, { recursive: true })
-    const title = lang === 'pl' ? 'Lekcja placeholder' : 'Placeholder lesson'
-    const body =
-      lang === 'pl'
-        ? '## Cel\n\nTreść lekcji zostanie wygenerowana przez agenta.\n'
-        : '## Goal\n\nLesson content will be drafted by the coding agent.\n'
-    writeFileSync(
-      path.join(lessonDir, 'slides.md'),
-      `---
-theme: default
-title: ${JSON.stringify(title)}
-lang: ${lang}
-plantUmlServer: ${JSON.stringify(PLANTUML_DISABLED_SERVER)}
----
-
-# ${title}
-
-${body}
-
-\`\`\`mermaid
-flowchart LR
-  repo[Repo] --> course[course_kit]
-  course --> lesson[Lesson]
-\`\`\`
-`,
-      'utf8',
-    )
-  }
+  const id = '01-placeholder'
+  const lessonRoot = path.join(outDir, 'lessons', id)
+  mkdirSync(lessonRoot, { recursive: true })
+  writeLessonJson(lessonRoot, defaultLessonJson(id))
+  writePlaceholderSlides(lessonRoot, id, languages)
 }
 
 function writeAudioTree(outDir: string): void {

@@ -39,3 +39,10 @@ export function packageRoot(
 export function templatesDir(): string {
   return path.join(packageRoot(), 'templates', 'workspace')
 }
+
+export function packageVersion(): string {
+  const pkg = JSON.parse(readFileSync(path.join(packageRoot(), 'package.json'), 'utf8')) as {
+    version?: string
+  }
+  return pkg.version ?? '0.0.0'
+}
