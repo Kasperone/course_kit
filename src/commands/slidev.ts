@@ -194,8 +194,12 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
     throw new Error(`Built output references a PlantUML server: ${leaks.join(', ')}`)
   }
 
+  // The index lists every deck present in dist/, so a filtered build keeps earlier decks linked.
+  const built = listDecks(courseDir, course).filter((d) =>
+    existsSync(path.join(d.outDir, 'index.html')),
+  )
   const index = path.join(distDir, 'index.html')
-  writeFileInside(courseDir, index, indexHtml(decks))
+  writeFileInside(courseDir, index, indexHtml(built))
   return { courseDir, distDir, decks, index }
 }
 

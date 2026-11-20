@@ -57,6 +57,11 @@ describe('course build', () => {
     const result = runBuild({ cwd: workspace, lesson: '01-placeholder', lang: 'en' })
     expect(result.decks).toHaveLength(1)
     expect(calls(log)).toHaveLength(1)
+    runBuild({ cwd: workspace, lesson: '01-placeholder', lang: 'pl' })
+    // The index keeps decks from earlier (filtered) builds.
+    const index = readFileSync(path.join(workspace, 'dist', 'index.html'), 'utf8')
+    expect(index).toContain('href="./01-placeholder/en/"')
+    expect(index).toContain('href="./01-placeholder/pl/"')
     expect(() => runBuild({ cwd: workspace, lang: 'de' })).toThrow(/not in course.json/)
     expect(() => runBuild({ cwd: workspace, lesson: '../x' })).toThrow(/Invalid lesson id/)
     expect(() => runBuild({ cwd: workspace, lesson: '09-missing' })).toThrow(/Unknown lesson/)
