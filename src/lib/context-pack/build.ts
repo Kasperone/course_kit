@@ -1,4 +1,3 @@
-import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { runAnalyzers } from '../../analyzers/registry.js'
 import type { RepoAnalyzer } from '../../analyzers/types.js'
@@ -11,6 +10,7 @@ import {
   verifyCommit,
   type TreeEntry,
 } from '../git-commit.js'
+import { writeFileInside, writeFileNoFollow } from '../fs-safe.js'
 import { DEFAULT_LESSON_GLOBS, type LessonJson } from '../lesson.js'
 import { buildDocExcerpts, DOC_CANDIDATES } from './docs.js'
 import { estimateTokens } from './estimate.js'
@@ -56,6 +56,11 @@ export type BuildContextPackOptions = {
   cliFileGlobs: string[]
   outMarkdown: string
   outJson?: string
+  /**
+   * Workspace directory. Outputs inside it are written without following symlinks anywhere below
+   * it; outputs elsewhere (explicit --out) only refuse a symlink as the final component.
+   */
+  courseDir?: string
   /** Override the analyzer registry (tests). */
   analyzers?: RepoAnalyzer[]
 }
@@ -391,7 +396,7 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     `**${bodyBytes}** bytes, **~${estimateTokens(body)}** tokens (characters ÷ 4 heuristic).`,
     '',
   ].join('\n')
-  writeFileSync(outMarkdown, markdown, 'utf8')
+  writeOutput(opts.courseDir, outMarkdown, markdown)
 
   const meta: ContextPackMeta = {
     schemaVersion: 1,
@@ -415,10 +420,19 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   }
 
   if (outJson) {
-    writeFileSync(outJson, JSON.stringify(meta, null, 2) + '\n', 'utf8')
+    writeOutput(opts.courseDir, outJson, JSON.stringify(meta, null, 2) + '\n')
   }
 
   return meta
+}
+
+function writeOutput(courseDir: string | undefined, file: string, data: string): void {
+  const rel = courseDir ? path.relative(path.resolve(courseDir), path.resolve(file)) : '..'
+  if (courseDir && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    writeFileInside(courseDir, file, data)
+  } else {
+    writeFileNoFollow(file, data)
+  }
 }
 
 export function defaultPackPaths(
