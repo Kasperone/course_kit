@@ -34,8 +34,11 @@ Two modes:
 
 No committed file contains a machine-specific absolute path: `course.json` also records
 `targetRemote` (the target's network `origin` URL with credentials stripped, or `null`), and
-`.gitmodules` uses `targetRemote` when available, otherwise the relative path. On another machine,
-set `COURSE_TARGET_REPO` to point at a local clone.
+`.gitmodules` uses `targetRemote` when available, otherwise the relative path. When every relative
+path would still reveal the local layout (only `/` in common, or a target inside `$HOME` reached
+from outside it, e.g. `../../home/<user>/repo`), `targetRepo` is `null` and the absolute path is
+written to the gitignored `course.local.json` instead. Resolution order: `COURSE_TARGET_REPO`,
+then `course.local.json`, then `course.json`.
 
 Default is **pinned path only**: cheapest, no nested git setup, sufficient for local courses where
 the target repo path is stable. Submodule is optional for teams that want the target tree vendored

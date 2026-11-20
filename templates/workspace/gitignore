@@ -12,3 +12,6 @@ dist
 # Generated narration audio
 audio/local/*
 !audio/local/.gitkeep
+
+# Machine-local settings (absolute paths)
+course.local.json

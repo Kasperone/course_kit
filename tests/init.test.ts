@@ -13,7 +13,9 @@ import { describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 import {
   parseInitArgs,
+  LOCAL_CONFIG_FILE,
   PLANTUML_DISABLED_SERVER,
+  portableRelativePath,
   resolveCourseTargetRepo,
   runInit,
   SUBMODULE_PATH,
@@ -151,6 +153,44 @@ describe('course init', () => {
       realpathSync(repoDir),
     )
     expect(filesContaining(outDir, root)).toEqual([])
+  })
+
+  it.each([
+    ['/home/u/courses/ws', '/home/u/projects/repo', '../../projects/repo'],
+    ['/home/u/repo/course', '/home/u/repo', '..'],
+    ['/tmp/a/ws', '/tmp/b/repo', '../../b/repo'],
+    ['/tmp/ws', '/home/u/repo', null],
+    ['/opt/ws', '/srv/repo', null],
+    ['/home/other/ws', '/home/u/repo', null],
+  ])('portableRelativePath(%s -> %s) = %s', (from, to, expected) => {
+    expect(portableRelativePath(from, to, '/home/u')).toBe(expected)
+  })
+
+  it('keeps the path in a gitignored course.local.json when no portable path exists', async () => {
+    const root = makeTempDir('init-local')
+    const fakeHome = path.join(root, 'home-u')
+    const repoDir = path.join(fakeHome, 'projects', 'target')
+    initRepoWithCommit(repoDir)
+    const previousHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const outDir = path.join(root, 'elsewhere', 'ws')
+      const { course } = await runInit({
+        targetRepo: repoDir,
+        outDir,
+        languages: ['en'],
+        submodule: false,
+      })
+      expect(course.targetRepo).toBeNull()
+      const local = JSON.parse(readFileSync(path.join(outDir, LOCAL_CONFIG_FILE), 'utf8'))
+      expect(local.targetRepo).toBe(repoDir)
+      expect(resolveCourseTargetRepo(outDir, course.targetRepo)).toBe(repoDir)
+      expect(filesContaining(outDir, fakeHome)).toEqual([LOCAL_CONFIG_FILE])
+      git(outDir, ['init', '-q'])
+      expect(git(outDir, ['check-ignore', LOCAL_CONFIG_FILE]).trim()).toBe(LOCAL_CONFIG_FILE)
+    } finally {
+      process.env.HOME = previousHome
+    }
   })
 
   it('records a credential-free network origin and ignores local-path origins', async () => {
