@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  commonPackagePrefix,
   createJavaAnalyzer,
   importedPackage,
   ownPackageGraph,
@@ -63,7 +64,7 @@ describe('course context', () => {
     expect(md).toContain(fx.pinned)
     expect(md).toContain('## Selection report')
     expect(md).toContain('## Size estimate')
-    expect(md).toContain('flowchart LR')
+    expect(md).toContain('subgraph g0["com.example"]')
     expect(md).not.toContain(fx.root)
     expect(existsSync(path.join(fx.workspace, 'lessons', LESSON, 'context-pack.json'))).toBe(true)
 
@@ -301,6 +302,16 @@ describe('Java analyzer', () => {
     expect(md.match(/-->/g)).toHaveLength(4)
   })
 
+  it.each([
+    [['a.b.c', 'a.b.d'], 'a.b'],
+    [['a.b', 'a.b.c'], 'a.b'],
+    [['a.b', 'a.c'], null],
+    [['com.x'], 'com.x'],
+    [[], null],
+  ])('commonPackagePrefix(%j) = %j', (pkgs, expected) => {
+    expect(commonPackagePrefix(pkgs)).toBe(expected)
+  })
+
   it('limits the analyzer graph to own packages and collapses externals', async () => {
     const files: Record<string, string> = {
       'backend/src/main/java/io/x/app/App.java':
@@ -329,7 +340,11 @@ describe('Java analyzer', () => {
 
     const md = (await createJavaAnalyzer(() => null).analyze(ctx))!.markdown
     const mermaid = md.match(/```mermaid\n([\s\S]*?)\n```/)![1]!
-    expect(mermaid).toContain('["io.x.app.billing"]')
+    // Own packages share io.x.app: grouped in a subgraph with short labels.
+    expect(mermaid).toMatch(/^flowchart LR\n {2}subgraph g0\["io\.x\.app"\]\n/)
+    expect(mermaid).toContain('["(root)"]')
+    expect(mermaid).toContain('["billing"]')
+    expect(mermaid).toContain('["api"]')
     expect(mermaid).not.toMatch(/springframework|java\.util|junit|io\.x\.app\.arch/)
     expect(mermaid.match(/-->/g)).toHaveLength(1)
     expect(md).toContain('test sources are excluded')

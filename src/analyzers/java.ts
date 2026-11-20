@@ -104,6 +104,19 @@ export function packageImportGraph(ctx: AnalyzerContext): FlowchartBuilder {
   return graph
 }
 
+/** Longest common dotted prefix (at least two segments) of several packages, or null. */
+export function commonPackagePrefix(packages: string[]): string | null {
+  if (packages.length === 0) return null
+  let common = packages[0]!.split('.')
+  for (const pkg of packages.slice(1)) {
+    const segs = pkg.split('.')
+    let i = 0
+    while (i < common.length && i < segs.length && common[i] === segs[i]) i++
+    common = common.slice(0, i)
+  }
+  return common.length >= 2 ? common.join('.') : null
+}
+
 export type OwnPackageGraph = {
   graph: FlowchartBuilder
   /** Packages declared by the analysed sources. */
@@ -197,9 +210,13 @@ export function createJavaAnalyzer(runJdeps: JdepsRunner = defaultJdepsRunner): 
         }
       }
       const own = ownPackageGraph(ctx)
+      const prefix = commonPackagePrefix(own.ownPackages)
       const mermaid = own.graph.isEmpty
         ? 'flowchart LR\n  empty["No Java packages parsed"]'
-        : own.graph.render('LR')
+        : prefix && own.ownPackages.length > 1
+          ? // LR keeps a subgraph of unconnected packages in one row (TB stacks them).
+            own.graph.render('LR', { groupPrefix: prefix })
+          : own.graph.render('LR')
       const lines = [
         `Java package view (**package-import graph (sources)**), limited to the repository's own ` +
           `packages: ${own.ownPackages.length} package(s) declared in ${own.sourceFiles} ` +
