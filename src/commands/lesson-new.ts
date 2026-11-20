@@ -1,19 +1,14 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import type { CourseJson } from './init.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
+import { validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspace } from '../lib/workspace.js'
+
+export { validateLessonId }
 
 export type LessonNewOptions = {
   lessonId: string
   cwd?: string
-}
-
-const ID_RE = /^[a-z0-9][a-z0-9.-]*$/i
-
-export function validateLessonId(id: string): void {
-  if (!ID_RE.test(id)) {
-    throw new Error(`Invalid lesson id "${id}" (use letters, numbers, dots, hyphens)`)
-  }
 }
 
 export function runLessonNew(options: LessonNewOptions): {

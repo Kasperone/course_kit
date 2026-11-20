@@ -15,6 +15,7 @@ export type ContextPackMeta = {
   schemaVersion: 1
   lessonId: string
   targetRepo: string
+  targetRemote: string | null
   pinnedCommit: string
   generatedAt: string
   selectedFiles: string[]
@@ -26,6 +27,8 @@ export type ContextPackMeta = {
 
 export type BuildContextPackOptions = {
   course: CourseJson
+  /** Absolute path of the repository to read the pinned commit from. */
+  repoPath: string
   lesson: LessonJson
   cliFileGlobs: string[]
   outMarkdown: string
@@ -40,7 +43,7 @@ function numberedExcerpt(content: string, maxLines: number): string {
 
 export async function buildContextPack(opts: BuildContextPackOptions): Promise<ContextPackMeta> {
   const { course, lesson, cliFileGlobs, outMarkdown, outJson } = opts
-  const repo = course.targetRepo
+  const repo = opts.repoPath
   const commit = course.pinnedCommit
   const allPaths = listTrackedPathsAtCommit(repo, commit)
   const patterns = mergeFilePatterns(lesson.files, lesson.globs, cliFileGlobs)
@@ -84,7 +87,8 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     '| Field | Value |',
     '|-------|-------|',
     `| Lesson | \`${lesson.id}\` |`,
-    `| Target repo | \`${repo}\` |`,
+    `| Target repo | \`${course.targetRepo}\` (relative to the workspace) |`,
+    `| Target remote | ${course.targetRemote ? `\`${course.targetRemote}\`` : '_none_'} |`,
     `| Pinned commit | \`${commit}\` |`,
     `| Generated | ${generatedAt} |`,
     '',
@@ -141,7 +145,8 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   const meta: ContextPackMeta = {
     schemaVersion: 1,
     lessonId: lesson.id,
-    targetRepo: repo,
+    targetRepo: course.targetRepo,
+    targetRemote: course.targetRemote,
     pinnedCommit: commit,
     generatedAt,
     selectedFiles: selected,

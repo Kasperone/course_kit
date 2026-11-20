@@ -56,12 +56,12 @@ describe('course context', () => {
     expect(meta2.pinnedCommit).toBe(pinned)
   })
 
-  it('course lesson new creates lesson.json and slides', () => {
+  it('course lesson new creates lesson.json and slides', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'course-kit-lesson-'))
     const repoDir = path.join(root, 'target')
     writeJavaSampleRepo(repoDir)
     const workspace = path.join(root, 'course')
-    runInit({
+    await runInit({
       targetRepo: repoDir,
       outDir: workspace,
       languages: ['en'],
