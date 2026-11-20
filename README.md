@@ -45,9 +45,15 @@ credentials) are never embedded and secret-looking values are redacted; the pack
 everything that was skipped. `course.json` stores the target path relative to the workspace; on another machine
 set `COURSE_TARGET_REPO=/path/to/clone`.
 
-Decks use Mermaid only. `course build`/`course dev` refuse to start if any deck contains PlantUML, every deck
-points Slidev's PlantUML server at a `data:` URL, and the build fails if the output references plantuml.com
-(see [ADR 0003](docs/adr/0003-slidev-build-and-dev.md)). `course build` does not need the target repo.
+Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0003-slidev-build-and-dev.md)):
+
+- every generated deck uses system fonts (no Google Fonts requests);
+- it points Slidev's PlantUML server at a `data:` URL;
+- it turns off Slidev's browser exporter (no `/export` page in `course dev`) and the PDF download.
+
+`course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
+PlantUML, or if a file references a web-font CDN. The build fails if its output references plantuml.com or a
+font CDN. `course build` does not need the target repo.
 
 ### Example
 
@@ -58,6 +64,17 @@ slide, speaker notes per click):
 ```bash
 npm ci --prefix examples/faktura
 node dist/cli.js build -C examples/faktura
+```
+
+Building the decks needs nothing else. `course context` and `course pin` for the example read the faktura repo
+through the relative path in `examples/faktura/course.json` (`../../../faktura`), so faktura must be cloned
+**next to** course_kit:
+
+```bash
+cd ..   # the directory that contains course_kit/
+git clone https://github.com/Kasperone/faktura.git
+cd course_kit/examples/faktura
+node ../../dist/cli.js context 01-architecture   # or: COURSE_TARGET_REPO=/path/to/faktura ...
 ```
 
 ## Licensing

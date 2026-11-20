@@ -28,12 +28,31 @@ source leaves the machine" guarantee as ADR 0001, and a first real lesson (faktu
 - The workspace `npm run dev` / `npm run build` scripts still serve and build the root
   `slides.md`.
 
-### No export
+### No export, fully offline (deck policy)
 
 No PDF/PNG export and no Playwright or `playwright-chromium` dependency (decided by Kasper,
-2026-11-20). The template has no `export` script. Slidev's optional peer `playwright-chromium`
-is not installed by npm. Do not set `download: true` in a deck: Slidev would try to export a PDF
-at build time.
+2026-11-20). The template has no `export` script, and npm does not install Slidev's optional peer
+`playwright-chromium`. Decks also make no requests beyond the local server (Kasper, 2026-11-21).
+Every generated deck's headmatter therefore pins:
+
+| Key               | Value                                                                          | Why (checked in the Slidev 52.20.1 source)                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plantUmlServer`  | `"data:text/plain,plantuml-disabled"`                                          | see below                                                                                                                                                                                                              |
+| `fonts`           | `sans: system-ui`, `serif: ui-serif`, `mono: ui-monospace`, `provider: "none"` | The default provider `google` adds a `fonts.googleapis.com` stylesheet for the theme fonts (Avenir Next, Nunito Sans, Fira Code). With `none`, no web-font link is emitted, and Slidev appends system fallback stacks. |
+| `browserExporter` | `false`                                                                        | The default `"dev"` registers the `/export` route and the export button in the dev server. `false` removes both.                                                                                                       |
+| `download`        | `false`                                                                        | `true`/`"auto"` would export a PDF at build time and enable the `/print` route.                                                                                                                                        |
+
+`course build`/`course dev` refuse to start Slidev unless each deck they run has this headmatter.
+The check accepts the block form and the flow form (`fonts: { provider: none }`). They also refuse
+any workspace Markdown/Vue/CSS/HTML file that references a web-font CDN (`fonts.googleapis.com`,
+`fonts.gstatic.com`, `fonts.coollabs.io`). After a build, the output scan fails on those hosts too.
+The template's `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) applies the same rules to
+the root `slides.md` for `npm run dev/build`.
+
+Quirk: Slidev 52's dev-server banner still lists `export slides > …/export/` even with
+`browserExporter: false`. The banner tests the JSON-stringified flag (`"false"`, which is truthy),
+while the client receives the real `false` through Vite's defines. Opening `/export/` shows the
+normal slideshow.
 
 ### Slidev version
 
@@ -48,7 +67,7 @@ Slidev 52.20.1 behaves like 51.8.2 (ADR 0001): a `plantuml` fence becomes
 `https://www.plantuml.com/plantuml`. Three layers:
 
 1. **Before Slidev starts** (`course build`/`course dev`, and the template's
-   `check-no-plantuml.mjs` for `npm run dev/build`): fail on any ` ```plantuml `/`~~~plantuml`
+   `check-deck.mjs` for `npm run dev/build`): fail on any ` ```plantuml `/`~~~plantuml`
    fence or `<PlantUml>`/`<plant-uml>` component in workspace Markdown or Vue files. Symlinks are
    not followed; `node_modules`, `dist`, `.git`, `target-repo` and `audio` are skipped.
 2. **Headmatter:** every deck sets `plantUmlServer: "data:text/plain,plantuml-disabled"`.
@@ -60,6 +79,17 @@ and finds no `plantuml.com` in the output, and the same deck without the headmat
 (negative control, so layer 3 is shown to detect the default). A headless-browser network log of
 the probe deck and of all faktura slides showed no PlantUML request; the PlantUML `<img>` points at
 the `data:` URL. The CI `deck` job runs the e2e test on Node 20 and 22.
+
+The e2e test covers the rest of the deck policy the same way, each with a negative control:
+
+- Fonts: the policy headmatter gives a build with no web-font host; Slidev's default gives
+  `fonts.googleapis.com`.
+- Dev server: with the policy, `/@vite/env` defines `__SLIDEV_FEATURE_BROWSER_EXPORTER__` and
+  `__SLIDEV_FEATURE_PRINT__` as `false` and the page has no Google Fonts link; with the defaults,
+  the exporter is `true` and the link is present.
+
+Locally, a headless-browser network log of all 13 faktura slides (build) and of `/export/` (dev)
+showed only localhost requests.
 
 ### Diagrams
 
@@ -78,7 +108,5 @@ stay gitignored. Prettier and ESLint skip `examples/`.
 
 - Upgrading Slidev means re-running the e2e test, re-checking `PlantUml.vue` and the code-block
   transformer, and keeping the Node floor in mind.
-- The default theme loads web fonts from Google Fonts when a deck is viewed (seen in the network
-  log). This is a privacy/offline concern separate from PlantUML. A deck can opt out with
-  `fonts: { provider: none }`; this is still open.
+- Decks use system fonts, so they look slightly different per OS.
 - PDF/PNG handouts need a new decision (and a browser dependency) if they are ever wanted.
