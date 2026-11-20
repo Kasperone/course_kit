@@ -11,12 +11,14 @@ import {
   verifyCommit,
   type TreeEntry,
 } from '../git-commit.js'
-import type { LessonJson } from '../lesson.js'
+import { DEFAULT_LESSON_GLOBS, type LessonJson } from '../lesson.js'
 import { buildDocExcerpts, DOC_CANDIDATES } from './docs.js'
 import { estimateTokens } from './estimate.js'
 import { selectEntries, type Skipped } from './files.js'
 import { isProbablyBinaryPath, resolveLimits, type PackLimits } from './limits.js'
 import { fence, inlineCode, tableCell } from './markdown.js'
+import { redactSecrets } from './redact.js'
+import { sensitiveReason } from './sensitive.js'
 import { findRelatedTests } from './tests-heuristic.js'
 import { buildTreeSummary } from './tree.js'
 
@@ -35,12 +37,16 @@ export type ContextPackMeta = {
   skipped: Skipped[]
   missingFiles: string[]
   unmatchedGlobs: string[]
+  /** Files whose embedded text had secret-looking values replaced. */
+  redactions: FileRedactions[]
   analyzers: string[]
   bytes: number
   tokenEstimate: number
   /** Human-readable warnings, also printed by the CLI. */
   warnings: string[]
 }
+
+export type FileRedactions = { path: string; count: number; lines: number[]; kinds: string[] }
 
 export type BuildContextPackOptions = {
   course: CourseJson
@@ -72,13 +78,16 @@ function numberedExcerpt(content: string, maxLines: number): { text: string; tru
 function selectionReport(
   matched: number,
   included: number,
+  artifacts: number,
   related: number,
   skipped: Skipped[],
   missingFiles: string[],
   unmatchedGlobs: string[],
+  redactions: FileRedactions[],
 ): string {
   const lines = [
-    `Matched **${matched}** path(s); embedded **${included}** selected file(s) and **${related}** related test(s).`,
+    `Matched **${matched}** path(s); embedded **${included}** selected file(s) and **${related}** related test(s)` +
+      (artifacts > 0 ? `; **${artifacts}** compiled artifact(s) passed to analyzers.` : '.'),
     '',
   ]
   const byReason = new Map<string, Skipped[]>()
@@ -98,6 +107,15 @@ function selectionReport(
       lines.push('')
     }
   }
+  if (redactions.length > 0) {
+    lines.push('**Secret-looking values redacted (shown as `‹redacted›`):**', '')
+    for (const r of redactions) {
+      lines.push(
+        `- ${inlineCode(r.path)}: ${r.count} (${r.kinds.join(', ')}; lines ${r.lines.join(', ')})`,
+      )
+    }
+    lines.push('')
+  }
   if (missingFiles.length > 0) {
     lines.push('**`files` not found at the pinned commit:**', '')
     for (const f of missingFiles) lines.push(`- ${inlineCode(f)}`)
@@ -116,9 +134,22 @@ function warningsFor(
   skipped: Skipped[],
   missingFiles: string[],
   unmatchedGlobs: string[],
+  redactions: FileRedactions[],
 ): string[] {
   const warnings: string[] = []
   const count = (reason: string) => skipped.filter((s) => s.reason === reason)
+  const sensitive = count('sensitive')
+  if (sensitive.length > 0) {
+    warnings.push(
+      `${sensitive.length} sensitive file(s) were not embedded: ${sensitive.map((s) => s.path).join(', ')}`,
+    )
+  }
+  if (redactions.length > 0) {
+    const total = redactions.reduce((n, r) => n + r.count, 0)
+    warnings.push(
+      `Redacted ${total} secret-looking value(s) in ${redactions.length} file(s): ${redactions.map((r) => r.path).join(', ')}. Review the pack before sharing it.`,
+    )
+  }
   const overCap = count('over-cap')
   if (overCap.length > 0) {
     warnings.push(
@@ -134,8 +165,10 @@ function warningsFor(
   if (missingFiles.length > 0) {
     warnings.push(`lesson.json files not found at the pinned commit: ${missingFiles.join(', ')}`)
   }
-  if (unmatchedGlobs.length > 0) {
-    warnings.push(`Globs that matched nothing: ${unmatchedGlobs.join(', ')}`)
+  // Default globs cover several layouts, so only user-written globs that match nothing warn.
+  const userUnmatched = unmatchedGlobs.filter((g) => !DEFAULT_LESSON_GLOBS.includes(g))
+  if (userUnmatched.length > 0) {
+    warnings.push(`Globs that matched nothing: ${userUnmatched.join(', ')}`)
   }
   return warnings
 }
@@ -155,6 +188,7 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     tree,
     { files: lesson.files, globs: lesson.globs, cliGlobs: cliFileGlobs },
     limits,
+    sensitiveReason,
   )
   const skipped = [...selection.skipped]
   const selectedPaths = selection.included.map((e) => e.path)
@@ -174,6 +208,11 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     }
     const entry = byPath.get(p)!
     if (entry.symlink || isProbablyBinaryPath(p)) continue
+    const sensitive = sensitiveReason(p)
+    if (sensitive) {
+      skipped.push({ path: p, reason: 'sensitive', detail: `${sensitive} (related test)` })
+      continue
+    }
     if ((entry.size ?? 0) > limits.maxFileBytes) {
       skipped.push({ path: p, reason: 'too-large', detail: 'related test' })
     } else if (related.length >= limits.maxRelatedTests) {
@@ -190,16 +229,32 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   relatedPaths.sort()
 
   const docEntries = DOC_CANDIDATES.map((p) => byPath.get(p)).filter(
-    (e): e is TreeEntry => !!e && !e.symlink && (e.size ?? 0) <= MAX_DOC_BYTES,
+    (e): e is TreeEntry =>
+      !!e && !e.symlink && !sensitiveReason(e.path) && (e.size ?? 0) <= MAX_DOC_BYTES,
   )
 
   // One git process for every blob we embed.
   const contents = readBlobs(repo, [...selection.included, ...related, ...docEntries])
+  // Every embedded text passes through secret redaction exactly once.
   const textCache = new Map<string, string | null>()
+  const redactions: FileRedactions[] = []
   const readText = (p: string): string | null => {
     if (textCache.has(p)) return textCache.get(p)!
     const entry = byPath.get(p)
-    const text = entry ? blobToText(contents.get(entry.oid)) : null
+    const raw = entry ? blobToText(contents.get(entry.oid)) : null
+    let text = raw
+    if (raw !== null) {
+      const result = redactSecrets(raw, p)
+      text = result.text
+      if (result.redactions.length > 0) {
+        redactions.push({
+          path: p,
+          count: result.redactions.length,
+          lines: [...new Set(result.redactions.map((r) => r.line))],
+          kinds: [...new Set(result.redactions.map((r) => r.kind))],
+        })
+      }
+    }
     textCache.set(p, text)
     return text
   }
@@ -252,7 +307,14 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   )
 
   const generatedAt = new Date().toISOString()
-  const warnings = warningsFor(limits, skipped, selection.missingFiles, selection.unmatchedGlobs)
+  redactions.sort((a, b) => (a.path < b.path ? -1 : 1))
+  const warnings = warningsFor(
+    limits,
+    skipped,
+    selection.missingFiles,
+    selection.unmatchedGlobs,
+    redactions,
+  )
   const header = [
     '# Context pack',
     '',
@@ -278,10 +340,12 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     selectionReport(
       selection.matched,
       selection.included.length,
+      selection.artifacts.length,
       related.length,
       skipped,
       selection.missingFiles,
       selection.unmatchedGlobs,
+      redactions,
     ),
     '## Repository tree (pinned commit)',
     '',
@@ -339,6 +403,7 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     skipped,
     missingFiles: selection.missingFiles,
     unmatchedGlobs: selection.unmatchedGlobs,
+    redactions,
     analyzers: analyzerSections.map((s) => s.analyzerId),
     bytes: Buffer.byteLength(markdown, 'utf8'),
     tokenEstimate: estimateTokens(markdown),
