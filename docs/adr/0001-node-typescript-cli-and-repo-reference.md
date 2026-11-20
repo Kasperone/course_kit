@@ -38,8 +38,18 @@ inside the course repo.
 
 ### Diagrams
 
-PlantUML is **disabled** in generated `slidev.config.ts` (`plantuml: false`). Lesson templates use
-Mermaid only, avoiding Slidev's default behaviour of sending PlantUML source to plantuml.com.
+Mermaid only. Slidev (checked against 51.8.2) has no switch to turn PlantUML off: it always turns
+` ```plantuml ` blocks into `<img src="${plantUmlServer}/svg/<encoded source>">`, and
+`plantUmlServer` defaults to `https://www.plantuml.com/plantuml`. Slidev does not read a
+`slidev.config.ts` file. The workspace therefore uses two layers:
+
+1. **Headmatter:** every generated deck (`slides.md` and each lesson `slides.md`) sets
+   `plantUmlServer: 'data:text/plain,plantuml-disabled'`, so a stray PlantUML block becomes a
+   local no-op instead of a network request.
+2. **Guard:** `scripts/check-no-plantuml.mjs` runs as `predev`, `prebuild` and `preexport` and fails
+   if any Markdown file in the workspace contains a PlantUML fence.
+
+Re-check both when upgrading Slidev.
 
 ## Consequences
 

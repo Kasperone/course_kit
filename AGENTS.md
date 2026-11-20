@@ -26,7 +26,8 @@ course init <path-to-target-repo> [--out <dir>] [--lang pl,en] [--submodule]
 
 ## Tests
 
-- `tests/init.test.ts` — creates temp git repos, runs `runInit`, asserts `course.json`, Slidev skeleton, lessons, audio tree, PlantUML disabled.
+- `tests/init.test.ts` — creates temp git repos, runs `runInit`, asserts `course.json`, Slidev skeleton, lessons, audio tree, PlantUML guard.
+- `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it.
 
 Always run lint and tests before pushing.
 
@@ -44,4 +45,6 @@ Always run lint and tests before pushing.
 
 ## Generated course workspaces
 
-Templates live in `templates/workspace/`. After changing templates, run tests. Mermaid only; PlantUML off in `slidev.config.ts`.
+Templates live in `templates/workspace/`. After changing templates, run tests. Mermaid only: Slidev cannot disable
+PlantUML, so every deck sets `plantUmlServer` to a `data:` URL and `scripts/check-no-plantuml.mjs` fails
+`dev`/`build`/`export` on any PlantUML block (see ADR 0001).

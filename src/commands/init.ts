@@ -11,6 +11,13 @@ import { defaultOutDir, templatesDir } from '../lib/paths.js'
 
 export const SUBMODULE_PATH = 'target-repo'
 
+/**
+ * Slidev renders ```plantuml blocks as `<img src="${plantUmlServer}/svg/...">` (default server:
+ * plantuml.com). A data: URL turns that into a local no-op, so diagram source never leaves the
+ * machine. The workspace also ships scripts/check-no-plantuml.mjs, which fails dev/build/export.
+ */
+export const PLANTUML_DISABLED_SERVER = 'data:text/plain,plantuml-disabled'
+
 export type CourseJson = {
   schemaVersion: 1
   targetRepo: string
@@ -76,8 +83,9 @@ function writeLessonPlaceholders(outDir: string, languages: string[]): void {
       path.join(lessonDir, 'slides.md'),
       `---
 theme: default
-title: ${title}
+title: ${JSON.stringify(title)}
 lang: ${lang}
+plantUmlServer: ${JSON.stringify(PLANTUML_DISABLED_SERVER)}
 ---
 
 # ${title}
