@@ -1,0 +1,21 @@
+node_modules
+dist
+.DS_Store
+
+# Secrets: never commit real keys (.env.example is the only allowed env file)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Generated narration audio
+audio/local/*
+!audio/local/.gitkeep
+
+# Generated context packs (may quote target-repo code; review before force-adding)
+lessons/*/context-pack.md
+lessons/*/context-pack.json
+
+# Machine-local settings (absolute paths)
+course.local.json

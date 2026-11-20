@@ -83,7 +83,11 @@ export function resolveTargetRepoPath(courseDir: string, course: CourseJson): st
   return resolveCourseTargetRepo(courseDir, course.targetRepo)
 }
 
-export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
+/** Workspace directory and validated course.json, without locating the target repo. */
+export function resolveWorkspaceConfig(cwd: string = process.cwd()): {
+  courseDir: string
+  course: CourseJson
+} {
   const courseDir = path.resolve(cwd)
   const coursePath = path.join(courseDir, 'course.json')
   if (!existsSync(coursePath)) {
@@ -95,6 +99,11 @@ export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
     readJsonFile(coursePath, readFileSync(coursePath, 'utf8')),
     coursePath,
   )
+  return { courseDir, course }
+}
+
+export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
+  const { courseDir, course } = resolveWorkspaceConfig(cwd)
   return { courseDir, course, targetRepoPath: resolveTargetRepoPath(courseDir, course) }
 }
 

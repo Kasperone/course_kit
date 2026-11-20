@@ -54,10 +54,11 @@ Mermaid only. Slidev (checked against 51.8.2) has no switch to turn PlantUML off
 1. **Headmatter:** every generated deck (`slides.md` and each lesson `slides.md`) sets
    `plantUmlServer: 'data:text/plain,plantuml-disabled'`, so a stray PlantUML block becomes a
    local no-op instead of a network request.
-2. **Guard:** `scripts/check-no-plantuml.mjs` runs as `predev`, `prebuild` and `preexport` and fails
-   if any Markdown file in the workspace contains a PlantUML fence.
+2. **Guard:** `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) runs as `predev` and `prebuild` and fails if any
+   Markdown or Vue file in the workspace contains a PlantUML fence or `<PlantUml>` component.
 
-Re-check both when upgrading Slidev.
+Re-check both when upgrading Slidev. Step 3 adds the same check to `course build`/`course dev`, a
+post-build scan and a live render test; see [ADR 0003](0003-slidev-build-and-dev.md).
 
 ## Consequences
 

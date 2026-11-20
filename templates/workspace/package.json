@@ -3,16 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check:diagrams": "node scripts/check-no-plantuml.mjs",
-    "predev": "npm run check:diagrams",
+    "check:deck": "node scripts/check-deck.mjs",
+    "predev": "npm run check:deck",
     "dev": "slidev slides.md",
-    "prebuild": "npm run check:diagrams",
-    "build": "slidev build slides.md",
-    "preexport": "npm run check:diagrams",
-    "export": "slidev export slides.md"
+    "prebuild": "npm run check:deck",
+    "build": "slidev build slides.md"
   },
   "devDependencies": {
-    "@slidev/cli": "^51.6.0",
-    "@slidev/theme-default": "^0.25.0"
+    "@slidev/cli": "52.20.1",
+    "@slidev/theme-default": "0.25.0"
   }
 }

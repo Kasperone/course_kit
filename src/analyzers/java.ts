@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fence } from '../lib/context-pack/markdown.js'
+import { fence, inlineCode } from '../lib/context-pack/markdown.js'
+import { isTestPath } from '../lib/context-pack/tests-heuristic.js'
 import { FlowchartBuilder } from './mermaid.js'
 import type { AnalyzerContext, AnalyzerSection, RepoAnalyzer } from './types.js'
 
@@ -69,8 +70,11 @@ export function importedPackage(name: string, wildcard: boolean, isStatic: boole
 const PACKAGE_RE = /^\s*package\s+([\w.]+)\s*;/
 const IMPORT_RE = /^\s*import\s+(static\s+)?([\w.]+?)(\.\*)?\s*;/
 
-export function packageImportGraph(ctx: AnalyzerContext): FlowchartBuilder {
-  const graph = new FlowchartBuilder()
+export type JavaSource = { path: string; pkg: string; imports: string[]; test: boolean }
+
+/** Package declaration and imported packages of every selected `.java` file. */
+export function parseJavaSources(ctx: AnalyzerContext): JavaSource[] {
+  const sources: JavaSource[] = []
   for (const file of ctx.selectedPaths.filter((p) => p.endsWith('.java'))) {
     const text = ctx.readText(file)
     if (!text) continue
@@ -85,10 +89,81 @@ export function packageImportGraph(ctx: AnalyzerContext): FlowchartBuilder {
         if (target) imports.push(target)
       }
     }
-    graph.node(pkg)
-    for (const target of imports) graph.edge(pkg, target)
+    sources.push({ path: file, pkg, imports, test: isTestPath(file) })
+  }
+  return sources
+}
+
+/** Every package and every import edge (externals included). */
+export function packageImportGraph(ctx: AnalyzerContext): FlowchartBuilder {
+  const graph = new FlowchartBuilder()
+  for (const src of parseJavaSources(ctx)) {
+    graph.node(src.pkg)
+    for (const target of src.imports) graph.edge(src.pkg, target)
   }
   return graph
+}
+
+/** Longest common dotted prefix (at least two segments) of several packages, or null. */
+export function commonPackagePrefix(packages: string[]): string | null {
+  if (packages.length === 0) return null
+  let common = packages[0]!.split('.')
+  for (const pkg of packages.slice(1)) {
+    const segs = pkg.split('.')
+    let i = 0
+    while (i < common.length && i < segs.length && common[i] === segs[i]) i++
+    common = common.slice(0, i)
+  }
+  return common.length >= 2 ? common.join('.') : null
+}
+
+export type OwnPackageGraph = {
+  graph: FlowchartBuilder
+  /** Packages declared by the analysed sources. */
+  ownPackages: string[]
+  sourceFiles: number
+  /** True when test sources were left out because main sources exist. */
+  testsExcluded: boolean
+  /** Imported packages outside the repo, collapsed to their first two segments, with counts. */
+  externalGroups: Array<{ group: string; importers: number }>
+}
+
+/**
+ * Graph limited to the repository's own packages (those declared by the selected sources). Test
+ * sources are left out when main sources exist; imports of other packages are collapsed into
+ * groups such as `org.springframework` and reported next to the graph instead of inside it.
+ */
+export function ownPackageGraph(ctx: AnalyzerContext): OwnPackageGraph {
+  const all = parseJavaSources(ctx)
+  const main = all.filter((s) => !s.test)
+  const sources = main.length > 0 ? main : all
+  const own = new Set(sources.map((s) => s.pkg))
+  const ownPrefixes = new Set([...own].map((p) => p.split('.').slice(0, 2).join('.')))
+  const graph = new FlowchartBuilder()
+  const external = new Map<string, Set<string>>()
+  for (const pkg of [...own].sort()) graph.node(pkg)
+  for (const src of sources) {
+    for (const target of src.imports) {
+      if (own.has(target)) {
+        graph.edge(src.pkg, target)
+      } else {
+        // Collapse e.g. org.springframework.web -> org.springframework, but keep packages under
+        // the repo's own prefix whole so they cannot be mistaken for an own package.
+        const prefix = target.split('.').slice(0, 2).join('.')
+        const group = ownPrefixes.has(prefix) ? target : prefix
+        external.set(group, (external.get(group) ?? new Set()).add(src.pkg))
+      }
+    }
+  }
+  return {
+    graph,
+    ownPackages: [...own].sort(),
+    sourceFiles: sources.length,
+    testsExcluded: sources.length < all.length,
+    externalGroups: [...external]
+      .map(([group, importers]) => ({ group, importers: importers.size }))
+      .sort((a, b) => (a.group < b.group ? -1 : 1)),
+  }
 }
 
 function jdepsGraph(ctx: AnalyzerContext, runJdeps: JdepsRunner): FlowchartBuilder | null {
@@ -120,22 +195,51 @@ export function createJavaAnalyzer(runJdeps: JdepsRunner = defaultJdepsRunner): 
     id: 'java',
     detect: hasJavaSignals,
     analyze: async (ctx): Promise<AnalyzerSection | null> => {
-      let method = 'package-import graph (sources)'
-      let graph = jdepsGraph(ctx, runJdeps)
-      if (graph) {
-        method = `jdeps (${ctx.artifacts.length} compiled artifact(s) in selection)`
-      } else {
-        graph = packageImportGraph(ctx)
+      const jdeps = jdepsGraph(ctx, runJdeps)
+      if (jdeps) {
+        const method = `jdeps (${ctx.artifacts.length} compiled artifact(s) in selection)`
+        return {
+          analyzerId: 'java',
+          title: 'Java module / package graph',
+          markdown: [
+            `Java module view (**${method}**).`,
+            '',
+            fence(jdeps.render('LR'), 'mermaid'),
+            '',
+          ].join('\n'),
+        }
       }
-      const mermaid = graph.isEmpty
+      const own = ownPackageGraph(ctx)
+      const prefix = commonPackagePrefix(own.ownPackages)
+      const mermaid = own.graph.isEmpty
         ? 'flowchart LR\n  empty["No Java packages parsed"]'
-        : graph.render('LR')
+        : prefix && own.ownPackages.length > 1
+          ? // LR keeps a subgraph of unconnected packages in one row (TB stacks them).
+            own.graph.render('LR', { groupPrefix: prefix })
+          : own.graph.render('LR')
+      const lines = [
+        `Java package view (**package-import graph (sources)**), limited to the repository's own ` +
+          `packages: ${own.ownPackages.length} package(s) declared in ${own.sourceFiles} ` +
+          `${own.testsExcluded ? 'main ' : ''}source file(s). Edges are imports between own packages` +
+          `${own.testsExcluded ? '; test sources are excluded' : ''}.`,
+        '',
+        fence(mermaid, 'mermaid'),
+        '',
+      ]
+      if (own.externalGroups.length > 0) {
+        lines.push(
+          'External imports (collapsed, not drawn): ' +
+            own.externalGroups
+              .map((g) => `${inlineCode(g.group)} (${g.importers} package(s))`)
+              .join(', ') +
+            '.',
+          '',
+        )
+      }
       return {
         analyzerId: 'java',
-        title: 'Java module / package graph',
-        markdown: [`Java module view (**${method}**).`, '', fence(mermaid, 'mermaid'), ''].join(
-          '\n',
-        ),
+        title: 'Java package graph (own packages)',
+        markdown: lines.join('\n'),
       }
     },
   }

@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { initRepoWithCommit } from './helpers/git.js'
+import { installFakeSlidev } from './helpers/fake-slidev.js'
+import { commitAll, initRepoWithCommit, writeFiles } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -47,6 +48,28 @@ describe('built CLI (dist/cli.js)', () => {
     expect(existsSync(path.join(ws, 'package.json'))).toBe(true)
   })
 
+  it('runs the README flow init -> pin -> build (with a stand-in Slidev)', () => {
+    const root = makeTempDir('cli-flow')
+    const target = path.join(root, 'my-repo')
+    const first = initRepoWithCommit(target)
+    runCli(['init', target, '--out', './my-course', '--lang', 'en'], root)
+    const ws = path.join(root, 'my-course')
+
+    writeFiles(target, { 'NEW.md': 'x\n' })
+    const second = commitAll(target, 'second')
+    const pin = runCli(['pin', '-C', ws], root)
+    expect(pin).toContain(`pinnedCommit: ${first} -> ${second}`)
+    expect(runCli(['pin', first.slice(0, 10)], ws)).toContain(`${second} -> ${first}`)
+
+    const log = installFakeSlidev(ws)
+    const build = runCli(['build', '-C', ws], root)
+    expect(build).toContain(
+      `Built 01-placeholder/en -> ${path.join(ws, 'dist', '01-placeholder', 'en')}`,
+    )
+    expect(existsSync(path.join(ws, 'dist', 'index.html'))).toBe(true)
+    expect(readFileSync(log, 'utf8')).toContain('"--router-mode","hash"')
+  })
+
   it('exits non-zero with a clear message on bad input', () => {
     const root = makeTempDir('cli-bad')
     let failed = false
@@ -76,7 +99,7 @@ describe('npm package contents', () => {
       'templates/workspace/.env.example',
       'templates/workspace/package.json',
       'templates/workspace/slides.md',
-      'templates/workspace/scripts/check-no-plantuml.mjs',
+      'templates/workspace/scripts/check-deck.mjs',
     ]) {
       expect(files).toContain(expected)
     }

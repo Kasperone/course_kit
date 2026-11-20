@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "targetRepo": "../../../faktura",
+  "targetRemote": "https://github.com/Kasperone/faktura.git",
+  "pinnedCommit": "52ac4142b8b30d558c49ddc8668e85dd58f54c03",
+  "languages": [
+    "en",
+    "pl"
+  ],
+  "referenceMode": "pinned-path",
+  "submodulePath": null
+}

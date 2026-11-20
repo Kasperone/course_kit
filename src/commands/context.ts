@@ -43,5 +43,6 @@ export async function runContext(options: ContextOptions) {
     cliFileGlobs: options.files ?? [],
     outMarkdown,
     outJson,
+    courseDir,
   })
 }

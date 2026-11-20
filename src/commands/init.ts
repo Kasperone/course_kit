@@ -6,7 +6,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,7 +16,9 @@ import {
   readHeadCommit,
   readShareableRemote,
   resolveTargetRepo,
+  uncommittedWarning,
 } from '../lib/git.js'
+import { writeFileInside } from '../lib/fs-safe.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
 import { validateLanguages } from '../lib/validate.js'
@@ -79,30 +80,28 @@ export function parseInitArgs(opts: {
   }
 }
 
-function writeCourseJson(outDir: string, data: CourseJson): void {
-  writeFileSync(path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n', 'utf8')
+/** Write course.json in a workspace (symlink-safe). */
+export function writeCourseJson(outDir: string, data: CourseJson): void {
+  writeFileInside(outDir, path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n')
 }
 
 function writeLessonPlaceholders(outDir: string, languages: string[]): void {
   const id = '01-placeholder'
   const lessonRoot = path.join(outDir, 'lessons', id)
-  mkdirSync(lessonRoot, { recursive: true })
   writeLessonJson(lessonRoot, defaultLessonJson(id))
   writePlaceholderSlides(lessonRoot, id, languages)
 }
 
 function writeAudioTree(outDir: string): void {
-  const localDir = path.join(outDir, 'audio', 'local')
-  mkdirSync(localDir, { recursive: true })
-  writeFileSync(path.join(outDir, 'audio', 'local', '.gitkeep'), '', 'utf8')
-  writeFileSync(
+  writeFileInside(outDir, path.join(outDir, 'audio', 'local', '.gitkeep'), '')
+  writeFileInside(
+    outDir,
     path.join(outDir, 'audio', 'ATTRIBUTION.md'),
     `# Audio attribution
 
 Generated narration clips belong in \`audio/local/\` (gitignored).
 Do not commit provider-generated audio or API keys.
 `,
-    'utf8',
   )
 }
 
@@ -170,10 +169,13 @@ export function resolveCourseTargetRepo(courseDir: string, targetRepo: string | 
 
 export async function runInit(
   options: InitOptions,
-): Promise<{ outDir: string; course: CourseJson }> {
+): Promise<{ outDir: string; course: CourseJson; warnings: string[] }> {
   const languages = validateLanguages(options.languages)
   const targetRepo = resolveTargetRepo(options.targetRepo)
   const pinnedCommit = readHeadCommit(targetRepo)
+  const warnings: string[] = []
+  const dirty = uncommittedWarning(targetRepo, pinnedCommit)
+  if (dirty) warnings.push(dirty)
   const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
 
   if (existsSync(outDir) && requireNotEmpty(outDir)) {
@@ -195,10 +197,10 @@ export async function runInit(
     const targetRel = portableRelativePath(outDir, targetRepo)
     const targetRemote = readShareableRemote(targetRepo)
     if (targetRel === null) {
-      writeFileSync(
+      writeFileInside(
+        outDir,
         path.join(outDir, LOCAL_CONFIG_FILE),
         JSON.stringify({ targetRepo }, null, 2) + '\n',
-        'utf8',
       )
     }
     const course: CourseJson = {
@@ -224,7 +226,7 @@ export async function runInit(
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
     }
 
-    return { outDir, course }
+    return { outDir, course, warnings }
   } catch (err) {
     // Do not leave a half-written workspace behind; it would block a re-run.
     if (existedBefore) {

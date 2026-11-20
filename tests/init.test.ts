@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   realpathSync,
   statSync,
   writeFileSync,
@@ -86,22 +87,29 @@ describe('course init', () => {
     const { outDir } = await initWorkspace()
 
     expect(existsSync(path.join(outDir, 'slidev.config.ts'))).toBe(false)
-    expect(frontmatter(path.join(outDir, 'slides.md')).plantUmlServer).toBe(
-      PLANTUML_DISABLED_SERVER,
-    )
+    const root = frontmatter(path.join(outDir, 'slides.md'))
+    expect(root.plantUmlServer).toBe(PLANTUML_DISABLED_SERVER)
+    expect(root.fonts).toMatchObject({ provider: 'none' })
+    expect(root.browserExporter).toBe(false)
     for (const lang of ['pl', 'en']) {
       const fm = frontmatter(path.join(outDir, 'lessons', '01-placeholder', lang, 'slides.md'))
       expect(fm.plantUmlServer).toBe(PLANTUML_DISABLED_SERVER)
+      expect(fm.fonts).toMatchObject({ provider: 'none', sans: 'system-ui' })
+      expect(fm.browserExporter).toBe(false)
+      expect(fm.download).toBe(false)
       expect(fm.lang).toBe(lang)
       expect(typeof fm.title).toBe('string')
     }
 
     const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
-    expect(pkg.scripts.predev).toContain('check:diagrams')
-    expect(pkg.scripts.prebuild).toContain('check:diagrams')
-    expect(pkg.scripts.preexport).toContain('check:diagrams')
+    expect(pkg.scripts.predev).toContain('check:deck')
+    expect(pkg.scripts.prebuild).toContain('check:deck')
+    // Static build and live preview only: no PDF/PNG export and no Playwright dependency.
+    expect(pkg.scripts.export).toBeUndefined()
+    expect(pkg.scripts.preexport).toBeUndefined()
+    expect(JSON.stringify(pkg)).not.toMatch(/playwright/i)
 
-    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const guard = path.join(outDir, 'scripts', 'check-deck.mjs')
     // Clean workspace passes.
     execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe' })
     // A plantuml block anywhere in lessons fails.
@@ -118,6 +126,33 @@ describe('course init', () => {
     }
     expect(stderr).toContain('PlantUML blocks are not allowed')
     expect(stderr).toContain('lessons')
+  })
+
+  it('ships a guard that blocks web fonts and an online or exporting root deck', async () => {
+    const { outDir } = await initWorkspace()
+    const guard = path.join(outDir, 'scripts', 'check-deck.mjs')
+    const run = () => {
+      try {
+        execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
+        return ''
+      } catch (err) {
+        return String((err as { stderr?: string }).stderr)
+      }
+    }
+    expect(run()).toBe('')
+    const css = path.join(outDir, 'styles.css')
+    writeFileSync(css, "@import url('https://fonts.googleapis.com/css2?family=Inter');\n")
+    expect(run()).toContain('Web fonts from a CDN are not allowed')
+    rmSync(css)
+
+    const rootDeck = path.join(outDir, 'slides.md')
+    const original = readFileSync(rootDeck, 'utf8')
+    writeFileSync(rootDeck, original.replace("provider: 'none'", "provider: 'google'"))
+    expect(run()).toContain('fonts.provider must be "none"')
+    writeFileSync(rootDeck, original.replace('browserExporter: false', 'browserExporter: dev'))
+    expect(run()).toContain('browserExporter must be false')
+    writeFileSync(rootDeck, original.replace('download: false', 'download: true'))
+    expect(run()).toContain('download must not be enabled')
   })
 
   it('gitignores .env, .env.* and local audio but keeps .env.example', async () => {
