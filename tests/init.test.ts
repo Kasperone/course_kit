@@ -92,6 +92,32 @@ describe('course init', () => {
     expect(stderr).toContain('lessons')
   })
 
+  it('gitignores .env, .env.* and local audio but keeps .env.example', async () => {
+    const { outDir } = await initWorkspace()
+    execFileSync('git', ['init', '-q'], { cwd: outDir })
+    const ignored = (rel: string) => {
+      try {
+        execFileSync('git', ['check-ignore', '-q', rel], { cwd: outDir, stdio: 'pipe' })
+        return true
+      } catch {
+        return false
+      }
+    }
+    for (const rel of [
+      '.env',
+      '.env.local',
+      '.env.production',
+      'keys/server.pem',
+      'audio/local/clip.mp3',
+    ]) {
+      expect(ignored(rel), rel).toBe(true)
+    }
+    for (const rel of ['.env.example', 'audio/local/.gitkeep', 'slides.md', 'course.json']) {
+      expect(ignored(rel), rel).toBe(false)
+    }
+    expect(existsSync(path.join(outDir, 'gitignore'))).toBe(false)
+  })
+
   it('adds optional git submodule at pinned commit', async () => {
     const { pinned, outDir, course } = await initWorkspace({ languages: ['en'], submodule: true })
 

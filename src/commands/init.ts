@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   addSubmodule,
@@ -132,6 +132,8 @@ export async function runInit(
 
   const templateRoot = templatesDir()
   cpSync(templateRoot, outDir, { recursive: true })
+  // npm never packs files named .gitignore, so the template ships it as `gitignore`.
+  renameSync(path.join(outDir, 'gitignore'), path.join(outDir, '.gitignore'))
 
   writeLessonPlaceholders(outDir, languages)
   writeAudioTree(outDir)

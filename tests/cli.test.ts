@@ -59,3 +59,26 @@ describe('built CLI (dist/cli.js)', () => {
     expect(failed).toBe(true)
   })
 })
+
+describe('npm package contents', () => {
+  it('ships the workspace templates, including the gitignore template', () => {
+    const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const files = (JSON.parse(out) as Array<{ files: Array<{ path: string }> }>)[0]!.files.map(
+      (f) => f.path,
+    )
+    for (const expected of [
+      'templates/workspace/gitignore',
+      'templates/workspace/.env.example',
+      'templates/workspace/package.json',
+      'templates/workspace/slides.md',
+      'templates/workspace/scripts/check-no-plantuml.mjs',
+    ]) {
+      expect(files).toContain(expected)
+    }
+    expect(files.some((f) => /(^|\/)\.env$/.test(f))).toBe(false)
+  })
+})
