@@ -1,0 +1,14 @@
+{
+  "name": "course-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "slidev slides.md",
+    "build": "slidev build slides.md",
+    "export": "slidev export slides.md"
+  },
+  "devDependencies": {
+    "@slidev/cli": "^51.6.0",
+    "@slidev/theme-default": "^0.25.0"
+  }
+}
