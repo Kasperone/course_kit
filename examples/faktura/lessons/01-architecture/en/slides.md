@@ -3,6 +3,13 @@ theme: default
 title: "Faktura: architecture overview"
 lang: "en"
 plantUmlServer: "data:text/plain,plantuml-disabled"
+fonts:
+  sans: "system-ui"
+  serif: "ui-serif"
+  mono: "ui-monospace"
+  provider: "none"
+browserExporter: false
+download: false
 info: |
   Lesson 01 of the Faktura course. Every fact on these slides comes from the context pack built
   from faktura at commit 52ac4142b8b30d558c49ddc8668e85dd58f54c03; the slide footers name the files

@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check:diagrams": "node scripts/check-no-plantuml.mjs",
-    "predev": "npm run check:diagrams",
+    "check:deck": "node scripts/check-deck.mjs",
+    "predev": "npm run check:deck",
     "dev": "slidev slides.md",
-    "prebuild": "npm run check:diagrams",
+    "prebuild": "npm run check:deck",
     "build": "slidev build slides.md"
   },
   "devDependencies": {

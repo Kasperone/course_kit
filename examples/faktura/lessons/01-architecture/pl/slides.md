@@ -3,6 +3,13 @@ theme: default
 title: "Faktura: przegląd architektury"
 lang: "pl"
 plantUmlServer: "data:text/plain,plantuml-disabled"
+fonts:
+  sans: "system-ui"
+  serif: "ui-serif"
+  mono: "ui-monospace"
+  provider: "none"
+browserExporter: false
+download: false
 ---
 
 # Faktura: przegląd architektury
