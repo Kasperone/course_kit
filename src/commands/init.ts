@@ -8,6 +8,7 @@ import {
   resolveTargetRepo,
 } from '../lib/git.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
+import { validateLanguages } from '../lib/validate.js'
 
 export const SUBMODULE_PATH = 'target-repo'
 
@@ -41,10 +42,7 @@ function parseLanguages(langArg: string | undefined): string[] {
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-  if (langs.length === 0) {
-    throw new Error('At least one language is required (e.g. pl,en)')
-  }
-  return [...new Set(langs)]
+  return validateLanguages(langs)
 }
 
 export function parseInitArgs(opts: {
@@ -121,6 +119,7 @@ Do not commit provider-generated audio or API keys.
 export async function runInit(
   options: InitOptions,
 ): Promise<{ outDir: string; course: CourseJson }> {
+  const languages = validateLanguages(options.languages)
   const targetRepo = resolveTargetRepo(options.targetRepo)
   const pinnedCommit = readHeadCommit(targetRepo)
   const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
@@ -134,14 +133,14 @@ export async function runInit(
   const templateRoot = templatesDir()
   cpSync(templateRoot, outDir, { recursive: true })
 
-  writeLessonPlaceholders(outDir, options.languages)
+  writeLessonPlaceholders(outDir, languages)
   writeAudioTree(outDir)
 
   const course: CourseJson = {
     schemaVersion: 1,
     targetRepo,
     pinnedCommit,
-    languages: options.languages,
+    languages,
     referenceMode: options.submodule ? 'submodule' : 'pinned-path',
     submodulePath: options.submodule ? SUBMODULE_PATH : null,
   }

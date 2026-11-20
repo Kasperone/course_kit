@@ -3,7 +3,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
-import { PLANTUML_DISABLED_SERVER, runInit, SUBMODULE_PATH } from '../src/commands/init.js'
+import {
+  parseInitArgs,
+  PLANTUML_DISABLED_SERVER,
+  runInit,
+  SUBMODULE_PATH,
+} from '../src/commands/init.js'
 import { initRepoWithCommit } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
@@ -99,5 +104,38 @@ describe('course init', () => {
       { encoding: 'utf8' },
     ).trim()
     expect(subHead).toBe(pinned)
+  })
+})
+
+describe('course init input validation', () => {
+  it.each([['en,../../../escaped-lang'], ['en/x'], ['EN\ntitle: injected'], ['e'], [',']])(
+    'rejects --lang %j',
+    (lang) => {
+      expect(() => parseInitArgs({ target: '/tmp/x', lang })).toThrow(/language/)
+    },
+  )
+
+  it('accepts and normalises valid language codes', () => {
+    expect(parseInitArgs({ target: '/tmp/x', lang: ' PL, en ,pt-BR,en' }).languages).toEqual([
+      'pl',
+      'en',
+      'pt-br',
+    ])
+  })
+
+  it('runInit rejects traversal in languages and writes nothing outside the workspace', async () => {
+    const root = makeTempDir('init-lang')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    await expect(
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, 'ws'),
+        languages: ['en', '../../escaped'],
+        submodule: false,
+      }),
+    ).rejects.toThrow(/Invalid language code/)
+    expect(existsSync(path.join(root, 'escaped'))).toBe(false)
+    expect(existsSync(path.join(root, 'ws'))).toBe(false)
   })
 })
