@@ -135,10 +135,19 @@ describe('course init', () => {
       '.env.production',
       'keys/server.pem',
       'audio/local/clip.mp3',
+      'lessons/01-placeholder/context-pack.md',
+      'lessons/01-placeholder/context-pack.json',
     ]) {
       expect(ignored(rel), rel).toBe(true)
     }
-    for (const rel of ['.env.example', 'audio/local/.gitkeep', 'slides.md', 'course.json']) {
+    for (const rel of [
+      '.env.example',
+      'audio/local/.gitkeep',
+      'slides.md',
+      'course.json',
+      'lessons/01-placeholder/lesson.json',
+      'lessons/01-placeholder/en/slides.md',
+    ]) {
       expect(ignored(rel), rel).toBe(false)
     }
     expect(existsSync(path.join(outDir, 'gitignore'))).toBe(false)

@@ -23,6 +23,11 @@ npm install && npm run dev       # Slidev (step 3 will wire lessons)
 See `course init --help`, `course context --help`. Optional `--submodule` vendors the target repo under `target-repo/`.
 
 Context packs always read the target repo at the **pinned commit** in `course.json` (see [ADR 0002](docs/adr/0002-context-pack-format.md)).
+Edit `lessons/<id>/lesson.json` to choose sources: `files` are exact paths, `globs` are globs (quote them on the
+command line: `course context 02-invoices --files 'backend/src/**/*.java'`). Secret files (`.env*`, keys,
+credentials) are never embedded and secret-looking values are redacted; the pack's _Selection report_ lists
+everything that was skipped. `course.json` stores the target path relative to the workspace; on another machine
+set `COURSE_TARGET_REPO=/path/to/clone`.
 
 ## Licensing
 

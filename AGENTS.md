@@ -29,7 +29,9 @@ course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 
 - `tests/init.test.ts` — workspace scaffold, input validation, gitignore, portable paths, submodule mode, PlantUML guard.
 - `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it; checks `npm pack` contents.
-- `tests/context.test.ts` — pinned-commit packs, Java analyzer fallback, `lesson new`.
+- `tests/context.test.ts` — pinned-commit packs, Unicode paths, literal files, caps report, fence safety, Java/jdeps.
+- `tests/config.test.ts` — lesson id / course.json / lesson.json validation, submodule mode, `COURSE_TARGET_REPO`.
+- `tests/secrets.test.ts` — denylist and redaction against a hostile fixture repo.
 
 Always run lint and tests before pushing.
 
@@ -44,7 +46,8 @@ Always run lint and tests before pushing.
 - `.env` or real API keys (ElevenLabs, etc.)
 - Files under `audio/local/` or other generated narration
 - Secrets in `course.json` or lesson content
-- Generated audio; context packs _may_ be committed when useful for review (team choice)
+- Generated audio. Context packs are gitignored in workspaces; force-add one only after reviewing it (secrets are
+  denylisted and redacted, but that is a safety net)
 
 ## Generated course workspaces
 
@@ -55,5 +58,7 @@ PlantUML block (see ADR 0001).
 
 ## Context packs
 
-Build with `course context <id>`. Packs read the target repo via `git show <pinnedCommit>:path` — never assume an
-unchecked-out working tree. Extend `src/analyzers/` for language-specific graphs.
+Build with `course context <id>`. Packs read the target repo through `src/lib/git-commit.ts` only (`ls-tree -z`,
+`cat-file --batch`, full SHAs after `--end-of-options`) — never the working tree, never `git show`/shell. Validate
+any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content must go through
+`redactSecrets` and `fence()`. Extend `src/analyzers/` for language-specific graphs.
