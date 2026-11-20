@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 // Guard: Slidev renders ```plantuml blocks as <img> requests to `plantUmlServer`, which defaults to
 // https://www.plantuml.com and would send the diagram source off-machine. This workspace uses
-// Mermaid only; fail dev/build/export if any Markdown file contains a PlantUML block.
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+// Mermaid only; fail dev/build if any Markdown or Vue file contains a PlantUML block or uses the
+// <PlantUml> component. `course build` / `course dev` run the same check.
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
 const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*plantuml\b/im
+const COMPONENT = /<\s*plant-?uml\b/i
 
 function* markdownFiles(dir) {
-  for (const entry of readdirSync(dir)) {
-    if (SKIP.has(entry)) continue
-    const abs = path.join(dir, entry)
-    const st = statSync(abs)
-    if (st.isDirectory()) yield* markdownFiles(abs)
-    else if (entry.endsWith('.md')) yield abs
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (SKIP.has(entry.name)) continue
+    const abs = path.join(dir, entry.name)
+    // Symlinks are not followed.
+    if (entry.isDirectory()) yield* markdownFiles(abs)
+    else if (entry.isFile() && /\.(md|vue)$/i.test(entry.name)) yield abs
   }
 }
 
 const offenders = []
 for (const file of markdownFiles(root)) {
-  if (FENCE.test(readFileSync(file, 'utf8'))) offenders.push(path.relative(root, file))
+  const text = readFileSync(file, 'utf8')
+  if (FENCE.test(text) || COMPONENT.test(text)) offenders.push(path.relative(root, file))
 }
 
 if (offenders.length > 0) {

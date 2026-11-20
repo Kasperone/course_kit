@@ -99,7 +99,10 @@ describe('course init', () => {
     const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
     expect(pkg.scripts.predev).toContain('check:diagrams')
     expect(pkg.scripts.prebuild).toContain('check:diagrams')
-    expect(pkg.scripts.preexport).toContain('check:diagrams')
+    // Static build and live preview only: no PDF/PNG export and no Playwright dependency.
+    expect(pkg.scripts.export).toBeUndefined()
+    expect(pkg.scripts.preexport).toBeUndefined()
+    expect(JSON.stringify(pkg)).not.toMatch(/playwright/i)
 
     const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
     // Clean workspace passes.

@@ -3,6 +3,7 @@ import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
 import { runPin } from './commands/pin.js'
+import { runBuild, runDev } from './commands/slidev.js'
 import { packageVersion } from './lib/paths.js'
 
 const program = new Command()
@@ -114,6 +115,45 @@ program
       )
     } catch (err) {
       fail('pin', err)
+    }
+  })
+
+program
+  .command('build')
+  .description('Static Slidev build of lesson decks into dist/<lesson-id>/<lang>/')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lesson <id>', 'Build only this lesson')
+  .option('--lang <code>', 'Build only this language')
+  .action((opts: { cwd?: string; lesson?: string; lang?: string }) => {
+    try {
+      const result = runBuild({ cwd: opts.cwd, lesson: opts.lesson, lang: opts.lang })
+      for (const deck of result.decks) {
+        console.log(`Built ${deck.lessonId}/${deck.lang} -> ${deck.outDir}`)
+      }
+      console.log(`Index: ${result.index}`)
+      console.log(`Preview: cd ${result.courseDir} && npx vite preview --outDir dist`)
+    } catch (err) {
+      fail('build', err)
+    }
+  })
+
+program
+  .command('dev')
+  .description('Live preview of one lesson deck (Slidev dev server on localhost)')
+  .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lang <code>', 'Deck language (default: first language in course.json)')
+  .option('--port <n>', 'Dev server port', (v) => Number.parseInt(v, 10))
+  .action(async (lessonId: string, opts: { cwd?: string; lang?: string; port?: number }) => {
+    try {
+      process.exitCode = await runDev({
+        lesson: lessonId,
+        lang: opts.lang,
+        port: opts.port,
+        cwd: opts.cwd,
+      })
+    } catch (err) {
+      fail('dev', err)
     }
   })
 
