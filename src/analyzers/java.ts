@@ -1,107 +1,144 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { commandOnPath, readBlobAtCommit, readTextAtCommit } from '../lib/git-commit.js'
+import { fence } from '../lib/context-pack/markdown.js'
+import { FlowchartBuilder } from './mermaid.js'
 import type { AnalyzerContext, AnalyzerSection, RepoAnalyzer } from './types.js'
 
+/** Runs `jdeps -summary` on a local file; returns stdout or null if jdeps is unavailable/fails. */
+export type JdepsRunner = (file: string) => string | null
+
+let jdepsProbe: boolean | undefined
+
+function jdepsAvailable(): boolean {
+  if (jdepsProbe === undefined) {
+    try {
+      execFileSync('jdeps', ['-version'], { stdio: 'pipe' })
+      jdepsProbe = true
+    } catch {
+      jdepsProbe = false
+    }
+  }
+  return jdepsProbe
+}
+
+export const defaultJdepsRunner: JdepsRunner = (file) => {
+  if (!jdepsAvailable()) return null
+  try {
+    return execFileSync('jdeps', ['-summary', '-q', file], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch {
+    return null
+  }
+}
+
+/** Parse `jdeps -summary` lines such as `app.jar -> java.base`. */
+export function parseJdepsSummary(output: string): Array<[string, string]> {
+  const edges: Array<[string, string]> = []
+  for (const line of output.split('\n')) {
+    const m = line.match(/^\s*(\S.*?)\s+->\s+(\S.*?)\s*$/)
+    if (m) edges.push([m[1]!, m[2]!])
+  }
+  return edges
+}
+
+const JAVA_BUILD_FILES = /(^|\/)(pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?)$/
+
 function hasJavaSignals(ctx: AnalyzerContext): boolean {
-  return ctx.selectedPaths.some(
-    (p) => p.endsWith('.java') || p === 'pom.xml' || p.endsWith('/pom.xml') || p === 'build.gradle',
+  return (
+    ctx.artifacts.length > 0 ||
+    ctx.selectedPaths.some((p) => p.endsWith('.java') || JAVA_BUILD_FILES.test(p))
   )
 }
 
-function jarOrClassPaths(paths: string[]): string[] {
-  return paths.filter((p) => p.endsWith('.jar') || p.endsWith('.class'))
+/**
+ * Package of an import target: segments before the first capitalised segment (the class), so
+ * `a.b.C`, `a.b.C.Inner`, `static a.b.C.m` and `a.b.C.*` all map to `a.b`; `a.b.*` maps to `a.b`.
+ */
+export function importedPackage(name: string, wildcard: boolean, isStatic: boolean): string {
+  const segs = name.split('.')
+  const firstClass = segs.findIndex((s) => /^[A-Z]/.test(s))
+  if (firstClass > 0) return segs.slice(0, firstClass).join('.')
+  if (wildcard) return isStatic ? segs.slice(0, -1).join('.') : name
+  return segs.slice(0, isStatic ? -2 : -1).join('.')
 }
 
-function runJdepsMermaid(repo: string, commit: string, artifactPaths: string[]): string | null {
-  if (!commandOnPath('jdeps')) return null
-  const edges = new Set<string>()
-  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'course-kit-jdeps-'))
-  try {
-    for (const rel of artifactPaths.slice(0, 5)) {
-      const blob = readBlobAtCommit(repo, commit, rel)
-      if (!blob) continue
-      const local = path.join(tmpDir, path.basename(rel))
-      writeFileSync(local, blob)
-      try {
-        const summary = execFileSync('jdeps', ['-summary', '-q', local], {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        })
-        for (const line of summary.split('\n')) {
-          const m = line.match(/^(.+?)\s+->\s+(.+)$/)
-          if (m) edges.add(`  ${sanitizeId(m[1]!)} --> ${sanitizeId(m[2]!)}`)
-        }
-      } catch {
-        // try next artifact
+const PACKAGE_RE = /^\s*package\s+([\w.]+)\s*;/
+const IMPORT_RE = /^\s*import\s+(static\s+)?([\w.]+?)(\.\*)?\s*;/
+
+export function packageImportGraph(ctx: AnalyzerContext): FlowchartBuilder {
+  const graph = new FlowchartBuilder()
+  for (const file of ctx.selectedPaths.filter((p) => p.endsWith('.java'))) {
+    const text = ctx.readText(file)
+    if (!text) continue
+    let pkg = '(default package)'
+    const imports: string[] = []
+    for (const line of text.split('\n')) {
+      const p = line.match(PACKAGE_RE)
+      if (p) pkg = p[1]!
+      const m = line.match(IMPORT_RE)
+      if (m) {
+        const target = importedPackage(m[2]!, Boolean(m[3]), Boolean(m[1]))
+        if (target) imports.push(target)
       }
     }
+    graph.node(pkg)
+    for (const target of imports) graph.edge(pkg, target)
+  }
+  return graph
+}
+
+function jdepsGraph(ctx: AnalyzerContext, runJdeps: JdepsRunner): FlowchartBuilder | null {
+  if (ctx.artifacts.length === 0) return null
+  const graph = new FlowchartBuilder()
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'course-kit-jdeps-'))
+  try {
+    ctx.artifacts.forEach((artifact, i) => {
+      const blob = artifact.read()
+      if (!blob) return
+      // Index prefix keeps same-named artifacts from different directories apart.
+      const local = path.join(tmpDir, `${i}-${path.posix.basename(artifact.path)}`)
+      writeFileSync(local, blob)
+      const out = runJdeps(local)
+      if (!out) return
+      for (const [from, to] of parseJdepsSummary(out)) {
+        // Replace the temp file name with the repo path in the graph.
+        graph.edge(from === path.basename(local) ? artifact.path : from, to)
+      }
+    })
   } finally {
     rmSync(tmpDir, { recursive: true, force: true })
   }
-  if (edges.size === 0) return null
-  return ['flowchart LR', ...edges].join('\n')
+  return graph.isEmpty ? null : graph
 }
 
-function sanitizeId(s: string): string {
-  return s.replace(/[^a-zA-Z0-9_]/g, '_')
-}
-
-function packageImportGraph(ctx: AnalyzerContext): string {
-  const packages = new Map<string, Set<string>>()
-  const javaFiles = ctx.selectedPaths.filter((p) => p.endsWith('.java'))
-  for (const file of javaFiles) {
-    const text = ctx.readText(file) ?? readTextAtCommit(ctx.targetRepo, ctx.pinnedCommit, file)
-    if (!text) continue
-    let pkg = '(default)'
-    for (const line of text.split('\n')) {
-      const pkgMatch = line.match(/^\s*package\s+([\w.]+)\s*;/)
-      if (pkgMatch) pkg = pkgMatch[1]!
-      const impMatch = line.match(/^\s*import\s+(?:static\s+)?([\w.]+)\.\w+\s*;/)
-      if (impMatch) {
-        const targetPkg = impMatch[1]!
-        if (!packages.has(pkg)) packages.set(pkg, new Set())
-        packages.get(pkg)!.add(targetPkg)
+export function createJavaAnalyzer(runJdeps: JdepsRunner = defaultJdepsRunner): RepoAnalyzer {
+  return {
+    id: 'java',
+    detect: hasJavaSignals,
+    analyze: async (ctx): Promise<AnalyzerSection | null> => {
+      let method = 'package-import graph (sources)'
+      let graph = jdepsGraph(ctx, runJdeps)
+      if (graph) {
+        method = `jdeps (${ctx.artifacts.length} compiled artifact(s) in selection)`
+      } else {
+        graph = packageImportGraph(ctx)
       }
-    }
+      const mermaid = graph.isEmpty
+        ? 'flowchart LR\n  empty["No Java packages parsed"]'
+        : graph.render('LR')
+      return {
+        analyzerId: 'java',
+        title: 'Java module / package graph',
+        markdown: [`Java module view (**${method}**).`, '', fence(mermaid, 'mermaid'), ''].join(
+          '\n',
+        ),
+      }
+    },
   }
-  const lines = ['flowchart LR']
-  for (const [from, targets] of packages) {
-    for (const to of targets) {
-      lines.push(`  ${sanitizeId(from)} --> ${sanitizeId(to)}`)
-    }
-  }
-  return lines.length > 1 ? lines.join('\n') : 'flowchart LR\n  empty[No Java imports parsed]'
 }
 
-export const javaAnalyzer: RepoAnalyzer = {
-  id: 'java',
-  detect: hasJavaSignals,
-  analyze: async (ctx): Promise<AnalyzerSection | null> => {
-    const jars = jarOrClassPaths(ctx.selectedPaths)
-    let mermaid = jars.length > 0 ? runJdepsMermaid(ctx.targetRepo, ctx.pinnedCommit, jars) : null
-    let method = 'package-import graph (sources)'
-    if (mermaid) {
-      method = 'jdeps (compiled artifacts in selection)'
-    } else {
-      mermaid = packageImportGraph(ctx)
-    }
-
-    const markdown = [
-      `Java module view (**${method}**).`,
-      '',
-      '```mermaid',
-      mermaid,
-      '```',
-      '',
-    ].join('\n')
-
-    return {
-      analyzerId: 'java',
-      title: 'Java module / package graph',
-      markdown,
-    }
-  },
-}
+export const javaAnalyzer = createJavaAnalyzer()

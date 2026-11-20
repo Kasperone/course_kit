@@ -2,13 +2,14 @@ import { Command } from 'commander'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
+import { packageVersion } from './lib/paths.js'
 
 const program = new Command()
 
 program
   .name('course')
   .description('Create and manage browser courses from code repositories')
-  .version('0.2.0')
+  .version(packageVersion())
 
 program
   .command('init')
@@ -61,7 +62,10 @@ program
   .command('context')
   .description('Build a context pack for a lesson from the pinned target commit')
   .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
-  .option('--files <glob...>', 'Additional file globs to include')
+  .option(
+    '--files <glob...>',
+    'Additional globs matched against the target repo (quote them; put <lesson-id> first)',
+  )
   .option('--out <file>', 'Output Markdown path (default: lessons/<id>/context-pack.md)')
   .option('--json', 'Also write lessons/<id>/context-pack.json metadata', false)
   .action(async (lessonId: string, opts: { files?: string[]; out?: string; json?: boolean }) => {
@@ -72,6 +76,7 @@ program
         out: opts.out,
         json: Boolean(opts.json),
       })
+      for (const warning of meta.warnings) console.error(`warning: ${warning}`)
       console.log(`Wrote context pack for ${lessonId}`)
       console.log(
         `Files: ${meta.selectedFiles.length}, ~${meta.tokenEstimate} tokens, analyzers: ${
