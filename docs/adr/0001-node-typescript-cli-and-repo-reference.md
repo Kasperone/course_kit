@@ -27,10 +27,15 @@ published CLI lean while pushing Slidev weight into the per-course `package.json
 
 Two modes:
 
-| Mode                      | Flag          | Behaviour                                                                                                                                                      |
-| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Pinned path** (default) | _(none)_      | `course.json` stores absolute `targetRepo` path and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                                       |
-| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`. `course.json` sets `referenceMode: "submodule"`. |
+| Mode                      | Flag          | Behaviour                                                                                                                                                            |
+| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pinned path** (default) | _(none)_      | `course.json` stores `targetRepo` as a path **relative to the workspace** and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                   |
+| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`, then rewrites the `.gitmodules` URL to a portable one. |
+
+No committed file contains a machine-specific absolute path: `course.json` also records
+`targetRemote` (the target's network `origin` URL with credentials stripped, or `null`), and
+`.gitmodules` uses `targetRemote` when available, otherwise the relative path. On another machine,
+set `COURSE_TARGET_REPO` to point at a local clone.
 
 Default is **pinned path only**: cheapest, no nested git setup, sufficient for local courses where
 the target repo path is stable. Submodule is optional for teams that want the target tree vendored
@@ -38,8 +43,18 @@ inside the course repo.
 
 ### Diagrams
 
-PlantUML is **disabled** in generated `slidev.config.ts` (`plantuml: false`). Lesson templates use
-Mermaid only, avoiding Slidev's default behaviour of sending PlantUML source to plantuml.com.
+Mermaid only. Slidev (checked against 51.8.2) has no switch to turn PlantUML off: it always turns
+` ```plantuml ` blocks into `<img src="${plantUmlServer}/svg/<encoded source>">`, and
+`plantUmlServer` defaults to `https://www.plantuml.com/plantuml`. Slidev does not read a
+`slidev.config.ts` file. The workspace therefore uses two layers:
+
+1. **Headmatter:** every generated deck (`slides.md` and each lesson `slides.md`) sets
+   `plantUmlServer: 'data:text/plain,plantuml-disabled'`, so a stray PlantUML block becomes a
+   local no-op instead of a network request.
+2. **Guard:** `scripts/check-no-plantuml.mjs` runs as `predev`, `prebuild` and `preexport` and fails
+   if any Markdown file in the workspace contains a PlantUML fence.
+
+Re-check both when upgrading Slidev.
 
 ## Consequences
 

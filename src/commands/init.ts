@@ -1,20 +1,38 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import {
   addSubmodule,
   checkoutSubmoduleCommit,
   initGitRepo,
   readHeadCommit,
+  readShareableRemote,
   resolveTargetRepo,
 } from '../lib/git.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
+import { validateLanguages } from '../lib/validate.js'
 
 export const SUBMODULE_PATH = 'target-repo'
 
+export { PLANTUML_DISABLED_SERVER } from '../lib/slidev.js'
+
 export type CourseJson = {
   schemaVersion: 1
+  /**
+   * Path to the target repository, relative to the workspace directory (POSIX separators), so the
+   * file never contains a machine-specific absolute path. Override locally with COURSE_TARGET_REPO.
+   */
   targetRepo: string
+  /** The target's network `origin` URL without credentials, if any (informational). */
+  targetRemote: string | null
   pinnedCommit: string
   languages: string[]
   referenceMode: 'pinned-path' | 'submodule'
@@ -35,10 +53,7 @@ function parseLanguages(langArg: string | undefined): string[] {
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
-  if (langs.length === 0) {
-    throw new Error('At least one language is required (e.g. pl,en)')
-  }
-  return [...new Set(langs)]
+  return validateLanguages(langs)
 }
 
 export function parseInitArgs(opts: {
@@ -87,9 +102,26 @@ Do not commit provider-generated audio or API keys.
   )
 }
 
+/** Env var that overrides course.json `targetRepo` on this machine (absolute or cwd-relative). */
+export const TARGET_REPO_ENV = 'COURSE_TARGET_REPO'
+
+/** Resolve course.json `targetRepo` (relative to the workspace) to an absolute path. */
+export function resolveCourseTargetRepo(courseDir: string, targetRepo: string): string {
+  const override = process.env[TARGET_REPO_ENV]
+  if (override) return path.resolve(override)
+  return path.resolve(courseDir, targetRepo)
+}
+
+function relativeTargetPath(outDir: string, targetRepo: string): string {
+  const rel = path.relative(outDir, targetRepo)
+  // On Windows a different drive yields an absolute path; nothing portable is possible then.
+  return path.isAbsolute(rel) ? rel : rel.split(path.sep).join('/') || '.'
+}
+
 export async function runInit(
   options: InitOptions,
 ): Promise<{ outDir: string; course: CourseJson }> {
+  const languages = validateLanguages(options.languages)
   const targetRepo = resolveTargetRepo(options.targetRepo)
   const pinnedCommit = readHeadCommit(targetRepo)
   const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
@@ -98,31 +130,49 @@ export async function runInit(
     throw new Error(`Output directory already exists and is not empty: ${outDir}`)
   }
 
+  const existedBefore = existsSync(outDir)
   mkdirSync(outDir, { recursive: true })
 
-  const templateRoot = templatesDir()
-  cpSync(templateRoot, outDir, { recursive: true })
+  try {
+    const templateRoot = templatesDir()
+    cpSync(templateRoot, outDir, { recursive: true })
+    // npm never packs files named .gitignore, so the template ships it as `gitignore`.
+    renameSync(path.join(outDir, 'gitignore'), path.join(outDir, '.gitignore'))
 
-  writeLessonPlaceholders(outDir, options.languages)
-  writeAudioTree(outDir)
+    writeLessonPlaceholders(outDir, languages)
+    writeAudioTree(outDir)
 
-  const course: CourseJson = {
-    schemaVersion: 1,
-    targetRepo,
-    pinnedCommit,
-    languages: options.languages,
-    referenceMode: options.submodule ? 'submodule' : 'pinned-path',
-    submodulePath: options.submodule ? SUBMODULE_PATH : null,
+    const targetRel = relativeTargetPath(outDir, targetRepo)
+    const targetRemote = readShareableRemote(targetRepo)
+    const course: CourseJson = {
+      schemaVersion: 1,
+      targetRepo: targetRel,
+      targetRemote,
+      pinnedCommit,
+      languages,
+      referenceMode: options.submodule ? 'submodule' : 'pinned-path',
+      submodulePath: options.submodule ? SUBMODULE_PATH : null,
+    }
+    writeCourseJson(outDir, course)
+
+    if (options.submodule) {
+      initGitRepo(outDir)
+      addSubmodule(outDir, targetRepo, SUBMODULE_PATH, targetRemote ?? targetRel)
+      checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
+    }
+
+    return { outDir, course }
+  } catch (err) {
+    // Do not leave a half-written workspace behind; it would block a re-run.
+    if (existedBefore) {
+      for (const entry of readdirSync(outDir)) {
+        rmSync(path.join(outDir, entry), { recursive: true, force: true })
+      }
+    } else {
+      rmSync(outDir, { recursive: true, force: true })
+    }
+    throw err
   }
-  writeCourseJson(outDir, course)
-
-  if (options.submodule) {
-    initGitRepo(outDir)
-    addSubmodule(outDir, targetRepo, SUBMODULE_PATH)
-    checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
-  }
-
-  return { outDir, course }
 }
 
 function requireNotEmpty(dir: string): boolean {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import type { CourseJson } from '../commands/init.js'
+import { resolveCourseTargetRepo, type CourseJson } from '../commands/init.js'
 
 export type Workspace = {
   courseDir: string
@@ -19,7 +19,11 @@ export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
   if (!course.targetRepo || !course.pinnedCommit) {
     throw new Error('Invalid course.json: targetRepo and pinnedCommit are required')
   }
-  return { courseDir, course }
+  // course.json stores targetRepo relative to the workspace; resolve it for in-process use.
+  return {
+    courseDir,
+    course: { ...course, targetRepo: resolveCourseTargetRepo(courseDir, course.targetRepo) },
+  }
 }
 
 export function lessonDir(courseDir: string, lessonId: string): string {

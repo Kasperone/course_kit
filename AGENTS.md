@@ -27,7 +27,8 @@ course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 
 ## Tests
 
-- `tests/init.test.ts` — workspace scaffold and submodule mode.
+- `tests/init.test.ts` — workspace scaffold, input validation, gitignore, portable paths, submodule mode, PlantUML guard.
+- `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it; checks `npm pack` contents.
 - `tests/context.test.ts` — pinned-commit packs, Java analyzer fallback, `lesson new`.
 
 Always run lint and tests before pushing.
@@ -48,7 +49,9 @@ Always run lint and tests before pushing.
 ## Generated course workspaces
 
 Templates live in `templates/workspace/`. Lessons use `lessons/<id>/lesson.json` plus per-language `slides.md`.
-Context packs are written next to the lesson. Mermaid only; PlantUML off in `slidev.config.ts`.
+Context packs are written next to the lesson. Mermaid only: Slidev cannot disable PlantUML, so every deck
+sets `plantUmlServer` to a `data:` URL and `scripts/check-no-plantuml.mjs` fails `dev`/`build`/`export` on any
+PlantUML block (see ADR 0001).
 
 ## Context packs
 

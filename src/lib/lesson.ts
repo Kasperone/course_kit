@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { deckFrontmatter } from './slidev.js'
 
 export type LessonJson = {
   schemaVersion: 1
@@ -46,11 +47,7 @@ export function writePlaceholderSlides(lessonRoot: string, id: string, languages
     const title = lang === 'pl' ? `Lekcja: ${id}` : `Lesson: ${id}`
     writeFileSync(
       path.join(dir, 'slides.md'),
-      `---
-theme: default
-title: ${title}
-lang: ${lang}
----
+      `${deckFrontmatter({ title, lang })}
 
 # ${title}
 

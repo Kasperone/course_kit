@@ -1,16 +1,16 @@
-Creative Commons Attribution 4.0 International (CC BY 4.0)
+Lesson content license notice
 
-Copyright (c) 2025 Kasperone
+Copyright (c) 2026 Kasperone
 
-You are free to:
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material for any purpose, even commercially
+Lesson text, slide text and narration scripts in course workspaces created with course_kit
+(the `lessons/` directory of a workspace) are licensed under the Creative Commons Attribution 4.0
+International License (CC BY 4.0), unless a lesson states otherwise.
 
-Under the following terms:
-- Attribution — You must give appropriate credit, provide a link to the license, and
-  indicate if changes were made.
+To view a copy of this license, visit https://creativecommons.org/licenses/by/4.0/
+Full legal code: https://creativecommons.org/licenses/by/4.0/legalcode
 
-Full license: https://creativecommons.org/licenses/by/4.0/legalcode
-
-This license applies to lesson slide text and narrative content under `lessons/`.
-It does not apply to generated audio (see README) or to software in this repository (MIT).
+This notice does not cover:
+- the course_kit software (MIT, see LICENSE);
+- generated narration audio, which must stay in `audio/local/` and is not licensed for
+  redistribution;
+- source code quoted from the target repository, which keeps its own license.
