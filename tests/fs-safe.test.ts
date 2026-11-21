@@ -51,5 +51,4 @@ describe('symlink-safe workspace writes', () => {
     symlinkSync(elsewhere, path.join(workspace, 'lessons'))
     expect(() => runLessonNew({ lessonId: '02-x', cwd: workspace })).toThrow(/symlink/)
   })
-
 })

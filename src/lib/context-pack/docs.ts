@@ -1,4 +1,4 @@
-import { fence, inlineCode } from './markdown.js'
+import { fence, inlineCode, numberedExcerpt } from './markdown.js'
 
 export const DOC_CANDIDATES = ['README.md', 'readme.md', 'AGENTS.md', 'CLAUDE.md']
 
@@ -22,10 +22,11 @@ export function buildDocExcerpts(docs: DocInput[], maxLines: number): string {
       continue
     }
     if (!doc.text) continue
-    const all = doc.text.split('\n')
-    const lines = all.slice(0, maxLines)
-    sections.push(`### ${inlineCode(doc.path)}`, '', fence(lines.join('\n'), 'markdown'))
-    if (lines.length < all.length) sections.push(`_… first ${maxLines} lines shown._`)
+    // Line-numbered like selected sources, so a doc's own fences (e.g. a PlantUML block) never
+    // start at column 0 of the pack.
+    const { text, truncated } = numberedExcerpt(doc.text, maxLines)
+    sections.push(`### ${inlineCode(doc.path)}`, '', fence(text))
+    if (truncated > 0) sections.push(`_… first ${maxLines} lines shown._`)
     sections.push('')
   }
   if (sections.length === 0) {

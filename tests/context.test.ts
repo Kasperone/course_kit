@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createJavaAnalyzer, importedPackage, parseJdepsSummary } from '../src/analyzers/java.js'
@@ -9,7 +10,7 @@ import { buildContextPack } from '../src/lib/context-pack/build.js'
 import { readLessonJson, writeLessonJson, type LessonJson } from '../src/lib/lesson.js'
 import { resolveWorkspace } from '../src/lib/workspace.js'
 import { makeWorkspace, writeJavaSampleRepo } from './helpers/fixture-repo.js'
-import { commitAll, initRepo, writeFiles } from './helpers/git.js'
+import { commitAll, git, initRepo, writeFiles } from './helpers/git.js'
 
 const LESSON = '01-placeholder'
 
@@ -22,11 +23,11 @@ function readPack(workspace: string): string {
   return readFileSync(path.join(workspace, 'lessons', LESSON, 'context-pack.md'), 'utf8')
 }
 
-/** Headings outside fenced code blocks (CommonMark fence rules). */
+/** Headings outside fenced code blocks (CommonMark fence rules; \n, \r\n and \r end a line). */
 function structuralHeadings(md: string): string[] {
   const headings: string[] = []
   let open: { ch: string; len: number } | null = null
-  for (const line of md.split('\n')) {
+  for (const line of md.split(/\r\n|\r|\n/)) {
     const f = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
     if (open) {
       if (f && f[1]![0] === open.ch && f[1]!.length >= open.len && f[2]!.trim() === '') open = null
@@ -170,6 +171,91 @@ describe('course context', () => {
       '## Language-specific analysis',
       '## Size estimate',
     ])
+  })
+
+  it('keeps control characters in file names and commit subjects out of the pack structure', async () => {
+    const fx = await makeWorkspace((dir) => {
+      initRepo(dir)
+      writeFiles(dir, {
+        'src/x\r## INJECTED-CR': 'a\n',
+        'src/y\n## INJECTED-LF': 'b\n',
+      })
+      git(dir, ['add', '-A'])
+      git(dir, ['commit', '-q', '-m', 'subject\r## INJECTED-LOG'])
+      return git(dir, ['rev-parse', 'HEAD']).trim()
+    })
+    setLesson(fx.workspace, { globs: ['src/**'] })
+    await runContext({ lessonId: LESSON, cwd: fx.workspace })
+    const md = readPack(fx.workspace)
+    expect(structuralHeadings(md).filter((h) => /^#+ INJECTED/.test(h))).toEqual([])
+    expect(md).toContain('`src/x\\r## INJECTED-CR`')
+    // Only \t and \n may appear raw (inside fences); no other control character reaches the pack.
+    // eslint-disable-next-line no-control-regex
+    expect(md).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]/)
+  })
+
+  it('a PlantUML block in a target README does not trip the workspace PlantUML guard', async () => {
+    const fx = await makeWorkspace((dir) => {
+      initRepo(dir)
+      writeFiles(dir, {
+        'README.md': '# Target\n\n```plantuml\n@startuml\nA -> B\n@enduml\n```\n',
+        'src/app.ts': 'export const x = 1\n',
+      })
+      return commitAll(dir, 'readme with plantuml')
+    })
+    // README is not a selected source, so it lands in "Project docs (excerpts)".
+    setLesson(fx.workspace, { globs: ['src/**'] })
+    await runContext({ lessonId: LESSON, cwd: fx.workspace })
+    const guard = path.join(fx.workspace, 'scripts', 'check-no-plantuml.mjs')
+    execFileSync(process.execPath, [guard, fx.workspace], { stdio: 'pipe' })
+    expect(readPack(fx.workspace)).toContain('     3|```plantuml')
+  })
+
+  it('redacts secrets in commit subjects and counts them in the report', async () => {
+    const token = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+    const fx = await makeWorkspace((dir) => {
+      initRepo(dir)
+      writeFiles(dir, { 'src/app.ts': 'export const x = 1\n' })
+      return commitAll(dir, `rotate key ${token}`)
+    })
+    setLesson(fx.workspace, { globs: ['src/**'] })
+    const meta = await runContext({ lessonId: LESSON, json: true, cwd: fx.workspace })
+    const md = readPack(fx.workspace)
+    expect(md).not.toContain(token)
+    expect(md).toContain('rotate key')
+    expect(meta.redactions).toContainEqual(expect.objectContaining({ path: '(git log)', count: 1 }))
+  })
+
+  it('reports symlinks, gitlinks and binary-by-content files as skipped, never as embedded', async () => {
+    const fx = await makeWorkspace((dir) => {
+      initRepo(dir)
+      writeFiles(dir, {
+        'src/app.ts': 'export const a = 1\n',
+        'src/blob.ts': Buffer.from([0x61, 0x00, 0x62]),
+      })
+      symlinkSync('../src/app.ts', path.join(dir, 'test-link.ts'))
+      mkdirSync(path.join(dir, 'test'))
+      symlinkSync('../src/app.ts', path.join(dir, 'test', 'app.test.ts'))
+      git(dir, ['add', '-A'])
+      const sha = commitAll(dir, 'files')
+      git(dir, ['update-index', '--add', '--cacheinfo', `160000,${sha},vendor/lib`])
+      git(dir, ['commit', '-q', '-m', 'gitlink'])
+      return git(dir, ['rev-parse', 'HEAD']).trim()
+    })
+    setLesson(fx.workspace, { globs: ['src/**', 'vendor/**', 'test-link.ts'] })
+    const meta = await runContext({ lessonId: LESSON, json: true, cwd: fx.workspace })
+    const reasons = Object.fromEntries(meta.skipped.map((s) => [s.path, s.reason]))
+    expect(reasons).toEqual({
+      'src/blob.ts': 'binary',
+      'test-link.ts': 'symlink',
+      'test/app.test.ts': 'symlink',
+      'vendor/lib': 'submodule',
+    })
+    expect(meta.selectedFiles).toEqual(['src/app.ts'])
+    expect(meta.relatedTests).toEqual([])
+    const md = readPack(fx.workspace)
+    expect(md).toContain('embedded **1** selected file(s) and **0** related test(s)')
+    expect(md).not.toContain('### `src/blob.ts`')
   })
 
   it('does not embed README twice when it is a selected source', async () => {
