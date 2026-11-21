@@ -4,8 +4,9 @@ Turn any code repository into an interactive, narrated browser course (Slidev de
 authored together with a coding agent. Point `course` at a repo; it creates a separate workspace pinned to a
 commit of that target. Runs locally only — no GitHub Pages.
 
-**Status:** early WIP (step 4: narration with `course narrate` (Piper offline or ElevenLabs), an in-deck
-player, and the Polish version of the first real lesson in
+**Status:** early WIP (step 5: a Q&A chat panel next to every lesson deck, answered by Claude through a
+local backend on 127.0.0.1 and grounded in the lesson's context pack and slides; step 4 added narration
+with `course narrate` and the Polish version of the first real lesson in
 [`examples/faktura`](examples/faktura/lessons/01-architecture/pl/slides.md)).
 
 ## Quickstart
@@ -30,16 +31,19 @@ course pin                           # pinnedCommit: <old> -> <new>; or `course 
 course context 02-invoices
 
 # 4. Preview and build the decks
-course dev 02-invoices --lang en     # live preview on localhost
+course dev 02-invoices --lang en     # live preview on localhost, with the Q&A chat
 course build                         # dist/<lesson>/<lang>/ + dist/index.html
-npx vite preview --outDir dist       # serve dist/ at http://localhost:4173
+course serve                         # decks + Q&A chat at http://127.0.0.1:8787/
 
 # 5. Narrate: one clip per slide/click step of the speaker notes (see "Narration")
 course narrate 02-invoices --lang all          # Piper, offline; audio/local/<lang>/02-invoices/
 course build                                   # copies the clips next to the decks
+
+# 6. Q&A chat (see "Q&A chat"): put ANTHROPIC_API_KEY in .env, then course serve / course dev
+course ask 02-invoices --dry-run               # prompt size and cost estimate, no key needed
 ```
 
-See `course <command> --help`. `pin`, `build` and `dev` accept `-C <workspace>`. Optional
+See `course <command> --help`. `pin`, `build`, `dev`, `serve`, `ask` and `narrate` accept `-C <workspace>`. Optional
 `--submodule` on `init` vendors the target repo under `target-repo/`; `course pin` then moves that
 checkout too.
 
@@ -57,8 +61,8 @@ Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0
 - it turns off Slidev's browser exporter (no `/export` page in `course dev`) and the PDF download.
 
 `course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
-PlantUML, or if a file references a web-font CDN. The build fails if its output references plantuml.com or a
-font CDN. `course build` does not need the target repo.
+PlantUML, or if a file references a web-font CDN. The build fails if its output references plantuml.com, a
+font CDN, a provider API host or one of the workspace's API keys. `course build` does not need the target repo.
 
 ## Narration
 
@@ -124,6 +128,70 @@ either deck). Nothing plays until you turn it on; a missing clip shows a dimmed 
 works in `course dev` and in `course build` output (`--no-narration` skips copying the clips), and
 it only loads files from the same origin.
 
+## Q&A chat
+
+Every lesson deck has an **Ask** button (the workspace's `addons/chat` Slidev addon). It opens a side
+panel where the learner asks about the lesson; answers stream in, in the deck's language. See
+[ADR 0005](docs/adr/0005-local-qa-backend-and-chat.md).
+
+```bash
+cp .env.example .env && chmod 600 .env   # then fill in ANTHROPIC_API_KEY=… (never committed)
+course context 01-architecture           # the chat needs the lesson's context pack
+course build && course serve             # http://127.0.0.1:8787/ (or: course dev 01-architecture)
+course ask 01-architecture "Why is the session cookie HttpOnly?" --lang pl   # same answers in the terminal
+```
+
+- **Grounded, no RAG.** Each question sends the lesson's whole context pack plus the deck's slides
+  and speaker notes (one cached prompt prefix, ~23k tokens for faktura lesson 01), the slide the
+  learner is on, the question and the last few turns. Answers cite `path:line` and "slide N"; a
+  slide reference in the panel jumps to that slide.
+- **Sources are marked.** Questions about the lesson's subject (the repo, Java, Spring, security,
+  architecture, tooling) are answered; any part not backed by the lesson materials is shown under
+  **Not from this lesson**. Unrelated questions get a short redirect.
+- **Local backend only.** `course serve` (built decks) and `course dev` (live preview) run the
+  backend inside course_kit, bound to `127.0.0.1`. The deck only calls the same-origin path
+  `/@course-chat/v1/`; it never sees a key and never calls a provider. The backend accepts only
+  loopback `Host` headers and requests from the page's own origin, caps request sizes, and allows 6
+  questions a minute, 200 a day and one at a time. Logs hold timings and token counts, never
+  questions, answers or keys.
+- **Without a key** (or offline, or without a context pack) the panel says what is missing and
+  the deck keeps working. Opening `dist/` with any other static server shows "run `course serve`".
+- **Privacy.** Questions and the lesson materials (including the code quoted in the pack) go to
+  Anthropic. Secrets were already denylisted and redacted when the pack was built.
+
+**Model and settings.** The default model is `claude-sonnet-5-5` at effort `low`. Choose another with
+`--model` (on `serve`, `dev` and `ask`), the `COURSE_CHAT_MODEL` environment variable, or
+`course.json`; the flag wins, then the variable, then `course.json`:
+
+```json
+"chat": {
+  "model": "claude-opus-5-5",
+  "effort": "low",
+  "maxOutputTokens": 8000,
+  "maxPackTokens": 60000,
+  "historyTurns": 6,
+  "cacheTtl": "5m",
+  "refusalFallback": true,
+  "rateLimit": { "perMinute": 6, "perDay": 200, "concurrent": 1 },
+  "port": 8787,
+  "enabled": true
+}
+```
+
+Estimated cost per question for faktura lesson 01 (from `course ask --dry-run`, ~1k output tokens;
+"cached" means within 5 minutes of the previous question):
+
+| Model                         | First question | Cached  |
+| ----------------------------- | -------------- | ------- |
+| `claude-sonnet-5-5` (default) | ~$0.07         | ~$0.015 |
+| `claude-opus-5-5`             | ~$0.14         | ~$0.025 |
+| `claude-haiku-5-5`            | ~$0.004        | ~$0.001 |
+
+`refusalFallback` lets the API retry a declined answer on another model (Opus/Sonnet 5.5 only).
+Voice input is designed but not implemented yet. Step-4 workspaces get the panel after copying
+`addons/chat`, adding `"slidev-addon-course-chat": "file:addons/chat"` and `"course-chat"` to
+`package.json` (`devDependencies`, `slidev.addons`) and running `npm install`.
+
 ### Example
 
 [`examples/faktura`](examples/faktura) is a real workspace for the
@@ -134,6 +202,7 @@ slides, sources on every slide, speaker notes per click, 57 narration steps per 
 npm ci --prefix examples/faktura
 node dist/cli.js narrate 01-architecture -C examples/faktura --lang all   # optional; needs Piper + voices
 node dist/cli.js build -C examples/faktura
+node dist/cli.js serve -C examples/faktura     # http://127.0.0.1:8787/ (chat needs the pack + key)
 ```
 
 Building the decks needs nothing else. `course context` and `course pin` for the example read the faktura repo
@@ -155,6 +224,7 @@ node ../../dist/cli.js context 01-architecture   # or: COURSE_TARGET_REPO=/path/
 | Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT` |
 | Generated audio                               | Never committed (`audio/local/`, gitignored); voice licences in `audio/ATTRIBUTION.md`  |
 | Piper (external TTS program, not bundled)     | GPL-3.0-or-later; installed by the user, run as a separate process                      |
+| Chat answers                                  | Never stored; shown in the panel or the terminal only                                   |
 
 ## Docs
 
@@ -162,4 +232,5 @@ node ../../dist/cli.js context 01-architecture   # or: COURSE_TARGET_REPO=/path/
 - [ADR 0002 — context-pack format](docs/adr/0002-context-pack-format.md)
 - [ADR 0003 — Slidev build and live preview](docs/adr/0003-slidev-build-and-dev.md)
 - [ADR 0004 — narration: per-click clips, TTS adapters, cache, licences](docs/adr/0004-narration-tts-adapters.md)
+- [ADR 0005 — local Q&A backend and chat panel](docs/adr/0005-local-qa-backend-and-chat.md)
 - [AGENTS.md](AGENTS.md) — conventions for coding agents in this repo
