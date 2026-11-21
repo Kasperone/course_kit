@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runBuild, slidevBin } from '../src/commands/slidev.js'
 import {
   deckFrontmatter,
@@ -14,8 +14,8 @@ import {
 /**
  * Real Slidev builds against the committed example workspace. Runs only when its dependencies are
  * installed (`npm ci --prefix examples/faktura`, done by the CI `deck` job); skipped otherwise.
- * Each policy (PlantUML server, system fonts, no browser exporter) is checked together with a
- * negative control that shows what Slidev does without it.
+ * Each policy (PlantUML server, system fonts, data: favicon, no browser exporter, no MCP server) is
+ * checked with a negative control that shows what Slidev does without it.
  */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const workspace = path.join(repoRoot, 'examples', 'faktura')
@@ -29,6 +29,15 @@ function cleanup(): void {
   for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true })
 }
 afterAll(cleanup)
+// Probe decks contain PlantUML; one left by an interrupted run would fail `course build`.
+beforeAll(() => {
+  if (!installed) return
+  for (const entry of readdirSync(workspace)) {
+    if (entry.startsWith('.e2e-probe-')) {
+      rmSync(path.join(workspace, entry), { recursive: true, force: true })
+    }
+  }
+})
 
 function allText(dir: string): string {
   let out = ''
@@ -76,7 +85,10 @@ function freePort(): Promise<number> {
  * (Slidev 52's startup banner always lists /export/: it tests the JSON-stringified flag, which is
  * truthy even for "false". The client gets the real value through Vite's /@vite/env defines.)
  */
-async function devFetch(entry: string, paths: string[]): Promise<string[]> {
+async function devFetch(
+  entry: string,
+  paths: Array<string | [string, RequestInit]>,
+): Promise<string[]> {
   const port = await freePort()
   const child = spawn(process.execPath, [slidevBin(workspace), entry, '--port', String(port)], {
     cwd: workspace,
@@ -96,7 +108,10 @@ async function devFetch(entry: string, paths: string[]): Promise<string[]> {
       child.on('exit', (code) => reject(new Error(`dev server exited (${code}):\n${out}`)))
     })
     const bodies: string[] = []
-    for (const p of paths) bodies.push(await (await fetch(`http://localhost:${port}${p}`)).text())
+    for (const p of paths) {
+      const [url, init] = typeof p === 'string' ? [p, undefined] : p
+      bodies.push(await (await fetch(`http://localhost:${port}${url}`, init)).text())
+    }
     return bodies
   } finally {
     child.kill()
@@ -137,20 +152,69 @@ describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
     }
   }, 180_000)
 
-  it('dev server: no /export or /print page and no web fonts; the defaults enable both', async () => {
+  it('favicon: the data: URL means no CDN request; the default favicon is on cdn.jsdelivr.net', () => {
+    try {
+      const offline = buildProbe(OFFLINE)
+      expect(readFileSync(path.join(offline, 'index.html'), 'utf8')).toContain(
+        '<link rel="icon" href="data:,">',
+      )
+      expect(findForbiddenBuildRefs(offline)).toEqual([])
+
+      const online = buildProbe(without(/^favicon:.*\n/m))
+      expect(readFileSync(path.join(online, 'index.html'), 'utf8')).toContain('cdn.jsdelivr.net')
+      expect(findForbiddenBuildRefs(online).map((r) => r.what)).toContain('CDN favicon')
+    } finally {
+      cleanup()
+    }
+  }, 180_000)
+
+  it('dev server: no /export or /print page, web fonts or CDN favicon; the defaults enable all', async () => {
     try {
       const [env, page] = await devFetch(probeDeck(OFFLINE, ''), ['/@vite/env', '/'])
       expect(flag(env!, '__SLIDEV_FEATURE_BROWSER_EXPORTER__')).toBe('false')
       expect(flag(env!, '__SLIDEV_FEATURE_PRINT__')).toBe('false')
-      expect(page).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/)
+      expect(page).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net/)
 
-      const defaults = OFFLINE.replace(/^browserExporter:.*\n/m, '').replace(
-        /^fonts:\n(?: {2}.*\n)+/m,
-        '',
-      )
+      const defaults = OFFLINE.replace(/^browserExporter:.*\n/m, '')
+        .replace(/^fonts:\n(?: {2}.*\n)+/m, '')
+        .replace(/^favicon:.*\n/m, '')
       const [envOn, pageOn] = await devFetch(probeDeck(defaults, ''), ['/@vite/env', '/'])
       expect(flag(envOn!, '__SLIDEV_FEATURE_BROWSER_EXPORTER__')).toBe('true')
       expect(pageOn).toContain('fonts.googleapis.com')
+      expect(pageOn).toContain('cdn.jsdelivr.net')
+    } finally {
+      cleanup()
+    }
+  }, 240_000)
+
+  it('dev server: `mcp: false` turns off the deck-editing /__mcp endpoint; the default serves it', async () => {
+    // A same-origin JSON-RPC call, like one from another page on localhost would make.
+    const initialize: [string, RequestInit] = [
+      '/__mcp',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'e2e', version: '0' },
+          },
+        }),
+      },
+    ]
+    try {
+      const [off] = await devFetch(probeDeck(OFFLINE, ''), [initialize])
+      expect(off).toContain('The Slidev MCP server is disabled')
+
+      const [on] = await devFetch(probeDeck(without(/^mcp:.*\n/m), ''), [initialize])
+      expect(on).toContain('serverInfo')
     } finally {
       cleanup()
     }

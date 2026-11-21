@@ -12,10 +12,13 @@ export type JdepsRunner = (file: string) => string | null
 
 let jdepsProbe: boolean | undefined
 
+/** jdeps on one jar is seconds; never let a stuck JVM hang `course context`. */
+const JDEPS_TIMEOUT_MS = 60_000
+
 function jdepsAvailable(): boolean {
   if (jdepsProbe === undefined) {
     try {
-      execFileSync('jdeps', ['-version'], { stdio: 'pipe' })
+      execFileSync('jdeps', ['-version'], { stdio: 'pipe', timeout: JDEPS_TIMEOUT_MS })
       jdepsProbe = true
     } catch {
       jdepsProbe = false
@@ -30,6 +33,7 @@ export const defaultJdepsRunner: JdepsRunner = (file) => {
     return execFileSync('jdeps', ['-summary', '-q', file], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: JDEPS_TIMEOUT_MS,
     })
   } catch {
     return null

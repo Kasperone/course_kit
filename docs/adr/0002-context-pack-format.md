@@ -34,7 +34,15 @@ and lesson paths must stay inside `lessons/`. Errors name the file and field.
 
 All target-repo content is read via the git object database, never the working tree. The
 repository is `COURSE_TARGET_REPO` if set, the checked-out submodule in submodule mode, otherwise
-`course.json` `targetRepo` resolved against the workspace.
+`course.local.json` or `course.json` `targetRepo` resolved against the workspace. Those two files
+come with a shared workspace, so a target they name must lie outside the workspace: otherwise a
+cloned workspace could commit a bare repository's files and make them the target.
+
+Every call pins, on the command line (which overrides repository config), the settings that could
+make git run a program: `safe.bareRepository=explicit` (no implicit bare repos),
+`log.showSignature=false` (no `gpg.program`) and `core.fsmonitor=false`. Calls time out after
+120 s, `jdeps` after 60 s. `course lesson new` reads only `course.json`, so it works in a fresh
+clone without the target.
 
 - Commit check: `git cat-file -e --end-of-options <sha>^{commit}` (clear error if it is gone)
 - File list and sizes: one `git ls-tree -r -z -l --full-tree --end-of-options <sha>`
@@ -42,7 +50,9 @@ repository is `COURSE_TARGET_REPO` if set, the checked-out submodule in submodul
 - History: `git --literal-pathspecs log -n N --end-of-options <sha> -- <paths>`
 
 NUL-separated output keeps non-ASCII and unusual paths intact. Symlinks are never followed (the
-blob is the link text) and are skipped.
+blob is the link text) and are skipped, as are gitlinks; both are listed in the selection report,
+including related tests. A selected file that turns out to be binary by content is reported as
+skipped and not counted or listed as embedded.
 
 ### Sensitive data
 
@@ -55,6 +65,7 @@ Packs go to LLMs and may be shared, so:
 2. Everything embedded passes through line-preserving **redaction** (`redact.ts`): known token
    formats, JWTs, private key blocks, URL passwords, literal assignments to secret-looking names,
    and secret-looking keys in config files (`${VAR:default}` keeps `VAR`, hides the default).
+   That includes the git log (author names and subjects), reported as `(git log)`.
 
 Both are listed in the pack, the JSON and as CLI warnings. This is a safety net, not a secret
 scanner; review packs before committing them.
@@ -67,7 +78,8 @@ scanner; review packs before committing them.
 3. Selection report: matched / embedded counts, every skipped path with its reason (sensitive,
    over-cap, too-large, binary, symlink, submodule), redactions, missing `files`, empty globs
 4. Repository tree summary (tracked paths, binaries skipped, caps on listing)
-5. Excerpts from `README.md`, `AGENTS.md`, `CLAUDE.md` if present (not repeated when selected)
+5. Excerpts from `README.md`, `AGENTS.md`, `CLAUDE.md` if present (not repeated when selected),
+   line-numbered like sources
 6. Selected sources and related tests with **line numbers** (size/line caps)
 7. Related tests (name/path heuristics, own cap)
 8. Recent git log for selected paths
@@ -75,7 +87,10 @@ scanner; review packs before committing them.
 10. Size / token estimate
 
 Embedded content uses fences longer than any backtick run inside it, so repository text cannot
-close a fence or add headings to the pack.
+close a fence or add headings to the pack. Paths and log lines are inline code with every control
+character escaped (`\r`, `\n`, `\xNN`): CommonMark also ends a line at a lone `\r`. Line numbers
+(`     N|`) keep embedded Markdown off column 0, so a target's PlantUML block does not trip the
+workspace guard.
 
 Metadata JSON (`schemaVersion: 1`) records limits, selected files, related tests, skipped paths
 with reasons, redactions, analyzers used, warnings, byte size and token estimate.
