@@ -1,10 +1,12 @@
 import { Command } from 'commander'
+import { runAsk } from './commands/ask.js'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
 import { runNarrate } from './commands/narrate.js'
 import { runVoicesInstall, runVoicesList } from './commands/voices.js'
 import { runPin } from './commands/pin.js'
+import { runServe } from './commands/serve.js'
 import { runBuild, runDev } from './commands/slidev.js'
 import { packageVersion } from './lib/paths.js'
 
@@ -148,25 +150,106 @@ program
     }
   })
 
+const parsePort = (v: string) => Number.parseInt(v, 10)
+
 program
   .command('dev')
-  .description('Live preview of one lesson deck (Slidev dev server on localhost)')
+  .description(
+    'Live preview of one lesson deck (Slidev dev server on localhost) with the Q&A chat backend',
+  )
   .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
   .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
   .option('--lang <code>', 'Deck language (default: first language in course.json)')
-  .option('--port <n>', 'Dev server port', (v) => Number.parseInt(v, 10))
-  .action(async (lessonId: string, opts: { cwd?: string; lang?: string; port?: number }) => {
+  .option('--port <n>', 'Dev server port', parsePort)
+  .option('--model <id>', 'Chat model (default: COURSE_CHAT_MODEL, course.json chat.model, sonnet)')
+  .option('--no-chat', 'Do not start the Q&A chat backend')
+  .action(
+    async (
+      lessonId: string,
+      opts: { cwd?: string; lang?: string; port?: number; model?: string; chat?: boolean },
+    ) => {
+      try {
+        process.exitCode = await runDev({
+          lesson: lessonId,
+          lang: opts.lang,
+          port: opts.port,
+          cwd: opts.cwd,
+          model: opts.model,
+          chat: opts.chat !== false,
+        })
+      } catch (err) {
+        fail('dev', err)
+      }
+    },
+  )
+
+program
+  .command('serve')
+  .description(
+    'Serve the built course (dist/) and the Q&A chat API from one local origin (127.0.0.1 only)',
+  )
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--port <n>', 'Port on 127.0.0.1 (default: course.json chat.port, else 8787)', parsePort)
+  .option('--model <id>', 'Chat model (default: COURSE_CHAT_MODEL, course.json chat.model, sonnet)')
+  .option('--no-chat', 'Serve the decks without the Q&A API')
+  .action(async (opts: { cwd?: string; port?: number; model?: string; chat?: boolean }) => {
     try {
-      process.exitCode = await runDev({
-        lesson: lessonId,
-        lang: opts.lang,
-        port: opts.port,
+      const server = await runServe({
         cwd: opts.cwd,
+        port: opts.port,
+        model: opts.model,
+        chat: opts.chat !== false,
+        log: (line) => console.error(line),
       })
+      console.log(`Serving ${server.distDir} at ${server.url}/`)
+      if (!server.chat.enabled) console.log('Q&A chat: off')
+      else if (server.chat.key) console.log(`Q&A chat: ${server.chat.model}`)
+      else {
+        console.log(
+          `Q&A chat: ${server.chat.model}, but no ANTHROPIC_API_KEY (environment or ${server.courseDir}/.env); the panel will say so`,
+        )
+      }
+      console.log('Press Ctrl+C to stop.')
+      const stop = () => void server.close().then(() => process.exit(0))
+      process.once('SIGINT', stop)
+      process.once('SIGTERM', stop)
     } catch (err) {
-      fail('dev', err)
+      fail('serve', err)
     }
   })
+
+program
+  .command('ask')
+  .description("Ask the lesson's Q&A chat from the terminal (same prompt and model as the deck)")
+  .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
+  .argument('[question]', 'The question (quote it)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lang <code>', 'Answer language (default: first language in course.json)')
+  .option('--slide <n>', 'Slide the question is about (default 1)', parsePort)
+  .option('--model <id>', 'Chat model (default: COURSE_CHAT_MODEL, course.json chat.model, sonnet)')
+  .option('--dry-run', 'Show prompt sizes and a cost estimate; call no API', false)
+  .action(
+    async (
+      lessonId: string,
+      question: string | undefined,
+      opts: { cwd?: string; lang?: string; slide?: number; model?: string; dryRun?: boolean },
+    ) => {
+      try {
+        if (!question && !opts.dryRun) throw new Error('Missing question (or use --dry-run)')
+        await runAsk({
+          lessonId,
+          question,
+          cwd: opts.cwd,
+          lang: opts.lang,
+          slide: opts.slide,
+          model: opts.model,
+          dryRun: Boolean(opts.dryRun),
+        })
+      } catch (err) {
+        fail('ask', err)
+      }
+    },
+  )
 
 program
   .command('narrate')

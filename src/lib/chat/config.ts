@@ -213,7 +213,7 @@ export function resolveChatConfig(
     rateLimit: { ...CHAT_DEFAULTS.rateLimit, ...s.rateLimit },
     port:
       overrides.port !== undefined
-        ? int(overrides.port, '--port', 1, 65535)
+        ? int(overrides.port, '--port', 0, 65535)
         : (s.port ?? CHAT_DEFAULTS.port),
     stt: { ...CHAT_DEFAULTS.stt, ...s.stt },
   }

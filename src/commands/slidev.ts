@@ -2,6 +2,10 @@ import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import type { CourseJson } from './init.js'
+import { resolveChatConfig } from '../lib/chat/config.js'
+import type { AnswerProvider } from '../lib/chat/provider.js'
+import { startChatServer, type ChatServer } from '../lib/chat/server.js'
+import { readWorkspaceSecret, SECRET_ENV_NAMES, withoutSecrets } from '../lib/env.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
 import { MANIFEST_FILE, parseManifest } from '../lib/narration/manifest.js'
 import {
@@ -141,7 +145,30 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
 export type SlidevRunner = (bin: string, args: string[], cwd: string) => void
 
 const defaultRunner: SlidevRunner = (bin, args, cwd) => {
-  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit' })
+  // Slidev (and Vite) never see provider keys.
+  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit', env: withoutSecrets() })
+}
+
+/** Built files that contain one of the workspace's API keys (compared in memory, never printed). */
+export function findSecretsInBuild(dirs: string[], secrets: string[]): string[] {
+  const files: string[] = []
+  if (secrets.length === 0) return files
+  const walk = (dir: string) => {
+    if (!existsSync(dir)) return
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(abs)
+      else if (
+        entry.isFile() &&
+        !/\.(mp3|wav|png|jpe?g|gif|webp|ico|woff2?|ttf)$/i.test(entry.name)
+      ) {
+        const text = readFileSync(abs, 'utf8')
+        if (secrets.some((s) => text.includes(s))) files.push(abs)
+      }
+    }
+  }
+  for (const dir of dirs) walk(dir)
+  return files.sort()
 }
 
 export type BuildOptions = DeckFilter & {
@@ -288,6 +315,22 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
     )
   }
 
+  // No API key may end up in what the browser loads (e.g. through a VITE_* variable).
+  const secrets = SECRET_ENV_NAMES.map((n) => readWorkspaceSecret(courseDir, n)).filter(
+    (v): v is string => Boolean(v),
+  )
+  const keyFiles = findSecretsInBuild(
+    decks.map((d) => d.outDir),
+    secrets,
+  )
+  if (keyFiles.length > 0) {
+    throw new Error(
+      `Built output contains an API key; remove it from the deck and rebuild: ${keyFiles
+        .map((f) => path.relative(courseDir, f))
+        .join(', ')}`,
+    )
+  }
+
   const narration =
     options.narration === false
       ? []
@@ -306,9 +349,29 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   return { courseDir, distDir, decks, index, narration }
 }
 
-export type DevOptions = { lesson: string; lang?: string; port?: number; cwd?: string }
+export type DevOptions = {
+  lesson: string
+  lang?: string
+  port?: number
+  cwd?: string
+  /** Start the Q&A chat backend next to the dev server (default true; course.json can disable). */
+  chat?: boolean
+  /** Chat model override (--model). */
+  model?: string
+  /** Tests inject an answer provider. */
+  provider?: AnswerProvider
+  log?: (line: string) => void
+}
 
-/** `course dev`: live preview of one lesson deck (Slidev dev server on localhost). */
+/** Env var through which `course dev` tells the chat addon's dev proxy where the backend is. */
+export const CHAT_PORT_ENV = 'COURSE_CHAT_PORT'
+
+/**
+ * `course dev`: live preview of one lesson deck (Slidev dev server on localhost). Unless disabled,
+ * the Q&A backend runs in this process on an ephemeral 127.0.0.1 port; the chat addon's Vite
+ * plugin proxies /@course-chat/ to it, so the browser stays on one origin. API keys stay here:
+ * Slidev is started without them.
+ */
 export function runDev(options: DevOptions): Promise<number> {
   const { courseDir, course } = resolveWorkspaceConfig(options.cwd)
   const lang = options.lang ?? course.languages[0]!
@@ -323,9 +386,42 @@ export function runDev(options: DevOptions): Promise<number> {
     }
     args.push('--port', String(options.port))
   }
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bin, ...args], { cwd: courseDir, stdio: 'inherit' })
-    child.on('error', reject)
-    child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)))
-  })
+  const chat = resolveChatConfig(course.chat, { model: options.model })
+  const withChat = options.chat !== false && chat.enabled
+  const log = options.log ?? ((line: string) => console.error(`[chat] ${line}`))
+
+  return (async () => {
+    let server: ChatServer | null = null
+    if (withChat) {
+      server = await startChatServer({
+        courseDir,
+        port: 0,
+        chat,
+        staticDir: null,
+        provider: options.provider,
+        log,
+      })
+      const key = readWorkspaceSecret(courseDir, 'ANTHROPIC_API_KEY')
+      log(
+        `Q&A backend on ${server.url} (model ${chat.model}${key ? '' : '; no ANTHROPIC_API_KEY in .env: the panel will say so'})`,
+      )
+    }
+    const env = {
+      ...withoutSecrets(),
+      ...(server ? { [CHAT_PORT_ENV]: String(server.port) } : {}),
+    }
+    try {
+      return await new Promise<number>((resolve, reject) => {
+        const child = spawn(process.execPath, [bin, ...args], {
+          cwd: courseDir,
+          stdio: 'inherit',
+          env,
+        })
+        child.on('error', reject)
+        child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)))
+      })
+    } finally {
+      await server?.close()
+    }
+  })()
 }
