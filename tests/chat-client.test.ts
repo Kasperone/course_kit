@@ -8,6 +8,8 @@ import {
   errorText,
   fetchStatus,
   panelState,
+  privacyText,
+  stateText,
   parseInline,
   parseMarkdown,
   SseParser,
@@ -126,6 +128,7 @@ describe('chat client: states and strings', () => {
     expect(panelState({ ...ok, answers: 'disabled' })).toBe('disabled')
     expect(panelState({ ...ok, pack: 'missing' })).toBe('no-pack')
     expect(panelState({ ...ok, answers: 'no-key' })).toBe('no-key')
+    expect(panelState({ ...ok, answers: 'unavailable' })).toBe('unavailable')
     expect(panelState({ ...ok, pack: 'stale' })).toBe('stale')
     expect(panelState(ok)).toBe('ready')
   })
@@ -140,6 +143,30 @@ describe('chat client: states and strings', () => {
     expect(strings('de')).toBe(en)
     expect(errorText(en, 'refused', '')).toMatch(/declined/)
     expect(errorText(en, 'weird', 'boom')).toBe('The answer failed: boom')
+  })
+
+  it('CLI providers: the reason and the vendor reach the panel text', () => {
+    const en = strings('en')
+    const pl = strings('pl')
+    const status = {
+      apiVersion: API_VERSION,
+      answers: 'unavailable' as const,
+      provider: 'claude-cli',
+      providerMessage: 'Claude Code CLI is not logged in: run `claude auth login`',
+      vendor: 'Anthropic',
+    }
+    expect(stateText(en, 'unavailable', status)).toBe(
+      'The chat CLI cannot answer yet: Claude Code CLI is not logged in: run `claude auth login`',
+    )
+    expect(stateText(pl, 'ready', status)).toBe('')
+    expect(errorText(en, 'not-logged-in', 'run `cursor-agent login`')).toBe(
+      'The chat CLI is not logged in: run `cursor-agent login`',
+    )
+    expect(errorText(pl, 'timeout', 'x')).toMatch(/za długo/)
+    expect(privacyText(en, status)).toMatch(/to Anthropic/)
+    expect(privacyText(en, { ...status, vendor: 'Cursor' })).toMatch(/to Cursor/)
+    expect(privacyText(pl, { ...status, vendor: 'Cursor' })).toMatch(/do Cursora/)
+    expect(privacyText(en, null)).toMatch(/to Anthropic/)
   })
 
   it('addon code has no external URLs and no v-html (deck offline policy)', () => {

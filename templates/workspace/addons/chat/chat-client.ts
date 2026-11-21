@@ -143,8 +143,15 @@ export function appendChunk(chunks: AnswerChunk[], source: Source, text: string)
 
 export type Status = {
   apiVersion?: number
-  answers?: 'ready' | 'no-key' | 'disabled'
+  answers?: 'ready' | 'no-key' | 'unavailable' | 'disabled'
   pack?: 'ok' | 'missing' | 'stale' | 'too-large' | null
+  /** anthropic-api, claude-cli or cursor-cli. */
+  provider?: string | null
+  /** Why a CLI provider cannot answer (not installed / not logged in); never a secret. */
+  providerMessage?: string | null
+  billing?: 'api' | 'subscription' | null
+  /** Who receives the question and the materials (Anthropic or Cursor). */
+  vendor?: string | null
   model?: string | null
   limits?: { maxQuestionChars: number; historyTurns: number } | null
 }
@@ -156,6 +163,7 @@ export type PanelState =
   | 'ready'
   | 'stale'
   | 'no-key'
+  | 'unavailable'
   | 'no-pack'
   | 'too-large'
   | 'disabled'
@@ -169,6 +177,7 @@ export function panelState(status: Status | null): PanelState {
   if (status.pack === 'missing') return 'no-pack'
   if (status.pack === 'too-large') return 'too-large'
   if (status.answers === 'no-key') return 'no-key'
+  if (status.answers === 'unavailable') return 'unavailable'
   return status.pack === 'stale' ? 'stale' : 'ready'
 }
 
@@ -255,11 +264,15 @@ const EN = {
   goToSlide: 'Go to',
   privacy:
     'Your question and the lesson materials (including quoted code) are sent to Anthropic by your local course backend.',
+  privacyCursor:
+    'Your question and the lesson materials (including quoted code) are sent to Cursor (and its model provider) by your local course backend.',
   state: {
     checking: 'Checking the local backend…',
     ready: '',
     stale: 'The context pack is older than the pinned commit; answers may be outdated.',
-    'no-key': 'No API key: add ANTHROPIC_API_KEY to the course workspace .env.',
+    'no-key':
+      'No API key: add ANTHROPIC_API_KEY to the course workspace .env (or use a CLI provider, see the README).',
+    unavailable: 'The chat CLI cannot answer yet:',
     'no-pack': 'No context pack for this lesson: run `course context <lesson-id>`.',
     'too-large': 'The lesson materials are too large for the chat.',
     disabled: 'The Q&A chat is turned off for this course.',
@@ -273,6 +286,10 @@ const EN = {
     offline: 'Cannot reach the Claude API (offline?).',
     refused: 'Claude declined to answer this question.',
     'no-key': 'No API key: add ANTHROPIC_API_KEY to the course workspace .env.',
+    unavailable: 'The chat CLI cannot answer:',
+    'not-logged-in': 'The chat CLI is not logged in:',
+    timeout: 'The answer took too long and was stopped.',
+    'cut-off': 'The answer was too long and was stopped.',
     'no-pack': 'No context pack for this lesson: run `course context <lesson-id>`.',
     other: 'The answer failed:',
   } as Record<string, string>,
@@ -294,11 +311,15 @@ const PL: typeof EN = {
   goToSlide: 'Przejdź do',
   privacy:
     'Twoje pytanie i materiały lekcji (w tym cytowany kod) wysyła do Anthropic Twój lokalny backend kursu.',
+  privacyCursor:
+    'Twoje pytanie i materiały lekcji (w tym cytowany kod) wysyła do Cursora (i jego dostawcy modelu) Twój lokalny backend kursu.',
   state: {
     checking: 'Sprawdzam lokalny backend…',
     ready: '',
     stale: 'Context pack jest starszy niż przypięty commit; odpowiedzi mogą być nieaktualne.',
-    'no-key': 'Brak klucza API: dodaj ANTHROPIC_API_KEY do pliku .env w workspace kursu.',
+    'no-key':
+      'Brak klucza API: dodaj ANTHROPIC_API_KEY do pliku .env w workspace kursu (albo użyj dostawcy CLI, patrz README).',
+    unavailable: 'CLI czatu nie może jeszcze odpowiadać:',
     'no-pack': 'Brak context packa dla tej lekcji: uruchom `course context <lesson-id>`.',
     'too-large': 'Materiały lekcji są za duże dla czatu.',
     disabled: 'Czat Q&A jest wyłączony dla tego kursu.',
@@ -312,6 +333,10 @@ const PL: typeof EN = {
     offline: 'Brak połączenia z API Claude (offline?).',
     refused: 'Claude odmówił odpowiedzi na to pytanie.',
     'no-key': 'Brak klucza API: dodaj ANTHROPIC_API_KEY do pliku .env w workspace kursu.',
+    unavailable: 'CLI czatu nie może odpowiedzieć:',
+    'not-logged-in': 'CLI czatu nie jest zalogowane:',
+    timeout: 'Odpowiedź trwała za długo i została przerwana.',
+    'cut-off': 'Odpowiedź była za długa i została przerwana.',
     'no-pack': 'Brak context packa dla tej lekcji: uruchom `course context <lesson-id>`.',
     other: 'Odpowiedź nie powiodła się:',
   },
@@ -324,6 +349,24 @@ export function strings(lang: string): Strings {
   return lang.split('-')[0] === 'pl' ? PL : EN
 }
 
+/** Codes whose text ends with ":" and is followed by the server's message (a command to run). */
+const WITH_MESSAGE = new Set(['unavailable', 'not-logged-in'])
+
 export function errorText(s: Strings, code: string, message: string): string {
-  return s.errors[code] ?? `${s.errors.other} ${message || code}`
+  const text = s.errors[code]
+  if (text && WITH_MESSAGE.has(code)) return message ? `${text} ${message}` : text
+  return text ?? `${s.errors.other} ${message || code}`
+}
+
+/** The state line, with the server's reason when a CLI provider is not ready. */
+export function stateText(s: Strings, state: PanelState, status: Status | null): string {
+  const text = s.state[state]
+  return state === 'unavailable' && status?.providerMessage
+    ? `${text} ${status.providerMessage}`
+    : text
+}
+
+/** Who the question goes to, for the privacy line under the input. */
+export function privacyText(s: Strings, status: Status | null): string {
+  return status?.vendor === 'Cursor' ? s.privacyCursor : s.privacy
 }

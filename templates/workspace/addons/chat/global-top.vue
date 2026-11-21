@@ -15,6 +15,8 @@ import {
   fetchStatus,
   panelState,
   parseMarkdown,
+  privacyText,
+  stateText,
   strings,
   type AnswerChunk,
   type PanelState,
@@ -149,7 +151,7 @@ async function send(): Promise<void> {
           const code = String(d.code ?? 'upstream')
           if (code === 'refused') answer.chunks.splice(0)
           answer.error = errorText(s, code, String(d.message ?? ''))
-          if (code === 'no-key' || code === 'no-pack') void refresh()
+          if (['no-key', 'no-pack', 'unavailable', 'not-logged-in'].includes(code)) void refresh()
         }
       },
     )
@@ -224,7 +226,9 @@ watch(visible, (v) => {
           ×
         </button>
       </header>
-      <p v-if="s.state[state]" class="cc-state" :class="state">{{ s.state[state] }}</p>
+      <p v-if="s.state[state]" class="cc-state" :class="state">
+        {{ stateText(s, state, status) }}
+      </p>
       <div ref="log" class="cc-log" aria-live="polite">
         <template v-for="(t, i) in turns" :key="i">
           <div v-if="t.role === 'user'" class="cc-q">
@@ -296,7 +300,7 @@ watch(visible, (v) => {
           @keydown="onInputKey"
         />
         <div class="cc-actions">
-          <small class="cc-privacy">{{ s.privacy }}</small>
+          <small class="cc-privacy">{{ privacyText(s, status) }}</small>
           <button v-if="busy" type="button" @click="stop">{{ s.stop }}</button>
           <button v-else type="submit" :disabled="!canAsk || !question.trim()">{{ s.send }}</button>
         </div>
