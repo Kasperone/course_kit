@@ -103,6 +103,10 @@ describe('npm package contents', () => {
       'templates/workspace/addons/narration/package.json',
       'templates/workspace/addons/narration/global-top.vue',
       'templates/workspace/addons/narration/setup/vite-plugins.ts',
+      'templates/workspace/addons/chat/package.json',
+      'templates/workspace/addons/chat/global-top.vue',
+      'templates/workspace/addons/chat/chat-client.ts',
+      'templates/workspace/addons/chat/setup/vite-plugins.ts',
     ]) {
       expect(files).toContain(expected)
     }

@@ -12,11 +12,13 @@
   "devDependencies": {
     "@slidev/cli": "52.20.1",
     "@slidev/theme-default": "0.25.0",
+    "slidev-addon-course-chat": "file:addons/chat",
     "slidev-addon-course-narration": "file:addons/narration"
   },
   "slidev": {
     "addons": [
-      "course-narration"
+      "course-narration",
+      "course-chat"
     ]
   }
 }

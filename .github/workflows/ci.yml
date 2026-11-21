@@ -62,10 +62,12 @@ jobs:
           # Narration without Piper or network: a dry run lists the steps, synthesizes nothing.
           node dist/cli.js narrate 01-placeholder -C "$tmp/course" --dry-run
           node dist/cli.js voices list
+          # Q&A chat without a key or network: prompt sizes and cost estimate only.
+          node dist/cli.js ask 01-placeholder -C "$tmp/course" --dry-run
 
   deck:
     # Real Slidev build of the committed example workspace (examples/faktura): render-time PlantUML
-    # check and the faktura lesson build. No PDF export, no Playwright.
+    # check, the faktura lesson build and the Q&A chat (mock API). No PDF export, no Playwright.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -94,8 +96,8 @@ jobs:
       - name: Build CLI
         run: npm run build
 
-      - name: Slidev e2e tests
-        run: npx vitest run tests/slidev-e2e.test.ts
+      - name: Slidev e2e tests (deck policy, Q&A chat)
+        run: npx vitest run tests/slidev-e2e.test.ts tests/chat-e2e.test.ts
 
       - name: course build (examples/faktura)
         run: |

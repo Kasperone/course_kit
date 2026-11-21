@@ -217,7 +217,7 @@ describe('workspace template and the faktura example stay in sync', () => {
       return statSync(abs).isDirectory() ? tree(abs).map((f) => `${name}/${f}`) : [name]
     })
 
-  it('ships the same narration addon and deck guard', () => {
+  it('ships the same narration and chat addons and deck guard', () => {
     const tpl = path.join(repo, 'templates', 'workspace')
     const ex = path.join(repo, 'examples', 'faktura')
     const files = tree(path.join(tpl, 'addons', 'narration'))
@@ -225,6 +225,19 @@ describe('workspace template and the faktura example stay in sync', () => {
     for (const f of files) {
       expect(readFileSync(path.join(ex, 'addons', 'narration', f), 'utf8')).toBe(
         readFileSync(path.join(tpl, 'addons', 'narration', f), 'utf8'),
+      )
+    }
+    const chatFiles = tree(path.join(tpl, 'addons', 'chat'))
+    expect(chatFiles.sort()).toEqual([
+      'chat-client.ts',
+      'global-top.vue',
+      'package.json',
+      'setup/vite-plugins.ts',
+    ])
+    expect(tree(path.join(ex, 'addons', 'chat')).sort()).toEqual(chatFiles)
+    for (const f of chatFiles) {
+      expect(readFileSync(path.join(ex, 'addons', 'chat', f), 'utf8')).toBe(
+        readFileSync(path.join(tpl, 'addons', 'chat', f), 'utf8'),
       )
     }
     expect(readFileSync(path.join(ex, 'scripts', 'check-deck.mjs'), 'utf8')).toBe(
@@ -235,8 +248,9 @@ describe('workspace template and the faktura example stay in sync', () => {
         slidev?: { addons?: string[] }
         devDependencies?: Record<string, string>
       }
-      expect(pkg.slidev?.addons).toEqual(['course-narration'])
+      expect(pkg.slidev?.addons).toEqual(['course-narration', 'course-chat'])
       expect(pkg.devDependencies?.['slidev-addon-course-narration']).toBe('file:addons/narration')
+      expect(pkg.devDependencies?.['slidev-addon-course-chat']).toBe('file:addons/chat')
     }
   })
 
