@@ -41,15 +41,17 @@ describe('lesson ids', () => {
     )
   })
 
-  it('lesson new writes valid YAML frontmatter with PlantUML disabled', async () => {
+  it('lesson new writes valid YAML frontmatter with PlantUML, web fonts and CDN favicon off', async () => {
     const { workspace } = await makeWorkspace()
     const { lessonRoot } = runLessonNew({ lessonId: '02-billing', cwd: workspace })
     for (const lang of ['pl', 'en']) {
       const text = readFileSync(path.join(lessonRoot, lang, 'slides.md'), 'utf8')
-      const fm = parseYaml(text.match(/^---\n([\s\S]*?)\n---/)![1]!) as Record<string, string>
+      const fm = parseYaml(text.match(/^---\n([\s\S]*?)\n---/)![1]!) as Record<string, unknown>
       expect(fm.title).toBe(lang === 'pl' ? 'Lekcja: 02-billing' : 'Lesson: 02-billing')
       expect(fm.lang).toBe(lang)
       expect(fm.plantUmlServer).toBe(PLANTUML_DISABLED_SERVER)
+      expect(fm.fonts).toMatchObject({ provider: 'none' })
+      expect(fm.favicon).toBe('data:,')
     }
   })
 })

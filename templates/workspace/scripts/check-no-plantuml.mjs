@@ -2,7 +2,7 @@
 // Guard: Slidev renders ```plantuml blocks as <img> requests to `plantUmlServer`, which defaults to
 // https://www.plantuml.com and would send the diagram source off-machine. This workspace uses
 // Mermaid only; fail dev/build/export if any Markdown file contains a PlantUML block.
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
@@ -10,12 +10,12 @@ const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*plantuml\b/im
 
 function* markdownFiles(dir) {
-  for (const entry of readdirSync(dir)) {
-    if (SKIP.has(entry)) continue
-    const abs = path.join(dir, entry)
-    const st = statSync(abs)
-    if (st.isDirectory()) yield* markdownFiles(abs)
-    else if (entry.endsWith('.md')) yield abs
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (SKIP.has(entry.name)) continue
+    const abs = path.join(dir, entry.name)
+    // Symlinks are never followed: a loop would never end, and a link can point outside the deck.
+    if (entry.isDirectory()) yield* markdownFiles(abs)
+    else if (entry.isFile() && entry.name.endsWith('.md')) yield abs
   }
 }
 

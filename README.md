@@ -31,11 +31,11 @@ set `COURSE_TARGET_REPO=/path/to/clone`.
 
 ## Licensing
 
-| Artifact                                      | License                                                                                 |
-| --------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                          |
-| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT` |
-| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit  |
+| Artifact                                      | License                                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                                                   |
+| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT`; fill in year and author |
+| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit                           |
 
 ## Docs
 
