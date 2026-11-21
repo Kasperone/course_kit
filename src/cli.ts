@@ -2,6 +2,8 @@ import { Command } from 'commander'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
+import { runNarrate } from './commands/narrate.js'
+import { runVoicesInstall, runVoicesList } from './commands/voices.js'
 import { runPin } from './commands/pin.js'
 import { runBuild, runDev } from './commands/slidev.js'
 import { packageVersion } from './lib/paths.js'
@@ -124,11 +126,20 @@ program
   .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
   .option('--lesson <id>', 'Build only this lesson')
   .option('--lang <code>', 'Build only this language')
-  .action((opts: { cwd?: string; lesson?: string; lang?: string }) => {
+  .option('--no-narration', 'Do not copy narration clips from audio/local/ into dist/')
+  .action((opts: { cwd?: string; lesson?: string; lang?: string; narration?: boolean }) => {
     try {
-      const result = runBuild({ cwd: opts.cwd, lesson: opts.lesson, lang: opts.lang })
+      const result = runBuild({
+        cwd: opts.cwd,
+        lesson: opts.lesson,
+        lang: opts.lang,
+        narration: opts.narration !== false,
+      })
       for (const deck of result.decks) {
         console.log(`Built ${deck.lessonId}/${deck.lang} -> ${deck.outDir}`)
+      }
+      for (const n of result.narration) {
+        console.log(`Narration ${n.lessonId}/${n.lang}: ${n.clips} clips -> ${n.dir}`)
       }
       console.log(`Index: ${result.index}`)
       console.log(`Preview: cd ${result.courseDir} && npx vite preview --outDir dist`)
@@ -154,6 +165,101 @@ program
       })
     } catch (err) {
       fail('dev', err)
+    }
+  })
+
+program
+  .command('narrate')
+  .description(
+    'Generate one audio clip per slide/click step from the speaker notes into audio/local/<lang>/<lesson-id>/',
+  )
+  .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lang <code>', 'Deck language, or "all"', 'all')
+  .option('--provider <id>', 'TTS provider: piper (offline) or elevenlabs (API)', 'piper')
+  .option('--voice <id>', 'Voice (Piper voice name or ElevenLabs voice id)')
+  .option('--model <id>', 'ElevenLabs model id (default: eleven_multilingual_v2)')
+  .option('--force', 'Regenerate clips even when a cached clip exists', false)
+  .option('--prune', 'Delete clips from earlier runs that the new manifest does not use', false)
+  .option('--dry-run', 'List steps and character counts; synthesize nothing', false)
+  .action(
+    async (
+      lessonId: string,
+      opts: {
+        cwd?: string
+        lang?: string
+        provider?: string
+        voice?: string
+        model?: string
+        force?: boolean
+        prune?: boolean
+        dryRun?: boolean
+      },
+    ) => {
+      try {
+        const result = await runNarrate({
+          lessonId,
+          cwd: opts.cwd,
+          lang: opts.lang,
+          provider: opts.provider,
+          voice: opts.voice,
+          model: opts.model,
+          force: Boolean(opts.force),
+          prune: Boolean(opts.prune),
+          dryRun: Boolean(opts.dryRun),
+          log: (m) => console.log(m),
+          warn: (m) => console.error(`warning: ${m}`),
+        })
+        if (opts.dryRun) return
+        for (const r of result.langs) {
+          console.log(
+            `${r.lang}: ${r.clips} clips (${r.generated} generated, ${r.reused} cached), ${r.totalDuration.toFixed(1)} s -> ${r.manifest}`,
+          )
+          if (r.stale.length > 0) {
+            console.log(
+              `  ${r.stale.length} older clips are not in the manifest (--prune removes them)`,
+            )
+          }
+          if (r.pruned.length > 0) console.log(`  removed ${r.pruned.length} older clips`)
+        }
+      } catch (err) {
+        fail('narrate', err)
+      }
+    },
+  )
+
+const voices = program.command('voices').description('Manage local TTS voices (Piper)')
+
+voices
+  .command('install')
+  .description('Download a pinned Piper voice (sha256-verified) into the user voice cache')
+  .argument('<engine>', 'Voice engine (piper)')
+  .argument('<voice>', 'Voice name, e.g. pl_PL-darkman-medium')
+  .action(async (engine: string, voice: string) => {
+    try {
+      const r = await runVoicesInstall({ engine, voice })
+      console.log(`Voice ${r.voice.name} -> ${r.dir}`)
+      if (r.downloaded.length > 0) console.log(`Downloaded: ${r.downloaded.join(', ')}`)
+      if (r.verified.length > 0)
+        console.log(`Already present (sha256 ok): ${r.verified.join(', ')}`)
+      console.log(`Dataset: ${r.voice.dataset} (${r.voice.datasetLicense}); ${r.voice.training}`)
+    } catch (err) {
+      fail('voices install', err)
+    }
+  })
+
+voices
+  .command('list')
+  .description('List installable Piper voices, their licences and install state')
+  .action(() => {
+    const r = runVoicesList()
+    console.log(`Voice dir: ${r.dir}`)
+    console.log(`Piper: ${r.piper}`)
+    console.log(`rhasspy/piper-voices @ ${r.revision}`)
+    for (const v of r.voices) {
+      console.log(
+        `  ${v.installed ? '[x]' : '[ ]'} ${v.name} (${v.lang}) — dataset ${v.dataset}, ${v.license}`,
+      )
     }
   })
 
