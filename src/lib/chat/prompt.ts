@@ -42,7 +42,8 @@ export function languageName(code: string): string {
 }
 
 /** Tags that frame the data; repository text must not be able to open or close them. */
-const FRAME_TAGS = 'lesson_materials|context_pack|slides|slide|notes|viewer_position|question'
+const FRAME_TAGS =
+  'lesson_materials|context_pack|slides|slide|notes|viewer_position|question|conversation|turn'
 const FRAME_TAG_RE = new RegExp(`<(\\/?)(\\s*)(${FRAME_TAGS})\\b`, 'gi')
 
 /** Neutralise frame tags inside quoted data (`</context_pack>` -> `&lt;/context_pack>`). */
@@ -224,6 +225,36 @@ export function buildMessages(
       content: `${position}\n<question>\n${escapeFrameTags(req.question)}\n</question>`,
     },
   ]
+}
+
+function messageText(m: Anthropic.Beta.BetaMessageParam): string {
+  if (typeof m.content === 'string') return m.content
+  return (m.content ?? []).map((b) => (b.type === 'text' ? b.text : '')).join('')
+}
+
+/** The system blocks as one text (for CLI providers; they have no cache breakpoints). */
+export function systemText(system: Anthropic.Beta.BetaTextBlockParam[]): string {
+  return system.map((b) => b.text).join('\n\n')
+}
+
+/**
+ * The messages as one prompt, for CLI providers that take a single user message: earlier turns go
+ * inside <conversation> (frame tags escaped), followed by the last message as built by
+ * `buildMessages` (viewer position and question).
+ */
+export function flattenMessages(messages: Anthropic.Beta.BetaMessageParam[]): string {
+  const last = messages.at(-1)
+  if (!last) return ''
+  const earlier = messages.slice(0, -1)
+  if (earlier.length === 0) return messageText(last)
+  const turns = earlier
+    .map((m) => `<turn role="${m.role}">\n${escapeFrameTags(messageText(m))}\n</turn>`)
+    .join('\n')
+  return [
+    `<conversation>\n${turns}\n</conversation>`,
+    'Above are the earlier turns of this conversation. The new message from the learner:',
+    messageText(last),
+  ].join('\n\n')
 }
 
 export type PromptBudget = {

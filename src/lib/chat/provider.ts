@@ -24,14 +24,37 @@ export type AnswerRequest = {
   effort: Effort
 }
 
+/** How answers are paid for: per token (API key) or by the user's CLI subscription. */
+export type Billing = 'api' | 'subscription'
+
+/**
+ * Whether a provider can answer right now. No secrets: CLI providers only report whether the CLI
+ * is installed and logged in.
+ */
+export type ProviderState = 'ready' | 'no-key' | 'not-installed' | 'not-logged-in' | 'error'
+export type Availability = { state: ProviderState; message: string | null }
+
 export interface AnswerProvider {
   readonly id: string
   readonly model: string
+  readonly billing: Billing
   answer(req: AnswerRequest, signal: AbortSignal): AsyncIterable<AnswerEvent>
+  /** Cheap readiness check (CLI providers: installed and logged in; cached briefly). */
+  check?(): Promise<Availability>
 }
 
 export type ProviderErrorCode =
-  'auth' | 'offline' | 'rate-limited' | 'overloaded' | 'bad-request' | 'aborted' | 'upstream'
+  | 'auth'
+  | 'offline'
+  | 'rate-limited'
+  | 'overloaded'
+  | 'bad-request'
+  | 'aborted'
+  | 'upstream'
+  | 'unavailable'
+  | 'not-logged-in'
+  | 'timeout'
+  | 'cut-off'
 
 /** A provider failure with a stable code and a message that never contains a key. */
 export class ProviderError extends Error {
@@ -110,8 +133,9 @@ export async function createAnthropicProvider(options: AnthropicOptions): Promis
   })
   const fallback = options.refusalFallback && supportsRefusalFallback(options.model)
   return {
-    id: 'anthropic',
+    id: 'anthropic-api',
     model: options.model,
+    billing: 'api',
     async *answer(req, signal) {
       let stream
       try {
@@ -156,6 +180,20 @@ export const PRICES: Record<string, { input: number; output: number; cacheRead: 
   'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
   'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2 },
   'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01 },
+}
+
+/** Cost of one answer from its reported usage (null for unknown models). */
+export function usageCost(model: string, usage: AnswerUsage, ttl: '5m' | '1h'): number | null {
+  const p = PRICES[model]
+  if (!p) return null
+  const write = p.input * (ttl === '1h' ? 2 : 1.25)
+  return (
+    (usage.input * p.input +
+      usage.output * p.output +
+      usage.cacheRead * p.cacheRead +
+      usage.cacheWrite * write) /
+    1_000_000
+  )
 }
 
 /** Estimated cost of one question: cold (cache write) and warm (cache read). */

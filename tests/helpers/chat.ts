@@ -90,6 +90,7 @@ export function fakeProvider(turns: FakeTurn[] = []) {
   const provider: AnswerProvider = {
     id: 'fake',
     model: 'claude-fake',
+    billing: 'api',
     async *answer(req, signal): AsyncIterable<AnswerEvent> {
       calls.push({ req, signal })
       const turn = turns.shift() ?? { deltas: ['ok'] }
