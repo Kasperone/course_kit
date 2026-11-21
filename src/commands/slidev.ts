@@ -273,7 +273,7 @@ function indexHtml(decks: Deck[]): string {
     <ul>
 ${items}
     </ul>
-    <p>Serve this directory from its root, e.g. <code>npx vite preview --outDir dist</code>.</p>
+    <p>Open with <code>course serve</code> (decks and the Q&amp;A chat on 127.0.0.1).</p>
   </body>
 </html>
 `

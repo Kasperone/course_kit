@@ -144,7 +144,7 @@ program
         console.log(`Narration ${n.lessonId}/${n.lang}: ${n.clips} clips -> ${n.dir}`)
       }
       console.log(`Index: ${result.index}`)
-      console.log(`Preview: cd ${result.courseDir} && npx vite preview --outDir dist`)
+      console.log(`View: course serve -C ${result.courseDir}  (decks and Q&A chat on 127.0.0.1)`)
     } catch (err) {
       fail('build', err)
     }
