@@ -195,6 +195,28 @@ export function addSubmodule(
   execFileSync('git', ['add', '--', '.gitmodules'], { cwd: courseDir, stdio: 'pipe' })
 }
 
+/** A fetch over the network can be slow, but must not hang `course pin` forever. */
+const FETCH_TIMEOUT_MS = 300_000
+
+/**
+ * Fetch a submodule checkout's `origin` (branches and tags, then its HEAD) and return the commit
+ * the remote's HEAD points at. In submodule mode the checkout's own HEAD is the current pin, so
+ * new target commits are only visible after this. Writes only to the workspace's submodule.
+ */
+export function fetchSubmoduleOrigin(subDir: string): string {
+  for (const args of [
+    ['fetch', '--quiet', 'origin'],
+    ['fetch', '--quiet', 'origin', 'HEAD'],
+  ]) {
+    try {
+      execFileSync('git', ['-C', subDir, ...args], { stdio: 'pipe', timeout: FETCH_TIMEOUT_MS })
+    } catch (err) {
+      throw new Error(`Could not fetch origin in ${subDir}: ${gitErrorDetail(err)}`)
+    }
+  }
+  return resolveCommit(subDir, 'FETCH_HEAD')
+}
+
 export function checkoutSubmoduleCommit(
   courseDir: string,
   submodulePath: string,
