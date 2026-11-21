@@ -19,3 +19,6 @@ lessons/*/context-pack.json
 
 # Machine-local settings (absolute paths)
 course.local.json
+
+# Probe decks of tests/slidev-e2e.test.ts (removed by the test; an interrupted run can leave them)
+.e2e-probe-*/

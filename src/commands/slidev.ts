@@ -6,7 +6,10 @@ import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
 import {
   findForbiddenBuildRefs,
   findPlantUmlFiles,
+  findOutsideImports,
+  findRemoteAssetFiles,
   findWebFontFiles,
+  headmatterValue,
   offlineHeadmatterProblems,
 } from '../lib/slidev.js'
 import { assertInside, isPlainObject, validateLanguage, validateLessonId } from '../lib/validate.js'
@@ -120,6 +123,18 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
       `Web fonts from a CDN are not allowed (decks use system fonts and stay offline). Offending files: ${fonts.join(', ')}`,
     )
   }
+  const remote = findRemoteAssetFiles(courseDir)
+  if (remote.length > 0) {
+    errors.push(
+      `Remote images, embeds, scripts and styles are not allowed (decks make no requests beyond the local server; plain links are fine). Offending files: ${remote.join(', ')}`,
+    )
+  }
+  const imports = findOutsideImports(courseDir)
+  if (imports.length > 0) {
+    errors.push(
+      `Slide imports (src:) must stay inside the workspace's scanned files (no absolute paths, symlinks, node_modules/, dist/, audio/ or target-repo/): ${imports.join(', ')}`,
+    )
+  }
   for (const deck of decks) {
     const problems = offlineHeadmatterProblems(readFileSync(deck.entry, 'utf8'))
     if (problems.length > 0) {
@@ -147,10 +162,10 @@ function escapeHtml(s: string): string {
   )
 }
 
+/** The deck's headmatter `title` (never a `title:` from a later slide or a code sample). */
 function deckTitle(entry: string, fallback: string): string {
-  const m = readFileSync(entry, 'utf8').match(/^---\r?\n[\s\S]*?^title:\s*(.+?)\s*$/m)
-  if (!m) return fallback
-  const raw = m[1]!
+  const raw = headmatterValue(readFileSync(entry, 'utf8'), 'title')
+  if (!raw) return fallback
   try {
     return raw.startsWith('"') ? String(JSON.parse(raw)) : raw.replace(/^'(.*)'$/, '$1')
   } catch {

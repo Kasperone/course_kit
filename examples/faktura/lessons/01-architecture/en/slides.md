@@ -11,6 +11,7 @@ fonts:
 favicon: "data:,"
 browserExporter: false
 download: false
+mcp: false
 info: |
   Lesson 01 of the Faktura course. Every fact on these slides comes from the context pack built
   from faktura at commit 9fdc71413184a383f428bb9e50a8ae1672eb007a; the slide footers name the files

@@ -11,6 +11,7 @@ fonts:
 favicon: "data:,"
 browserExporter: false
 download: false
+mcp: false
 ---
 
 # Faktura: przegląd architektury

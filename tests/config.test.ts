@@ -60,6 +60,7 @@ describe('lesson ids', () => {
       })
       expect(fm.browserExporter).toBe(false)
       expect(fm.favicon).toBe('data:,')
+      expect(fm.mcp).toBe(false)
     }
   })
 })

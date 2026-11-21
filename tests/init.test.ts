@@ -108,6 +108,7 @@ describe('course init', () => {
       expect(fm.favicon, deck).toBe('data:,')
       expect(fm.browserExporter, deck).toBe(false)
       expect(fm.download, deck).toBe(false)
+      expect(fm.mcp, deck).toBe(false)
       expect(readFileSync(deck, 'utf8'), deck).not.toMatch(/https?:\/\/(?!creativecommons)/)
     }
     for (const lang of ['pl', 'en']) {
@@ -170,6 +171,8 @@ describe('course init', () => {
     expect(run()).toContain('download must not be enabled')
     writeFileSync(rootDeck, original.replace("favicon: 'data:,'\n", ''))
     expect(run()).toContain('favicon must be a data: URL')
+    writeFileSync(rootDeck, original.replace('mcp: false', 'mcp: true'))
+    expect(run()).toContain('mcp must be false')
   })
 
   it('the deck guard never follows symlinks (loops, links outside the workspace)', async () => {
