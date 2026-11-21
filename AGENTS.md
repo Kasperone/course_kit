@@ -39,6 +39,7 @@ course ask <lesson-id> [question] [-C dir] [--lang <code>] [--slide <n>] [--prov
 course narrate <lesson-id> [-C dir] [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
                [--model <id>] [--audio-quality compact|standard|high|lossless] [--force] [--prune] [--dry-run]
                # audio/local/<lang>/<id>/ + manifest.json; course.json "audioQuality" sets the default
+course clean [--dry-run]                      # remove Cursor's transcript folder for the cursor-cli workspace
 course voices install piper <voice>             # pinned, sha256-checked, into ~/.cache/course_kit/piper-voices
 course voices list
 ```
@@ -75,8 +76,10 @@ course voices list
   breakpoint, frame-tag escaping (hostile pack), ask validation, `SourceSplitter` markers.
 - `tests/chat-cli-provider.test.ts` — `claude-cli` / `cursor-cli` against fake CLIs on PATH
   (`tests/helpers/fake-claude.mjs`, `fake-cursor-agent.mjs`): argument lists (no shell, no permission-skipping
-  flags), stdin / system-prompt file, empty temp cwd, stripped env, stream-json parsing, not installed / not
+  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), stripped env, stream-json parsing, not installed / not
   logged in, timeout and abort kill the process group, output cap, leftovers, status, markers, cost label.
+- `tests/chat-clean.test.ts` — `course clean`: slug and cache-dir paths, `--dry-run`, only our folder removed, symlink and
+  foreign-workspace refusal.
 - `tests/chat-provider.test.ts` — the real Anthropic SDK against `tests/helpers/fake-anthropic.ts` (local mock
   Messages API): request shape, streaming, refusal, error codes, abort, key redaction.
 - `tests/chat-server.test.ts` — Host/Origin guards, limits, SSE, abort, no-key/no-pack states, static `dist/`.
@@ -101,7 +104,7 @@ Always run lint and tests before pushing.
 - ElevenLabs: the key comes only from `ELEVENLABS_API_KEY` (env or the workspace `.env`); never print, log or
   write it. Tests use mocked HTTP only; never make live API calls.
 - Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
-  an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty temp cwd, with
+  an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty cwd (Cursor: the one stable `cursor-ws` in the cache dir, never with course files; `--trust` only for it), with
   no tools, a timeout, an output cap and `ANTHROPIC_*`/`ELEVENLABS_*` stripped from their env. Never add
   `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
   CLIs only; never run the real `claude` / `cursor-agent` from a test.

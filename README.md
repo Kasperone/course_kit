@@ -226,8 +226,9 @@ the effort and depend on your account: list them with `cursor-agent models`. `CL
 
 How the CLI providers run, and what that costs you:
 
-- **No tools, no permissions.** The CLI is started directly (no shell) in an empty private temp
-  directory, never in the repo or the workspace. Claude Code runs with no tools, no MCP servers,
+- **No tools, no permissions.** The CLI is started directly (no shell) in an empty directory, never
+  in the repo or the workspace (Claude Code: a private temp directory per answer; Cursor: one stable
+  empty directory, see below). Claude Code runs with no tools, no MCP servers,
   `--permission-mode dontAsk`, `--restricted`, `--safe-mode` and no session saved; Cursor runs in
   read-only `--mode ask` with its sandbox on. Permission-skipping flags (`--dangerously-skip-permissions`,
   `--force`, `--yolo`) are never used.
@@ -242,8 +243,13 @@ How the CLI providers run, and what that costs you:
 - **Status.** `course serve`/`dev` print the provider and whether it is ready; the panel says when
   the CLI is missing or not logged in, with the command to run.
 - **Cursor keeps transcripts.** `cursor-agent` has no option to turn them off: it writes each
-  conversation (including the lesson materials) under `~/.cursor/projects/<temp-dir-name>/`.
-  course_kit itself still stores nothing.
+  conversation (including the lesson materials) under `~/.cursor/projects/<workspace-name>/`.
+  To keep that to one folder, `cursor-cli` always runs in the same empty workspace,
+  `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`; created on first use,
+  never holds course files, and the only directory `--trust` covers). Remove the transcripts with
+  `course clean` (`--dry-run` lists what would go): it deletes only that workspace's folder in
+  `~/.cursor/projects/` and refuses anything that resolves outside it. course_kit itself still
+  stores nothing.
   Voice input is designed but not implemented yet. Step-4 workspaces get the panel after copying
   `addons/chat`, adding `"slidev-addon-course-chat": "file:addons/chat"` and `"course-chat"` to
   `package.json` (`devDependencies`, `slidev.addons`) and running `npm install`.

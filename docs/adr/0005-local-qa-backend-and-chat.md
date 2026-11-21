@@ -209,14 +209,18 @@ Cursor ids are account-dependent, so the README points to that command.
   History is flattened into `<conversation>`/`<turn>` frames (frame tags escaped like the rest).
 - **Working directory.** A fresh `mkdtemp` directory (0700) with an empty `cwd/` subdirectory; the
   system prompt file is 0600 next to it. Removed after every answer and status check. The CLI never
-  runs in the repository or the workspace.
+  runs in the repository or the workspace. Exception: Cursor runs in one stable empty workspace,
+  `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`, 0700, created if
+  missing, refused if it is a symlink or not ours), because Cursor keeps a transcript folder per
+  workspace path and a fresh directory per question would leave one behind each time. The private
+  temp directory is still made per answer for anything else.
 - **No tools.** Claude Code: `--tools ""`, `--strict-mcp-config` (no MCP servers),
   `--permission-mode dontAsk` plus `--permission-prompts none` (anything that would need approval is
   denied), `--restricted` (no user/project settings and their hooks, no code-running tools),
   `--safe-mode` (no CLAUDE.md, plugins, skills), `--disable-slash-commands`,
   `--no-session-persistence`. Cursor: `--mode ask` (read-only Q&A), `--sandbox enabled`, and
-  `--workspace` set to the empty directory. `--trust` is passed because headless Cursor refuses an
-  untrusted workspace; it trusts only that empty directory and grants no tool permission.
+  `--workspace` set to the empty workspace. `--trust` is passed because headless Cursor refuses an
+  untrusted workspace; it trusts only that one empty directory and grants no tool permission.
 - **Never.** `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--force`,
   `-f`, `--yolo`, `--auto-review`, `--approve-mcps`, `bypassPermissions`/`acceptEdits`. A test checks
   every argument list.
@@ -253,7 +257,12 @@ the same for every provider.
   time; an unknown flag surfaces as "rejected its arguments (is it up to date?)".
 - **Data at the CLI vendor.** With `cursor-cli` the materials go to Cursor (the panel's privacy line
   says so). `cursor-agent` has no option to disable its transcripts and writes each conversation
-  under `~/.cursor/projects/<temp-dir-name>/`; Claude Code keeps nothing (`--no-session-persistence`).
+  under `~/.cursor/projects/<workspace-slug>/`, which is one folder for the stable workspace
+  (`home-u-cache-course-kit-cursor-ws`: the path without separators and dots); Claude Code keeps
+  nothing (`--no-session-persistence`). `course clean [--dry-run]` removes exactly that folder: it
+  computes the slug from the workspace path, refuses a symlink, a path that resolves outside
+  `~/.cursor/projects` or a folder whose `.workspace-trusted` names another workspace, and never
+  touches the workspace directory or any other Cursor project.
 - **Tests** use fake `claude` / `cursor-agent` scripts on `PATH` (`tests/helpers/fake-*.mjs`), never
   the real CLIs.
 
@@ -292,14 +301,14 @@ the same for every provider.
 
 ### Testing
 
-| Area                                          | How it is tested                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit tests                                    | Config, prompt and materials (including a hostile pack), `SourceSplitter`, the server's guards, limits, SSE and abort with a fake provider, static serving, and the CLI commands                                                                                                                                                                                                                                                                          |
-| CLI providers                                 | Fake `claude` / `cursor-agent` on `PATH` (in a directory whose name contains shell syntax): argument lists without permission-skipping flags, stdin and system-prompt file, empty private cwd removed afterwards, stripped environment, stream-json parsing and fallbacks, not installed / not logged in, timeout and abort killing the process group, the output cap, leftover processes, markers and status through the server, `course ask` cost label |
-| Anthropic provider                            | The **real SDK** against a local mock of the Messages API (request shape, streaming, refusal, error codes, abort, key redaction)                                                                                                                                                                                                                                                                                                                          |
-| Network                                       | `tests/setup.ts` rejects any `fetch` to a non-loopback host, so a live API call in a test is impossible                                                                                                                                                                                                                                                                                                                                                   |
-| E2E (`tests/chat-e2e.test.ts`, CI `deck` job) | Real Slidev 52.20.1 builds a probe workspace. The bundle carries the chat config, and a deck outside `lessons/` does not (negative control). `course serve` answers on one origin and refuses a foreign Origin and a rebinding Host. Through the dev server, the proxy streams incrementally                                                                                                                                                              |
-| Manual                                        | A headless-browser check of the built faktura deck with a mock API: the answer streams, the general part has its badge, the slide link navigates, no anchors or images appear, and only 127.0.0.1 requests are made                                                                                                                                                                                                                                       |
+| Area                                          | How it is tested                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit tests                                    | Config, prompt and materials (including a hostile pack), `SourceSplitter`, the server's guards, limits, SSE and abort with a fake provider, static serving, and the CLI commands                                                                                                                                                                                                                                                                                                                               |
+| CLI providers                                 | Fake `claude` / `cursor-agent` on `PATH` (in a directory whose name contains shell syntax): argument lists without permission-skipping flags, stdin and system-prompt file, empty private cwd removed afterwards (Cursor: one stable empty workspace; `course clean`), stripped environment, stream-json parsing and fallbacks, not installed / not logged in, timeout and abort killing the process group, the output cap, leftover processes, markers and status through the server, `course ask` cost label |
+| Anthropic provider                            | The **real SDK** against a local mock of the Messages API (request shape, streaming, refusal, error codes, abort, key redaction)                                                                                                                                                                                                                                                                                                                                                                               |
+| Network                                       | `tests/setup.ts` rejects any `fetch` to a non-loopback host, so a live API call in a test is impossible                                                                                                                                                                                                                                                                                                                                                                                                        |
+| E2E (`tests/chat-e2e.test.ts`, CI `deck` job) | Real Slidev 52.20.1 builds a probe workspace. The bundle carries the chat config, and a deck outside `lessons/` does not (negative control). `course serve` answers on one origin and refuses a foreign Origin and a rebinding Host. Through the dev server, the proxy streams incrementally                                                                                                                                                                                                                   |
+| Manual                                        | A headless-browser check of the built faktura deck with a mock API: the answer streams, the general part has its badge, the slide link navigates, no anchors or images appear, and only 127.0.0.1 requests are made                                                                                                                                                                                                                                                                                            |
 
 ## Alternatives considered
 
