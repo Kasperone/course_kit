@@ -12,6 +12,7 @@ import {
   type NarrationManifest,
 } from '../lib/narration/manifest.js'
 import { deckSteps } from '../lib/narration/notes.js'
+import { resolveAudioQuality, type AudioQuality } from '../lib/narration/quality.js'
 import {
   createElevenLabsProvider,
   createPiperProvider,
@@ -78,13 +79,15 @@ export type NarrateOptions = {
   voice?: string
   /** ElevenLabs model id (default eleven_multilingual_v2). */
   model?: string
+  /** Quality preset; overrides course.json `audioQuality` (default standard). */
+  audioQuality?: string
   force?: boolean
   dryRun?: boolean
   prune?: boolean
   cwd?: string
   env?: NodeJS.ProcessEnv
   /** Tests inject a provider factory or an HTTP fetch. */
-  makeProvider?: (lang: string) => TtsProvider
+  makeProvider?: (lang: string, quality: AudioQuality) => TtsProvider
   fetch?: FetchLike
   sleep?: (ms: number) => Promise<void>
   log?: (message: string) => void
@@ -107,19 +110,31 @@ export type NarrateLangResult = {
   pruned: string[]
 }
 
-export type NarrateResult = { courseDir: string; provider: string; langs: NarrateLangResult[] }
+export type NarrateResult = {
+  courseDir: string
+  provider: string
+  quality: AudioQuality
+  langs: NarrateLangResult[]
+}
 
 function providerFactory(
   id: ProviderId,
   courseDir: string,
   options: NarrateOptions,
-): (lang: string) => TtsProvider {
+): (lang: string, quality: AudioQuality) => TtsProvider {
   if (id === 'piper') {
-    return (lang) =>
-      createPiperProvider({ lang, voice: options.voice, env: options.env, warn: options.warn })
+    return (lang, quality) =>
+      createPiperProvider({
+        lang,
+        quality,
+        voice: options.voice,
+        env: options.env,
+        warn: options.warn,
+      })
   }
-  return () =>
+  return (_lang, quality) =>
     createElevenLabsProvider({
+      quality,
       voice: options.voice,
       model: options.model,
       apiKey: loadElevenLabsKey(courseDir, options.env),
@@ -142,6 +157,8 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
   if (options.model && providerId !== 'elevenlabs') {
     throw new Error('--model is only used by the elevenlabs provider')
   }
+
+  const quality = resolveAudioQuality(options.audioQuality, course.audioQuality)
 
   const want = options.lang ?? 'all'
   let langs: string[]
@@ -195,7 +212,7 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
     }
 
     assertAudioNotCommittable(courseDir, dir)
-    const provider = makeProvider(lang)
+    const provider = makeProvider(lang, quality)
     mkdirInside(courseDir, dir)
     const clips: NarrationClip[] = []
     let generated = 0
@@ -271,5 +288,5 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
       pruned: options.prune ? stale : [],
     })
   }
-  return { courseDir, provider: providerId, langs: results }
+  return { courseDir, provider: providerId, quality, langs: results }
 }

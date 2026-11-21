@@ -118,8 +118,51 @@ export function hasFfmpeg(bin: string): boolean {
   return r.status === 0
 }
 
-/** WAV -> MP3 (mono, 64 kbit/s) through ffmpeg's stdin/stdout; no temp files, no shell. */
-export function wavToMp3(wav: Buffer, bin: string, bitrate = '64k'): Buffer {
+/** Sample rate and channel count of a PCM WAV file (from its fmt chunk). */
+export function wavFormat(buf: Buffer): { sampleRate: number; channels: number } {
+  wavDuration(buf) // validates the RIFF structure
+  let offset = 12
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString('ascii', offset, offset + 4)
+    const size = buf.readUInt32LE(offset + 4)
+    if (id === 'fmt ') {
+      return { channels: buf.readUInt16LE(offset + 10), sampleRate: buf.readUInt32LE(offset + 12) }
+    }
+    offset += 8 + size + (size % 2)
+  }
+  throw new Error('WAV file has no fmt chunk')
+}
+
+/** Sample rate and channel count of an MP3 stream (from its first Layer III frame header). */
+export function mp3Format(buf: Buffer): { sampleRate: number; channels: number } {
+  let offset = 0
+  if (buf.length >= 10 && buf.toString('ascii', 0, 3) === 'ID3') {
+    offset =
+      10 +
+      (((buf[6]! & 0x7f) << 21) |
+        ((buf[7]! & 0x7f) << 14) |
+        ((buf[8]! & 0x7f) << 7) |
+        (buf[9]! & 0x7f))
+  }
+  for (; offset + 4 <= buf.length; offset++) {
+    const b1 = buf[offset + 1]!
+    if (buf[offset] !== 0xff || (b1 & 0xe0) !== 0xe0) continue
+    const version = (b1 >> 3) & 0x03
+    const rates = MP3_RATES[version]
+    const rateIdx = (buf[offset + 2]! >> 2) & 0x03
+    if (((b1 >> 1) & 0x03) !== 1 || !rates || rateIdx === 3) continue
+    const mode = (buf[offset + 3]! >> 6) & 0x03 // 3 = single channel
+    return { sampleRate: rates[rateIdx]!, channels: mode === 3 ? 1 : 2 }
+  }
+  throw new Error('No MP3 frames found')
+}
+
+/**
+ * WAV -> MP3 at `kbps` through ffmpeg's stdin/stdout (no temp files, no shell). The sample rate and
+ * channels are left as they are (no -ar/-ac): the result is checked against the source, so a clip is
+ * never resampled, upsampled or downmixed. Pass a bitrate valid for the sample rate (mp3Bitrate).
+ */
+export function wavToMp3(wav: Buffer, bin: string, kbps: number): Buffer {
   const r = spawnSync(
     bin,
     [
@@ -130,12 +173,10 @@ export function wavToMp3(wav: Buffer, bin: string, bitrate = '64k'): Buffer {
       'wav',
       '-i',
       'pipe:0',
-      '-ac',
-      '1',
       '-codec:a',
       'libmp3lame',
       '-b:a',
-      bitrate,
+      `${kbps}k`,
       '-f',
       'mp3',
       'pipe:1',
@@ -146,6 +187,13 @@ export function wavToMp3(wav: Buffer, bin: string, bitrate = '64k'): Buffer {
   if (r.status !== 0) {
     throw new Error(
       `ffmpeg exited with ${String(r.status)}: ${r.stderr.toString('utf8').trim().slice(0, 500)}`,
+    )
+  }
+  const src = wavFormat(wav)
+  const out = mp3Format(r.stdout)
+  if (out.sampleRate !== src.sampleRate || out.channels !== src.channels) {
+    throw new Error(
+      `ffmpeg changed the audio format (${src.sampleRate} Hz/${src.channels} ch -> ${out.sampleRate} Hz/${out.channels} ch); refusing to resample`,
     )
   }
   return r.stdout

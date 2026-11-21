@@ -179,6 +179,10 @@ program
   .option('--provider <id>', 'TTS provider: piper (offline) or elevenlabs (API)', 'piper')
   .option('--voice <id>', 'Voice (Piper voice name or ElevenLabs voice id)')
   .option('--model <id>', 'ElevenLabs model id (default: eleven_multilingual_v2)')
+  .option(
+    '--audio-quality <preset>',
+    'compact (MP3 64k), standard (MP3 128k), high (MP3 192k) or lossless (WAV); default: course.json audioQuality, else standard',
+  )
   .option('--force', 'Regenerate clips even when a cached clip exists', false)
   .option('--prune', 'Delete clips from earlier runs that the new manifest does not use', false)
   .option('--dry-run', 'List steps and character counts; synthesize nothing', false)
@@ -191,6 +195,7 @@ program
         provider?: string
         voice?: string
         model?: string
+        audioQuality?: string
         force?: boolean
         prune?: boolean
         dryRun?: boolean
@@ -204,6 +209,7 @@ program
           provider: opts.provider,
           voice: opts.voice,
           model: opts.model,
+          audioQuality: opts.audioQuality,
           force: Boolean(opts.force),
           prune: Boolean(opts.prune),
           dryRun: Boolean(opts.dryRun),
@@ -211,6 +217,7 @@ program
           warn: (m) => console.error(`warning: ${m}`),
         })
         if (opts.dryRun) return
+        console.log(`Audio quality: ${result.quality}`)
         for (const r of result.langs) {
           console.log(
             `${r.lang}: ${r.clips} clips (${r.generated} generated, ${r.reused} cached), ${r.totalDuration.toFixed(1)} s -> ${r.manifest}`,
