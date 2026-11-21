@@ -1,19 +1,29 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { runAsk } from '../src/commands/ask.js'
 import {
   CLI_SPECS,
   cliChildEnv,
   createCliProvider,
   FORBIDDEN_CLI_FLAGS,
 } from '../src/lib/chat/cli-provider.js'
-import { DEFAULT_MODELS, type CliProviderId } from '../src/lib/chat/config.js'
+import { DEFAULT_MODELS, resolveChatConfig, type CliProviderId } from '../src/lib/chat/config.js'
 import {
   ProviderError,
   type AnswerEvent,
   type AnswerProvider,
   type AnswerRequest,
 } from '../src/lib/chat/provider.js'
+import { startChatServer, type ChatServer } from '../src/lib/chat/server.js'
+import { askRaw, chatWorkspace, parseSse, raw } from './helpers/chat.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const HELPERS = path.join(__dirname, 'helpers')
@@ -416,5 +426,189 @@ describe('CLI providers: availability and errors', () => {
     expect(err.code).toBe('cut-off')
     expect(err.message).toMatch(/more than 256 KB/)
     expect(readdirSync(tmp)).toEqual([])
+  })
+})
+
+describe('CLI providers through the chat server and course ask', () => {
+  let server: ChatServer | undefined
+  afterEach(async () => {
+    await server?.close()
+    server = undefined
+  })
+
+  it('status reports the provider and its availability, without secrets', async () => {
+    const { ws } = chatWorkspace()
+    writeFileSync(path.join(ws, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`)
+    const { dir } = fakeBin()
+    const env = cliEnv(dir)
+    server = await startChatServer({
+      courseDir: ws,
+      port: 0,
+      chat: resolveChatConfig({ provider: 'claude-cli' }, {}, {}),
+      env,
+      tmpDir: makeTempDir('cli-tmp'),
+    })
+    const st = await raw(server.port, { path: '/@course-chat/v1/status?lesson=01-x&lang=en' })
+    expect(JSON.parse(st.body)).toMatchObject({
+      answers: 'ready',
+      provider: 'claude-cli',
+      providerState: 'ready',
+      providerMessage: null,
+      billing: 'subscription',
+      cachedPrompt: false,
+      vendor: 'Anthropic',
+      model: 'sonnet',
+    })
+    expect(st.body).not.toContain(EMAIL)
+    expect(st.body).not.toContain(KEY)
+    await server.close()
+
+    env.FAKE_CLI_LOGGED_OUT = '1'
+    server = await startChatServer({
+      courseDir: ws,
+      port: 0,
+      chat: resolveChatConfig({}, { provider: 'cursor-cli' }, {}),
+      env,
+    })
+    const st2 = JSON.parse(
+      (await raw(server.port, { path: '/@course-chat/v1/status?lesson=01-x&lang=en' })).body,
+    ) as Record<string, unknown>
+    expect(st2).toMatchObject({
+      answers: 'unavailable',
+      provider: 'cursor-cli',
+      providerState: 'not-logged-in',
+      vendor: 'Cursor',
+    })
+    expect(st2.providerMessage).toMatch(/run `cursor-agent login`/)
+    const r = await askRaw(server.port, {
+      lesson: '01-x',
+      lang: 'en',
+      slide: 1,
+      click: 0,
+      question: 'Q?',
+    })
+    expect(r.status).toBe(503)
+    expect(JSON.parse(r.body)).toMatchObject({ error: 'not-logged-in' })
+  })
+
+  it('answers keep the lesson/general and off-topic markers', async () => {
+    const { ws } = chatWorkspace()
+    const { dir } = fakeBin()
+    const env = cliEnv(dir)
+    const lines: string[] = []
+    server = await startChatServer({
+      courseDir: ws,
+      port: 0,
+      chat: resolveChatConfig({ provider: 'cursor-cli' }, {}, {}),
+      env,
+      tmpDir: makeTempDir('cli-tmp'),
+      log: (l) => lines.push(l),
+    })
+    const ask = { lesson: '01-x', lang: 'en', slide: 2, click: 0, question: 'What is X?' }
+    const events = parseSse((await askRaw(server.port, ask)).body)
+    expect(events[0]).toMatchObject({
+      event: 'start',
+      data: { provider: 'cursor-cli', billing: 'subscription', model: 'claude-sonnet-5-5-low' },
+    })
+    const deltas = events.filter((e) => e.event === 'delta').map((e) => e.data) as Array<{
+      text: string
+      source: string
+    }>
+    expect(
+      deltas
+        .filter((d) => d.source === 'lesson')
+        .map((d) => d.text)
+        .join(''),
+    ).toBe('From the lesson: see slide 2.\n')
+    expect(
+      deltas
+        .filter((d) => d.source === 'general')
+        .map((d) => d.text)
+        .join(''),
+    ).toBe('In general, X is common.\n')
+    expect(events.at(-1)!.event).toBe('done')
+    expect(lines.at(-1)).toMatch(
+      /· cursor-cli claude-sonnet-5-5-low · \d+ ms · .* · subscription · end_turn$/,
+    )
+    // The real lesson prompt went to the CLI: instructions and materials, then the question.
+    const call = calls(env)[0]!
+    expect(call.stdin).toContain('Always answer in English')
+    expect(call.stdin).toContain('<lesson_materials')
+    expect(call.stdin).toContain('<question>\nWhat is X?\n</question>')
+
+    env.FAKE_CLI_ANSWER = '[[off-topic]]\nLet us get back to the lesson.'
+    const off = parseSse((await askRaw(server.port, { ...ask, question: 'Best pizza?' })).body)
+    expect(off.some((e) => e.event === 'scope')).toBe(true)
+    expect(
+      off
+        .filter((e) => e.event === 'delta')
+        .map((e) => (e.data as { text: string }).text)
+        .join(''),
+    ).toBe('Let us get back to the lesson.')
+  })
+
+  it('course ask: --provider claude-cli needs no key; cost shows "subscription"', async () => {
+    const { ws } = chatWorkspace()
+    const { dir } = fakeBin()
+    const env = cliEnv(dir)
+    delete env.ANTHROPIC_API_KEY
+    const logs: string[] = []
+    let out = ''
+    const r = await runAsk({
+      lessonId: '01-x',
+      question: 'What is X?',
+      cwd: ws,
+      provider: 'claude-cli',
+      env,
+      tmpDir: makeTempDir('cli-tmp'),
+      write: (t) => (out += t),
+      log: (l) => logs.push(l),
+    })
+    expect(r).toMatchObject({ provider: 'claude-cli', model: 'sonnet', stopReason: 'end_turn' })
+    expect(out).toContain('[not from this lesson]')
+    expect(logs.at(-1)).toBe(
+      'claude-cli sonnet-resolved: in 1200 (cache read 0, write 0), out 40 · subscription',
+    )
+    expect(logs.join('\n')).not.toMatch(/\$\d/)
+
+    const dry: string[] = []
+    await runAsk({
+      lessonId: '01-x',
+      cwd: ws,
+      provider: 'cursor-cli',
+      dryRun: true,
+      env,
+      log: (l) => dry.push(l),
+    })
+    expect(dry).toContain('Provider: cursor-cli (Cursor agent CLI)')
+    expect(dry).toContain(
+      'Model: claude-sonnet-5-5-low; cost: subscription (no API key; the prompt is not cached)',
+    )
+    expect(dry).toContain('Provider status: ready')
+    expect(dry.join('\n')).not.toMatch(/\$\d/)
+
+    const missing: string[] = []
+    await runAsk({
+      lessonId: '01-x',
+      cwd: ws,
+      provider: 'claude-cli',
+      dryRun: true,
+      env: cliEnv(makeTempDir('cli-empty')),
+      log: (l) => missing.push(l),
+    })
+    expect(missing.join('\n')).toMatch(
+      /Provider status: not-installed: Claude Code CLI \(`claude`\)/,
+    )
+    await expect(
+      runAsk({
+        lessonId: '01-x',
+        question: 'Q?',
+        cwd: ws,
+        provider: 'claude-cli',
+        env: cliEnv(dir, { FAKE_CLI_LOGGED_OUT: '1' }),
+        log: () => {},
+        write: () => {},
+      }),
+    ).rejects.toThrow(/not logged in: run `claude auth login`/)
   })
 })

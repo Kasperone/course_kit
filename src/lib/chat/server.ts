@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import path from 'node:path'
 import type { CourseJson } from '../../commands/init.js'
-import { redactSecrets, readWorkspaceSecret } from '../env.js'
+import { redactSecrets } from '../env.js'
 import { readJsonFile } from '../validate.js'
 import { parseCourseJson } from '../workspace.js'
-import { ANTHROPIC_KEY_ENV, type ChatConfig } from './config.js'
+import type { ChatConfig } from './config.js'
 import { LessonNotFoundError, loadLessonMaterials, type LessonMaterials } from './materials.js'
 import {
   AskValidationError,
@@ -17,12 +17,8 @@ import {
   SourceSplitter,
   type PromptContext,
 } from './prompt.js'
-import {
-  createAnthropicProvider,
-  ProviderError,
-  type AnswerProvider,
-  type AnswerUsage,
-} from './provider.js'
+import { ProviderError, type AnswerProvider, type AnswerUsage } from './provider.js'
+import { PROVIDER_INFO, ProviderSource, type ChatSummary } from './providers.js'
 import { serveStatic } from './static.js'
 
 /**
@@ -46,10 +42,12 @@ export type ChatServerOptions = {
   chat: ChatConfig | null
   /** Serve this directory (dist/) at /, next to the API. */
   staticDir?: string | null
-  /** Tests inject a provider; otherwise Claude with the workspace key. */
+  /** Tests inject a provider; otherwise the one chat.provider selects. */
   provider?: AnswerProvider
-  /** Builds the provider for a key (default: the Anthropic SDK). */
+  /** Builds the anthropic-api provider for a key (default: the Anthropic SDK). */
   providerFactory?: (apiKey: string, chat: ChatConfig) => Promise<AnswerProvider>
+  /** CLI providers: root for their private temp directories (default: the OS temp directory). */
+  tmpDir?: string
   env?: NodeJS.ProcessEnv
   /** One line per request, without content or secrets. */
   log?: (line: string) => void
@@ -57,7 +55,13 @@ export type ChatServerOptions = {
   heartbeatMs?: number
 }
 
-export type ChatServer = { url: string; port: number; close(): Promise<void> }
+export type ChatServer = {
+  url: string
+  port: number
+  /** Provider, model, billing and availability (null when the chat is disabled). */
+  summary(): Promise<ChatSummary | null>
+  close(): Promise<void>
+}
 
 /** Sliding one-minute window plus a per-day count (in memory, per server run). */
 export class RateLimiter {
@@ -178,33 +182,23 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
     ? new RateLimiter(chat.rateLimit.perMinute, chat.rateLimit.perDay, now)
     : null
   let inFlight = 0
-  let cachedProvider: { key: string; provider: AnswerProvider } | null = null
+  const source = chat
+    ? new ProviderSource({
+        courseDir,
+        chat,
+        env,
+        provider: options.provider,
+        providerFactory: options.providerFactory,
+        tmpDir: options.tmpDir,
+      })
+    : null
 
   const course = (): CourseJson => {
     const file = path.join(courseDir, 'course.json')
     return parseCourseJson(readJsonFile(file, readFileSync(file, 'utf8')), file)
   }
-  const apiKey = () => readWorkspaceSecret(courseDir, ANTHROPIC_KEY_ENV, env)
-  const answersState = (): 'ready' | 'no-key' | 'disabled' =>
-    !chat ? 'disabled' : options.provider || apiKey() ? 'ready' : 'no-key'
-
-  async function provider(c: ChatConfig): Promise<AnswerProvider | null> {
-    if (options.provider) return options.provider
-    const key = apiKey()
-    if (!key) return null
-    if (cachedProvider?.key !== key) {
-      const factory =
-        options.providerFactory ??
-        ((k: string, cfg: ChatConfig) =>
-          createAnthropicProvider({
-            apiKey: k,
-            model: cfg.model,
-            refusalFallback: cfg.refusalFallback,
-          }))
-      cachedProvider = { key, provider: await factory(key, c) }
-    }
-    return cachedProvider.provider
-  }
+  /** For redaction: the workspace Anthropic key, whatever the provider. */
+  const secrets = () => [source?.apiKey() ?? null]
 
   function materialsFor(c: CourseJson, lesson: unknown, lang: unknown): LessonMaterials {
     if (typeof lesson !== 'string' || typeof lang !== 'string') {
@@ -223,10 +217,24 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
     return { repoName: repoName(c), pinnedCommit: c.pinnedCommit }
   }
 
-  function status(req: IncomingMessage, res: ServerResponse, url: URL): void {
+  async function status(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const availability = source ? await source.availability() : null
+    const info = chat ? PROVIDER_INFO[chat.provider] : null
     const base = {
       apiVersion: API_VERSION,
-      answers: answersState(),
+      answers: !availability
+        ? 'disabled'
+        : availability.state === 'ready'
+          ? 'ready'
+          : availability.state === 'no-key'
+            ? 'no-key'
+            : 'unavailable',
+      provider: chat?.provider ?? null,
+      providerState: availability?.state ?? null,
+      providerMessage: availability?.message ?? null,
+      billing: source?.billing ?? null,
+      cachedPrompt: info?.cached ?? null,
+      vendor: info?.vendor ?? null,
       model: chat?.model ?? null,
       stt: 'off',
       limits: chat
@@ -293,14 +301,16 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
         `The prompt (~${budget.totalTokens} tokens) is over ${chat.maxPromptTokens} tokens`,
       )
     }
-    const p = await provider(chat)
-    if (!p) {
-      throw new HttpError(
-        503,
-        'no-key',
-        `${ANTHROPIC_KEY_ENV} is not set (put it in the workspace .env, next to course.json)`,
-      )
+    const availability = await source!.availability()
+    if (availability.state !== 'ready') {
+      const code =
+        availability.state === 'no-key' || availability.state === 'not-logged-in'
+          ? availability.state
+          : 'unavailable'
+      throw new HttpError(503, code, availability.message ?? 'The chat provider is not ready')
     }
+    const p = await source!.get()
+    if (!p) throw new HttpError(503, 'no-key', 'No API key')
     if (inFlight >= chat.rateLimit.concurrent) {
       throw new HttpError(429, 'busy', 'Another answer is still running', { 'Retry-After': '5' })
     }
@@ -341,7 +351,12 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
     let outcome = 'error'
     let usage: AnswerUsage | null = null
     try {
-      event('start', { model: p.model, promptVersion: 1 })
+      event('start', {
+        model: p.model,
+        provider: source!.id,
+        billing: p.billing,
+        promptVersion: 1,
+      })
       for await (const e of p.answer(
         { system, messages, maxTokens: chat.maxOutputTokens, effort: chat.effort },
         ac.signal,
@@ -368,7 +383,7 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
           ? err
           : new ProviderError('upstream', err instanceof Error ? err.message : String(err))
       outcome = pe.code
-      event('error', { code: pe.code, message: redactSecrets(pe.message, [apiKey()]) })
+      event('error', { code: pe.code, message: redactSecrets(pe.message, secrets()) })
     } finally {
       finished = true
       clearInterval(heartbeat)
@@ -378,8 +393,9 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
       const tokens = u
         ? ` · in ${u.input} (cache read ${u.cacheRead}, write ${u.cacheWrite}) out ${u.output}`
         : ''
+      const billing = p.billing === 'subscription' ? ' · subscription' : ''
       log(
-        `ask ${q.lesson}/${q.lang} slide ${q.slide} · ${now() - started} ms${tokens} · ${outcome}`,
+        `ask ${q.lesson}/${q.lang} slide ${q.slide} · ${source!.id} ${p.model} · ${now() - started} ms${tokens}${billing} · ${outcome}`,
       )
     }
   }
@@ -415,13 +431,13 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
             ? err
             : new HttpError(500, 'internal', err instanceof Error ? err.message : String(err))
         if (!(err instanceof HttpError))
-          log(`500 ${url.pathname}: ${redactSecrets(e.message, [apiKey()])}`)
+          log(`500 ${url.pathname}: ${redactSecrets(e.message, secrets())}`)
         else if (e.status >= 400) log(`${e.status} ${req.method} ${url.pathname} (${e.code})`)
         if (res.headersSent) return void res.end()
         sendJson(
           res,
           e.status,
-          { error: e.code, message: redactSecrets(e.message, [apiKey()]) },
+          { error: e.code, message: redactSecrets(e.message, secrets()) },
           e.headers,
         )
       })
@@ -448,6 +464,16 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
   return {
     url: `http://${BIND_HOST}:${port}`,
     port,
+    summary: async () =>
+      chat && source
+        ? {
+            enabled: true,
+            provider: chat.provider,
+            model: chat.model,
+            billing: source.billing,
+            availability: await source.availability(),
+          }
+        : null,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections()

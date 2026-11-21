@@ -32,7 +32,13 @@ describe('course serve', () => {
 
     served = await runServe({ cwd: ws, port: 0, env: {} })
     expect(served.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-    expect(served.chat).toEqual({ enabled: true, model: 'claude-sonnet-5-5', key: false })
+    expect(served.chat).toMatchObject({
+      enabled: true,
+      provider: 'anthropic-api',
+      model: 'claude-sonnet-5-5',
+      billing: 'api',
+      availability: { state: 'no-key' },
+    })
     expect((await raw(served.port, { path: '/' })).body).toBe('<html>index</html>')
     const st = await raw(served.port, { path: '/@course-chat/v1/status?lesson=01-x&lang=en' })
     expect(JSON.parse(st.body)).toMatchObject({ answers: 'no-key', model: 'claude-sonnet-5-5' })
@@ -42,7 +48,13 @@ describe('course serve', () => {
     const { ws } = chatWorkspace()
     writeFileSync(path.join(ws, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`)
     served = await runServe({ cwd: ws, port: 0, model: 'claude-haiku-5-5', env: {} })
-    expect(served.chat).toEqual({ enabled: true, model: 'claude-haiku-5-5', key: true })
+    expect(served.chat).toEqual({
+      enabled: true,
+      provider: 'anthropic-api',
+      model: 'claude-haiku-5-5',
+      billing: 'api',
+      availability: { state: 'ready', message: null },
+    })
     await served.close()
     served = await runServe({ cwd: ws, port: 0, chat: false, env: {} })
     const st = await raw(served.port, { path: '/@course-chat/v1/status' })
@@ -99,7 +111,7 @@ describe('course ask', () => {
       question: 'What is X?',
       cwd: ws,
       lang: 'pl',
-      provider: fake.provider,
+      answerProvider: fake.provider,
       write: (t) => (out += t),
       log: () => {},
     })
@@ -136,7 +148,7 @@ describe('course dev with the chat backend', () => {
       // The backend answered while Slidev ran (status for this lesson/lang).
       expect(run!.status).toBe(200)
       expect(logs.join('\n')).toMatch(
-        /Q&A backend on http:\/\/127\.0\.0\.1:\d+ \(model claude-sonnet-5-5\)/,
+        /Q&A backend on http:\/\/127\.0\.0\.1:\d+ · anthropic-api \(claude-sonnet-5-5; API key, cached prompt\)/,
       )
       expect(logs.join('\n')).not.toContain(KEY)
 

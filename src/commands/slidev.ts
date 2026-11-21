@@ -4,6 +4,7 @@ import path from 'node:path'
 import type { CourseJson } from './init.js'
 import { resolveChatConfig } from '../lib/chat/config.js'
 import type { AnswerProvider } from '../lib/chat/provider.js'
+import { describeChat } from '../lib/chat/providers.js'
 import { startChatServer, type ChatServer } from '../lib/chat/server.js'
 import { readWorkspaceSecret, SECRET_ENV_NAMES, withoutSecrets } from '../lib/env.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
@@ -358,8 +359,10 @@ export type DevOptions = {
   chat?: boolean
   /** Chat model override (--model). */
   model?: string
+  /** Chat provider override (--provider). */
+  provider?: string
   /** Tests inject an answer provider. */
-  provider?: AnswerProvider
+  answerProvider?: AnswerProvider
   log?: (line: string) => void
 }
 
@@ -386,7 +389,10 @@ export function runDev(options: DevOptions): Promise<number> {
     }
     args.push('--port', String(options.port))
   }
-  const chat = resolveChatConfig(course.chat, { model: options.model })
+  const chat = resolveChatConfig(course.chat, {
+    model: options.model,
+    provider: options.provider,
+  })
   const withChat = options.chat !== false && chat.enabled
   const log = options.log ?? ((line: string) => console.error(`[chat] ${line}`))
 
@@ -398,13 +404,11 @@ export function runDev(options: DevOptions): Promise<number> {
         port: 0,
         chat,
         staticDir: null,
-        provider: options.provider,
+        provider: options.answerProvider,
         log,
       })
-      const key = readWorkspaceSecret(courseDir, 'ANTHROPIC_API_KEY')
-      log(
-        `Q&A backend on ${server.url} (model ${chat.model}${key ? '' : '; no ANTHROPIC_API_KEY in .env: the panel will say so'})`,
-      )
+      const summary = await server.summary()
+      log(`Q&A backend on ${server.url} · ${describeChat(summary!).replace(/^Q&A chat: /, '')}`)
     }
     const env = {
       ...withoutSecrets(),

@@ -158,7 +158,7 @@ describe.skipIf(!installed)('Q&A chat with real Slidev (examples/faktura)', () =
       baseURL: fake.url,
       maxRetries: 0,
     })
-    const served = await runServe({ cwd: dir, port: 0, env: {}, provider })
+    const served = await runServe({ cwd: dir, port: 0, env: {}, answerProvider: provider })
     try {
       const page = await raw(served.port, { path: '/probe/en/' })
       expect(page.status).toBe(200)

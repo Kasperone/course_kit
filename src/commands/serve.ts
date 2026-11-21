@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { ANTHROPIC_KEY_ENV, resolveChatConfig } from '../lib/chat/config.js'
+import { resolveChatConfig } from '../lib/chat/config.js'
 import type { AnswerProvider } from '../lib/chat/provider.js'
+import { describeChat, type ChatSummary } from '../lib/chat/providers.js'
 import { startChatServer, type ChatServer } from '../lib/chat/server.js'
-import { readWorkspaceSecret } from '../lib/env.js'
 import { assertNoSymlinkBelow } from '../lib/fs-safe.js'
 import { resolveWorkspaceConfig } from '../lib/workspace.js'
 import { BUILD_DIR } from './slidev.js'
@@ -14,18 +14,24 @@ export type ServeOptions = {
   port?: number
   /** Chat model override (--model). */
   model?: string
+  /** Chat provider override (--provider). */
+  provider?: string
   /** false: serve the decks without the Q&A API (--no-chat). */
   chat?: boolean
   env?: NodeJS.ProcessEnv
-  provider?: AnswerProvider
+  answerProvider?: AnswerProvider
   log?: (line: string) => void
+  /** CLI providers: root for their private temp directories. */
+  tmpDir?: string
 }
 
 export type ServeResult = ChatServer & {
   courseDir: string
   distDir: string
-  chat: { enabled: boolean; model: string; key: boolean }
+  chat: ChatSummary
 }
+
+export { describeChat }
 
 /**
  * `course serve`: one local origin (127.0.0.1 only) for the built course: dist/ (decks, narration)
@@ -39,27 +45,33 @@ export async function runServe(options: ServeOptions = {}): Promise<ServeResult>
     throw new Error(`No built course in ${distDir}. Run \`course build\` first.`)
   }
   assertNoSymlinkBelow(courseDir, path.join(distDir, 'index.html'), 'Build output')
-  const chat = resolveChatConfig(course.chat, { model: options.model, port: options.port }, env)
+  const chat = resolveChatConfig(
+    course.chat,
+    { model: options.model, port: options.port, provider: options.provider },
+    env,
+  )
   const enabled = options.chat !== false && chat.enabled
   const server = await startChatServer({
     courseDir,
     port: chat.port,
     chat: enabled ? chat : null,
     staticDir: distDir,
-    provider: options.provider,
+    provider: options.answerProvider,
     env,
     log: options.log,
+    tmpDir: options.tmpDir,
   })
+  const summary = await server.summary()
   return {
     ...server,
     courseDir,
     distDir,
-    chat: {
-      enabled,
+    chat: summary ?? {
+      enabled: false,
+      provider: chat.provider,
       model: chat.model,
-      key:
-        Boolean(options.provider) ||
-        Boolean(readWorkspaceSecret(courseDir, ANTHROPIC_KEY_ENV, env)),
+      billing: 'api',
+      availability: { state: 'ready', message: null },
     },
   }
 }

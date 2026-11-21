@@ -184,7 +184,7 @@ describe('chat server: answers', () => {
     expect(req.system[1]!.text).toContain('<context_pack')
     expect(req.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
     expect(logs.at(-1)).toMatch(
-      /^ask 01-x\/en slide 1 · \d+ ms · in 10 \(cache read 100, write 0\) out 5 · end_turn$/,
+      /^ask 01-x\/en slide 1 · anthropic-api claude-fake · \d+ ms · in 10 \(cache read 100, write 0\) out 5 · end_turn$/,
     )
     expect(logs.join('\n')).not.toContain('Why Spring Boot')
   })
