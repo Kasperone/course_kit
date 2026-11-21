@@ -5,7 +5,9 @@ import { runPin } from '../src/commands/pin.js'
 import {
   CHAT_DEFAULTS,
   CHAT_MODEL_ENV,
+  CHAT_PROVIDER_ENV,
   DEFAULT_CHAT_MODEL,
+  DEFAULT_MODELS,
   parseChatSettings,
   resolveChatConfig,
 } from '../src/lib/chat/config.js'
@@ -88,10 +90,100 @@ describe('course.json chat', () => {
     expect(CHAT_DEFAULTS.model).toBe(DEFAULT_CHAT_MODEL)
   })
 
+  it('provider precedence: flag > COURSE_CHAT_PROVIDER > course.json > anthropic-api', () => {
+    expect(resolveChatConfig(undefined, {}, {}).provider).toBe('anthropic-api')
+    const s = { provider: 'claude-cli' as const }
+    expect(resolveChatConfig(s, {}, {}).provider).toBe('claude-cli')
+    expect(resolveChatConfig(s, {}, { [CHAT_PROVIDER_ENV]: 'cursor-cli' }).provider).toBe(
+      'cursor-cli',
+    )
+    expect(
+      resolveChatConfig(s, { provider: 'anthropic-api' }, { [CHAT_PROVIDER_ENV]: 'cursor-cli' })
+        .provider,
+    ).toBe('anthropic-api')
+    expect(() => resolveChatConfig(s, {}, { [CHAT_PROVIDER_ENV]: 'openai' })).toThrow(
+      CHAT_PROVIDER_ENV,
+    )
+    expect(() => resolveChatConfig(s, { provider: 'claude' }, {})).toThrow(/--provider/)
+  })
+
+  it('each provider has its own model and default; flag and env apply to the selected one', () => {
+    expect(DEFAULT_MODELS).toEqual({
+      'anthropic-api': 'claude-sonnet-5-5',
+      'claude-cli': 'sonnet',
+      'cursor-cli': 'claude-sonnet-5-5-low',
+    })
+    const s = {
+      model: 'claude-opus-5-5',
+      claudeCli: { model: 'opus', timeoutSeconds: 300 },
+      cursorCli: { model: 'claude-opus-5-5-high' },
+    }
+    expect(resolveChatConfig(s, {}, {})).toMatchObject({ model: 'claude-opus-5-5' })
+    expect(resolveChatConfig(s, { provider: 'claude-cli' }, {})).toMatchObject({
+      model: 'opus',
+      cliTimeoutMs: 300_000,
+    })
+    expect(resolveChatConfig(s, { provider: 'cursor-cli' }, {})).toMatchObject({
+      model: 'claude-opus-5-5-high',
+      cliTimeoutMs: 180_000,
+    })
+    expect(resolveChatConfig({}, { provider: 'claude-cli' }, {}).model).toBe('sonnet')
+    expect(resolveChatConfig({}, { provider: 'cursor-cli' }, {}).model).toBe(
+      'claude-sonnet-5-5-low',
+    )
+    expect(
+      resolveChatConfig(s, { provider: 'claude-cli' }, { [CHAT_MODEL_ENV]: 'haiku' }).model,
+    ).toBe('haiku')
+    expect(
+      resolveChatConfig(
+        s,
+        { provider: 'claude-cli', model: 'claude-sonnet-5-5[1m]' },
+        { [CHAT_MODEL_ENV]: 'haiku' },
+      ).model,
+    ).toBe('claude-sonnet-5-5[1m]')
+    expect(
+      resolveChatConfig(s, {
+        provider: 'cursor-cli',
+        model: 'claude-opus-4-8[context=1m,effort=high]',
+      }).model,
+    ).toBe('claude-opus-4-8[context=1m,effort=high]')
+    // CLI model names are arguments: nothing option-like, no spaces or shell characters.
+    for (const bad of ['--dangerously-skip-permissions', '-f', 'sonnet; rm -rf ~', '$(id)', ''])
+      expect(() => resolveChatConfig({}, { provider: 'claude-cli', model: bad }, {})).toThrow(
+        /--model must be a claude-cli model/,
+      )
+    expect(() => resolveChatConfig({}, { provider: 'cursor-cli', model: '--yolo' }, {})).toThrow(
+      /cursor-cli model/,
+    )
+    // The API provider still takes Claude API ids only.
+    expect(() => resolveChatConfig({}, { model: 'sonnet' }, {})).toThrow(/Claude model id/)
+  })
+
+  it('validates the provider blocks', () => {
+    const bad: Array<[unknown, RegExp]> = [
+      [{ provider: 'gpt' }, /provider must be one of: anthropic-api, claude-cli, cursor-cli/],
+      [{ claudeCli: 'x' }, /claudeCli must be an object/],
+      [{ claudeCli: { model: '-p' } }, /claudeCli\.model must be a claude-cli model/],
+      [{ cursorCli: { timeoutSeconds: 5 } }, /timeoutSeconds must be an integer from 10 to 900/],
+      [{ cursorCli: { bin: '/usr/bin/x' } }, /unknown field "bin"/],
+    ]
+    for (const [chat, re] of bad) {
+      expect(() => parseCourseJson({ ...base, chat }, 'course.json'), JSON.stringify(chat)).toThrow(
+        re,
+      )
+    }
+  })
+
   it('survives course pin', async () => {
     const fx = await makeWorkspace()
     const file = path.join(fx.workspace, 'course.json')
-    const chat = { model: 'claude-haiku-5-5', rateLimit: { perDay: 20 } }
+    const chat = {
+      model: 'claude-haiku-5-5',
+      provider: 'cursor-cli',
+      claudeCli: { model: 'opus' },
+      cursorCli: { model: 'claude-sonnet-5-5-medium', timeoutSeconds: 240 },
+      rateLimit: { perDay: 20 },
+    }
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), chat }))
     writeFiles(fx.repoDir, { 'NEW.md': 'x\n' })
     commitAll(fx.repoDir, 'second')
