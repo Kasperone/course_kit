@@ -1,0 +1,148 @@
+# ADR 0004: Narration — per-click clips, TTS adapters, cache and licences
+
+## Status
+
+Accepted (step 4)
+
+## Context
+
+Lesson decks already carry narration scripts: each slide's speaker notes (its last HTML comment)
+are plain spoken text with one Slidev `[click]` marker per `v-click` reveal (step 3). Step 4 turns
+them into audio that plays in the deck, in English and Polish, with an offline default and an
+optional paid provider, without breaking the offline deck policy (ADR 0003) and without ever
+committing generated audio or API keys.
+
+## Decision
+
+### One clip per (slide, click)
+
+- `course narrate <lesson-id> [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
+[--model <id>] [--force] [--prune] [--dry-run] [-C dir]`.
+- Notes are found and split exactly as Slidev 52 does it (`src/lib/narration/notes.ts` mirrors
+  `@slidev/parser`: `---` separators outside code fences and HTML comments, per-slide frontmatter,
+  "last comment that ends the slide"). Click markers are numbered like Slidev's note renderer:
+  `[click]` adds 1, `[click:n]` adds n. Text before the first marker is click 0. A step is
+  therefore exactly the state shown at `#/<slide>?clicks=<click>`. Verified against the real
+  parser on the faktura decks (identical notes for all 13 slides).
+- Markup is stripped for speech (tags, `**`, backticks, link targets); whitespace collapsed.
+- Why per-click clips and not one file per slide with timestamps: step timing comes from clip
+  boundaries, so any TTS works (Piper has no word timestamps), and an edited step re-synthesizes
+  only that step.
+- Polish and English decks of a lesson must have the same (slide, click) steps so the player can
+  switch narration language on any slide; a test enforces this for the example.
+
+### Output, cache and manifest
+
+- Clips go to `audio/local/<lang>/<lesson>/` (gitignored), named `s<slide>-c<click>-<key12>.<ext>`.
+- Cache key: `sha256(JSON{text, provider, voice, model, settings})` with sorted settings. Settings
+  hold everything else that changes the audio (Piper: length/noise scales, sentence silence, sample
+  rate, format, bitrate; ElevenLabs: output format). For Piper, `model` includes the sha256 of the
+  `.onnx` file. An existing non-empty file with that name is reused; `--force` regenerates.
+- Older clips that a new manifest no longer uses are kept (switching providers back and forth must
+  not pay a paid provider twice) and reported; `--prune` deletes them.
+- `manifest.json` next to the clips: lesson, lang, provider, voice, model, format, settings,
+  `totalDuration` and per clip `{slide, click, file, duration, key, text}`. Durations are read from
+  the audio itself (WAV header, MP3 frame walk), not estimated.
+- `--dry-run` prints steps and character counts (a cost check before a paid run) and writes nothing.
+- Engine version is not in the key: after upgrading Piper, run with `--force`.
+
+### Provider adapters
+
+A provider is `{ id, voice, model, settings, format, synthesize(text): Promise<Buffer> }`
+(`src/lib/narration/providers.ts`). Tests use a fake provider, a fake `piper` executable and a
+mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
+
+**Piper (default, offline).**
+
+- `OHF-Voice/piper1-gpl`, PyPI `piper-tts` 1.8.0, installed by the user in a venv
+  (`~/.local/share/course_kit/piper-venv`, see README). `PIPER_BIN` overrides; otherwise the venv
+  binary, then `piper` on `PATH`.
+- Run with `--output-raw`; the text goes in on **stdin** (never argv, where a leading `-` would be
+  an option). course_kit wraps the 16-bit PCM in a WAV header and, when `ffmpeg` is available
+  (`FFMPEG_BIN` or `PATH`), encodes mono 64 kbit/s MP3 through stdin/stdout. Without ffmpeg it
+  writes WAV and warns. No temp files, no shell.
+- **GPL boundary.** Piper is GPL-3.0-or-later. course_kit (MIT) only executes it as a separate
+  program and exchanges data over pipes. It never vendors, bundles, links or imports Piper, never
+  installs it, and its npm package contains no Piper code. Users install Piper themselves.
+- **Voices.** Installed only by `course voices install piper <voice>` (narrate never downloads).
+  The registry in `src/lib/narration/voices.ts` pins `rhasspy/piper-voices` (MIT) at revision
+  `e9c8a39444359388adaa94255becb37a5a2b8e51` and the sha256 of each voice's `.onnx`, `.onnx.json`
+  and `MODEL_CARD`. Files are verified before they are moved into place, into
+  `COURSE_KIT_VOICES_DIR` (default `~/.cache/course_kit/piper-voices/<voice>/`), never a repo.
+  The model card is stored next to the voice.
+- Only voices whose training data allows redistributing the generated audio are listed (from each
+  `MODEL_CARD` at the pinned revision):
+
+  | Voice                                  | Data                              | Licence       | Model                                                |
+  | -------------------------------------- | --------------------------------- | ------------- | ---------------------------------------------------- |
+  | `pl_PL-darkman-medium` (default `pl`)  | darkman, OHF-Voice/voice-datasets | CC0           | finetuned from the rdh base (CC0); needs Piper ≥ 1.5 |
+  | `en_US-ljspeech-medium` (default `en`) | LJ Speech                         | public domain | trained from scratch                                 |
+
+  Rejected: `pl_PL-mc_speech` (excluded by the brief), `en_US-lessac` (Blizzard 2013 Lessac
+  licence, research use), `en_US-ryan` / `hfc_*` (CC BY-NC-SA data). `en_GB-cori` (CC BY 4.0)
+  would also qualify but needs attribution.
+
+- A voice whose language differs from the deck's is refused.
+
+**ElevenLabs (optional, paid).**
+
+- `POST https://api.elevenlabs.io/v1/text-to-speech/<voice>?output_format=mp3_44100_128` with
+  `{text, model_id}`; default model `eleven_multilingual_v2` (it normalises numbers). Voice and
+  model ids are validated before they go into the URL. 429/5xx are retried twice.
+- The key comes only from `ELEVENLABS_API_KEY` in the environment or the workspace's gitignored
+  `.env`. It is sent only in the `xi-api-key` header. It is never printed, logged, written to a
+  manifest or file, or included in an error message (any occurrence in a provider error is
+  replaced). Tests assert this with a mocked HTTP layer; there are no live calls.
+
+### Never commit generated audio
+
+- Before writing, `course narrate` checks (when the workspace is in a git work tree) that a clip
+  path under `audio/local/<lang>/<lesson>/` is ignored by git and that nothing under `audio/local/`
+  except `.gitkeep` is tracked. Otherwise it stops before calling any provider.
+- course_kit's own test suite fails if the repository tracks any audio file.
+- `audio/ATTRIBUTION.md` (generated from the voice registry by `course init`) names the voices,
+  data licences and the never-commit rule, with a table to fill in for ElevenLabs voices.
+
+### Player (Slidev addon)
+
+- The workspace template ships a local addon `addons/narration` (npm `file:` dependency
+  `slidev-addon-course-narration`, enabled for every deck via `package.json` `"slidev": {"addons":
+["course-narration"]}`). Slidev resolves local addon paths in headmatter relative to the
+  lesson's parent directory, so a package is the robust way to share one addon between all
+  `lessons/<id>/<lang>/` decks.
+- `global-top.vue`: a small top-right control on the main slideshow (not presenter, print or
+  embedded views): narration on/off, an "auto" toggle (advance when a clip ends), language
+  buttons for every course language, and a status line. It plays the clip for the current
+  `currentSlideNo` and `clicks` and re-plays on navigation while narration is on. Nothing plays
+  until the viewer turns narration on. A missing manifest or clip shows a dimmed "no narration" /
+  "no clip" state; the deck keeps working. Settings persist in `localStorage` when available.
+- `setup/vite-plugins.ts`: defines `__COURSE_NARRATION__` (`{lesson, lang, langs, base}`) from the
+  deck's path and `course.json`. In `course dev` it serves `audio/local/<lang>/<lesson>/` at
+  `/@course-narration/<lang>/<file>`; only `manifest.json` and clip-shaped names, only course
+  languages, never symlinks. Other decks (the root `slides.md`) get `null` and no player.
+- `course build` copies each built lesson's manifests and the clips they list (validated names,
+  no symlinks) to `dist/<lesson>/narration/<lang>/` for every course language; the player reaches
+  it as `../narration/<lang>/` from the deck base. `--no-narration` skips the copy. `dist/` is
+  gitignored.
+
+### Offline policy (extends ADR 0003)
+
+- The player only fetches same-origin relative URLs and only clip names matching the manifest
+  pattern.
+- `course build`/`course dev` and the template's `scripts/check-deck.mjs` now also refuse deck
+  code (`.vue`, `.ts`, `.js`, `.mjs`, … outside `node_modules`, `dist`, `audio`, `scripts`) that
+  references an external URL (`http(s)://`, `ws(s)://` or protocol-relative); loopback hosts are
+  allowed.
+- Checked in a headless browser on the built faktura deck and on `course dev`: turning narration
+  on at slide 1 loads `s01-c00-….mp3` from localhost and starts playback; navigation and the
+  language switch load the matching clips; no request leaves localhost.
+
+## Consequences
+
+- Narration is reproducible from the notes and cached; editing one sentence costs one clip.
+- The notes stay the single script: lesson authors keep one `[click]` per reveal in both
+  languages.
+- Piper output quality is modest (especially English identifiers read by a Polish voice); a paid
+  provider is one flag away and shares the same cache, manifest and player.
+- Existing step-3 workspaces get the player after copying `addons/narration`, adding the two
+  `package.json` entries and running `npm install`.

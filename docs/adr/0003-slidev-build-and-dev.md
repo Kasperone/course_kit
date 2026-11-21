@@ -110,3 +110,11 @@ stay gitignored. Prettier and ESLint skip `examples/`.
   transformer, and keeping the Node floor in mind.
 - Decks use system fonts, so they look slightly different per OS.
 - PDF/PNG handouts need a new decision (and a browser dependency) if they are ever wanted.
+
+## Addendum (step 4)
+
+Lesson decks now load the workspace's narration addon (`addons/narration`, see
+[ADR 0004](0004-narration-tts-adapters.md)), and `course build` copies narration clips to
+`dist/<id>/narration/<lang>/`. The offline policy gains one rule: deck code (Vue/TS/JS outside
+`node_modules`, `dist`, `audio` and `scripts`) must not reference external URLs; loopback hosts are
+allowed. `course build`/`course dev` and `scripts/check-deck.mjs` enforce it.
