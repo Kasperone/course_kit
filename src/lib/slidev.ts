@@ -146,6 +146,32 @@ export function findWebFontFiles(courseDir: string): string[] {
   return scanWorkspace(courseDir, /\.(md|vue|css|html)$/i, (t) => WEB_FONT_HOST_RE.test(t))
 }
 
+/**
+ * An absolute or protocol-relative URL to another host in deck code: http(s)/ws(s) URLs and
+ * `"//host…"` / `url(//host…)`. Loopback hosts (localhost, 127.0.0.1, [::1]) are allowed.
+ */
+export const EXTERNAL_URL_RE =
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1)\b)[a-z0-9-]+\.[a-z0-9.-]+/i
+
+/** Top-level workspace helpers that are not part of any deck (their comments may cite URLs). */
+const CODE_SKIP = new Set([...GUARD_SKIP, 'scripts'])
+
+/**
+ * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons) and
+ * that references an external URL (relative paths). Decks stay offline, so such code would make
+ * the browser leave the machine.
+ */
+export function findExternalUrlFiles(courseDir: string): string[] {
+  const offenders: string[] = []
+  for (const file of walkFiles(courseDir, CODE_SKIP)) {
+    if (!/\.(vue|[cm]?[jt]s)$/i.test(file)) continue
+    if (EXTERNAL_URL_RE.test(readFileSync(file, 'utf8'))) {
+      offenders.push(path.relative(courseDir, file).split(path.sep).join('/'))
+    }
+  }
+  return offenders.sort()
+}
+
 export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' }
 
 /** Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or web-font CDN. */

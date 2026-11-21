@@ -100,6 +100,9 @@ describe('npm package contents', () => {
       'templates/workspace/package.json',
       'templates/workspace/slides.md',
       'templates/workspace/scripts/check-deck.mjs',
+      'templates/workspace/addons/narration/package.json',
+      'templates/workspace/addons/narration/global-top.vue',
+      'templates/workspace/addons/narration/setup/vite-plugins.ts',
     ]) {
       expect(files).toContain(expected)
     }

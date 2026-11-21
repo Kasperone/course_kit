@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { resolveCourseTargetRepo, TARGET_REPO_ENV, type CourseJson } from '../commands/init.js'
 import { FULL_SHA_RE } from './git.js'
+import { validateAudioQuality } from './narration/quality.js'
 import {
   assertInside,
   isPlainObject,
@@ -52,7 +53,7 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
     referenceMode === 'submodule'
       ? validateRelativeDir(raw.submodulePath, `${file}: "submodulePath"`)
       : null
-  return {
+  const course: CourseJson = {
     schemaVersion: 1,
     targetRepo,
     targetRemote: remote,
@@ -61,6 +62,10 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
     referenceMode,
     submodulePath,
   }
+  if (raw.audioQuality !== undefined) {
+    course.audioQuality = validateAudioQuality(raw.audioQuality, `${file}: "audioQuality"`)
+  }
+  return course
 }
 
 /**

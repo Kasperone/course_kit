@@ -1,0 +1,14 @@
+{
+  "name": "slidev-addon-course-narration",
+  "version": "0.1.0",
+  "private": true,
+  "description": "course_kit narration player: plays the clip for the current slide and click",
+  "type": "module",
+  "keywords": [
+    "slidev-addon",
+    "slidev"
+  ],
+  "engines": {
+    "slidev": ">=52.0.0"
+  }
+}

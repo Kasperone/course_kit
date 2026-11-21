@@ -58,6 +58,10 @@ jobs:
           node dist/cli.js init "$tmp/target" --out "$tmp/course"
           test -f "$tmp/course/course.json"
           test -f "$tmp/course/.gitignore"
+          test -f "$tmp/course/addons/narration/global-top.vue"
+          # Narration without Piper or network: a dry run lists the steps, synthesizes nothing.
+          node dist/cli.js narrate 01-placeholder -C "$tmp/course" --dry-run
+          node dist/cli.js voices list
 
   deck:
     # Real Slidev build of the committed example workspace (examples/faktura): render-time PlantUML
