@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -15,6 +16,7 @@ import {
   createCliProvider,
   FORBIDDEN_CLI_FLAGS,
 } from '../src/lib/chat/cli-provider.js'
+import { cursorWorkspaceDir } from '../src/lib/chat/cursor-workspace.js'
 import { DEFAULT_MODELS, resolveChatConfig, type CliProviderId } from '../src/lib/chat/config.js'
 import {
   ProviderError,
@@ -48,7 +50,8 @@ function fakeBin(): { dir: string; root: string } {
 function cliEnv(dir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     PATH: [dir, path.dirname(process.execPath)].join(path.delimiter),
-    HOME: process.env.HOME,
+    // A private HOME: the Cursor workspace (~/.cache/course-kit/cursor-ws) must not land in the real one.
+    HOME: makeTempDir('cli-home'),
     ANTHROPIC_API_KEY: KEY,
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
     ELEVENLABS_API_KEY: 'el-must-never-reach-a-cli',
@@ -304,8 +307,64 @@ describe('cursor-cli (fake Cursor agent on PATH)', () => {
     expect(call!.stdin).toMatch(/^INSTRUCTIONS[\s\S]*MATERIALS[\s\S]*<conversation>[\s\S]*\$\(id\)/)
     expect(call!.args.join('\n')).not.toMatch(/MATERIALS|\$\(id\)/)
     expect(call!.args[call!.args.indexOf('--workspace') + 1]).toBe(call!.cwd)
+    expect(call!.cwd).toBe(cursorWorkspaceDir(env))
     expect(call!.cwdEntries).toEqual([])
+    expect(readdirSync(call!.cwd)).toEqual([])
     expect(call!.keyVars).toEqual([])
+    expect(readdirSync(tmp)).toEqual([])
+  })
+
+  it('runs every question in one stable, empty workspace in the cache dir (--trust covers only it)', async () => {
+    const { dir } = fakeBin()
+    const cache = makeTempDir('cli-xdg')
+    const env = cliEnv(dir, { XDG_CACHE_HOME: cache })
+    const { p, tmp } = provider('cursor-cli', env)
+    await collect(p)
+    await collect(p)
+    const [a, b] = calls(env)
+    const ws = path.join(cache, 'course-kit', 'cursor-ws')
+    expect(cursorWorkspaceDir(env)).toBe(ws)
+    expect(a!.cwd).toBe(ws)
+    expect(b!.cwd).toBe(ws)
+    for (const c of [a!, b!]) {
+      expect(c.args[c.args.indexOf('--workspace') + 1]).toBe(ws)
+      expect(c.args).toContain('--trust')
+      expect(c.cwdEntries).toEqual([])
+    }
+    expect(readdirSync(ws)).toEqual([])
+    expect(statSync(ws).mode & 0o777).toBe(0o700)
+    expect(readdirSync(tmp)).toEqual([]) // the per-run temp dir is still removed
+    // Default location without XDG_CACHE_HOME: ~/.cache/course-kit/cursor-ws.
+    const noXdg = cliEnv(dir)
+    expect(cursorWorkspaceDir(noXdg)).toBe(
+      path.join(noXdg.HOME!, '.cache', 'course-kit', 'cursor-ws'),
+    )
+  })
+
+  it('claude-cli keeps a fresh temp cwd per answer and never creates the Cursor workspace', async () => {
+    const { dir } = fakeBin()
+    const env = cliEnv(dir)
+    const { p } = provider('claude-cli', env)
+    await collect(p)
+    await collect(p)
+    const [a, b] = calls(env)
+    expect(a!.cwd).not.toBe(b!.cwd)
+    expect(existsSync(cursorWorkspaceDir(env))).toBe(false)
+  })
+
+  it('refuses a symlinked or foreign workspace directory', async () => {
+    const { dir } = fakeBin()
+    const cache = makeTempDir('cli-xdg')
+    const elsewhere = makeTempDir('cli-elsewhere')
+    mkdirSync(path.join(cache, 'course-kit'))
+    symlinkSync(elsewhere, path.join(cache, 'course-kit', 'cursor-ws'))
+    const env = cliEnv(dir, { XDG_CACHE_HOME: cache })
+    const { p, tmp } = provider('cursor-cli', env)
+    const err = await failure(collect(p))
+    expect(err.code).toBe('unavailable')
+    expect(err.message).toMatch(/real directory/)
+    expect(calls(env)).toEqual([]) // the CLI never ran
+    expect(readdirSync(elsewhere)).toEqual([])
     expect(readdirSync(tmp)).toEqual([])
   })
 

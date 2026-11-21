@@ -7,6 +7,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { isPlainObject } from '../validate.js'
 import { SECRET_ENV_NAMES } from '../env.js'
 import type { CliProviderId, Effort } from './config.js'
+import { cursorWorkspaceDir, ensureCursorWorkspace } from './cursor-workspace.js'
 import { flattenMessages, systemText } from './prompt.js'
 import {
   ProviderError,
@@ -24,7 +25,9 @@ import {
  *   CLAUDE_BIN / CURSOR_AGENT_BIN or an absolute PATH entry;
  * - the prompt goes through stdin (Claude Code: the system prompt through a 0600 file in a private
  *   0700 temp directory), never through argv; the directory is removed afterwards;
- * - the working directory is an empty temp directory, never the repository or the workspace;
+ * - the working directory is an empty directory, never the repository or the workspace: a private
+ *   temp directory, or for Cursor one stable empty directory in the user's cache (its transcripts
+ *   would otherwise pile up in ~/.cursor/projects; `course clean` removes them);
  * - no tools and no permission-skipping flags; read-only / ask modes only;
  * - a hard timeout and an output cap, after which the whole process group is killed;
  * - provider keys (ANTHROPIC_*, ELEVENLABS_*) are removed from the child's environment.
@@ -81,6 +84,8 @@ export type CliSpec = {
   loggedIn(status: unknown): boolean | null
   /** Claude Code takes the system prompt as a file; others get everything on stdin. */
   usesSystemFile: boolean
+  /** Run in one stable empty directory instead of a fresh temp directory per answer. */
+  stableWorkspace: boolean
   args(input: ArgsInput): string[]
   extraEnv(maxOutputTokens: number): Record<string, string>
   parser(): StreamParser
@@ -200,6 +205,7 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
     statusArgs: ['auth', 'status', '--json'],
     loggedIn: (s) => (isPlainObject(s) && typeof s.loggedIn === 'boolean' ? s.loggedIn : null),
     usesSystemFile: true,
+    stableWorkspace: false,
     args: ({ model, effort, systemFile }) => [
       '-p',
       '--output-format',
@@ -240,6 +246,7 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
     loggedIn: (s) =>
       isPlainObject(s) && typeof s.isAuthenticated === 'boolean' ? s.isAuthenticated : null,
     usesSystemFile: false,
+    stableWorkspace: true,
     args: ({ model, workDir }) => [
       '-p',
       '--output-format',
@@ -252,7 +259,7 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
       model,
       '--workspace',
       workDir,
-      // Headless runs need the workspace trusted: this trusts only the empty temp directory.
+      // Headless runs need the workspace trusted: this trusts only the one empty workspace directory.
       '--trust',
       '--sandbox',
       'enabled',
@@ -479,6 +486,15 @@ export async function privateWorkDir(root: string): Promise<{ dir: string; work:
   return { dir, work }
 }
 
+/** The one empty workspace of a CLI that needs a stable one; an unusable directory is "unavailable". */
+function stableWorkspace(env: NodeJS.ProcessEnv): string {
+  try {
+    return ensureCursorWorkspace(cursorWorkspaceDir(env))
+  } catch (err) {
+    throw new ProviderError('unavailable', `Cursor workspace: ${(err as Error).message}`)
+  }
+}
+
 const firstLine = (text: string): string =>
   (text.split(/\r?\n/).find((l) => l.trim()) ?? '').trim().slice(0, 300)
 
@@ -611,9 +627,10 @@ export function createCliProvider(o: CliProviderOptions): AnswerProvider {
     async *answer(req, signal): AsyncIterable<AnswerEvent> {
       const resolved = resolveCliBin(spec, env)
       if ('problem' in resolved) throw new ProviderError('unavailable', resolved.problem)
-      const { dir, work } = await privateWorkDir(tmpRoot)
+      const { dir, work: privateWork } = await privateWorkDir(tmpRoot)
       const run = { gen: null as AsyncGenerator<string, RunOutcome> | null }
       try {
+        const work = spec.stableWorkspace ? stableWorkspace(env) : privateWork
         const system = systemText(req.system)
         const conversation = flattenMessages(req.messages)
         let systemFile: string | null = null
