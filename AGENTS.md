@@ -59,6 +59,8 @@ PlantUML block (see ADR 0001).
 ## Context packs
 
 Build with `course context <id>`. Packs read the target repo through `src/lib/git-commit.ts` only (`ls-tree -z`,
-`cat-file --batch`, full SHAs after `--end-of-options`) — never the working tree, never `git show`/shell. Validate
+`cat-file --batch`, full SHAs after `--end-of-options`, `safe.bareRepository=explicit` and no signature checks) —
+never the working tree, never `git show`/shell. A `targetRepo` inside the workspace is refused. Validate
 any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content must go through
-`redactSecrets` and `fence()`. Extend `src/analyzers/` for language-specific graphs.
+`redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Extend `src/analyzers/` for
+language-specific graphs.

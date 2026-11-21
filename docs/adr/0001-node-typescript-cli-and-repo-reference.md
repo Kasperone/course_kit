@@ -16,7 +16,8 @@ dependencies minimal for the tool itself (generated workspaces carry their own S
 
 - **Runtime:** Node.js 20+
 - **Language:** TypeScript (ESM), built with `tsup` to a single `course` bin
-- **CLI parsing:** `commander` (only production dependency)
+- **CLI parsing:** `commander`; `minimatch` for lesson globs (step 2, BlueOak-1.0.0, a permissive
+  MIT-compatible licence). These are the only production dependencies.
 - **Tests:** Vitest; **lint:** ESLint 9 flat config; **format:** Prettier
 - **Generated workspace:** standard Slidev project (`@slidev/cli`), Mermaid diagrams only
 
