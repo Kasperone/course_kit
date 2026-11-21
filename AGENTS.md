@@ -30,7 +30,8 @@ course pin [-C dir] [<commit>]                 # default: target HEAD; prints ol
 course build [-C dir] [--lesson <id>] [--lang <code>]   # dist/<id>/<lang>/ + dist/index.html
 course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
 course narrate <lesson-id> [-C dir] [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
-               [--model <id>] [--force] [--prune] [--dry-run]   # audio/local/<lang>/<id>/ + manifest.json
+               [--model <id>] [--audio-quality compact|standard|high|lossless] [--force] [--prune] [--dry-run]
+               # audio/local/<lang>/<id>/ + manifest.json; course.json "audioQuality" sets the default
 course voices install piper <voice>             # pinned, sha256-checked, into ~/.cache/course_kit/piper-voices
 course voices list
 ```
@@ -54,6 +55,9 @@ course voices list
   WAV/MP3 durations, cache key, manifest validation, template/example sync, generated ATTRIBUTION.md.
 - `tests/narrate.test.ts` — `course narrate` with a fake provider (cache, `--force`, `--prune`, `--dry-run`),
   never-commit audio guard, no audio tracked in this repo, narration copy in `course build`, external-URL policy.
+- `tests/quality.test.ts` — `--audio-quality` presets, precedence (flag > course.json > standard), `course pin`
+  keeps `audioQuality`, cache key per preset, no resampling (fake ffmpeg), lossless WAV byte for byte,
+  ElevenLabs output formats.
 - `tests/tts.test.ts` — Piper via `tests/helpers/fake-piper.mjs` (stdin text, WAV/MP3), voice install with sha256
   checks, ElevenLabs with mocked HTTP (key never in output, files or errors).
 - `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: PlantUML, fonts and the dev server's
@@ -117,6 +121,8 @@ mentions plantuml.com or a font CDN. Never remove these keys when editing a deck
 
 - Steps come from notes exactly as Slidev splits them (`src/lib/narration/notes.ts`); `[click]` adds 1,
   `[click:n]` adds n.
+- Never change the sample rate or channels of TTS output (no `-ar`/`-ac`, no upsampling); quality presets only
+  choose the container and bitrate (`src/lib/narration/quality.ts`).
 - New providers implement `TtsProvider` in `src/lib/narration/providers.ts`; everything that changes the audio
   goes into `settings` (cache key). Add a fake/mocked test, never a live one.
 - The player lives in `templates/workspace/addons/narration` (copied into `examples/faktura/addons/narration`;

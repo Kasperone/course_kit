@@ -83,8 +83,24 @@ course narrate 01-architecture --lang all            # --dry-run first to see st
 - Voices are downloaded only by `course voices install`, never by `narrate`. Both default voices
   were trained on CC0 / public-domain data, so the generated audio may be redistributed (see
   `audio/ATTRIBUTION.md`).
-- `PIPER_BIN` and `COURSE_KIT_VOICES_DIR` override the binary and voice directory. With `ffmpeg` on
-  `PATH` (or `FFMPEG_BIN`) clips are MP3, otherwise WAV.
+- `PIPER_BIN` and `COURSE_KIT_VOICES_DIR` override the binary and voice directory. MP3 presets need
+  `ffmpeg` on `PATH` (or `FFMPEG_BIN`); without it, clips are written as WAV with a warning.
+
+**Audio quality.** `--audio-quality <preset>`, or `"audioQuality": "<preset>"` in `course.json` for the
+whole course (the flag wins; default `standard`). The preset is part of the cache key, so switching
+presets regenerates the clips. Sizes were measured on the faktura lesson `01-architecture` with Piper
+(EN + PL, 114 clips, about 23.5 minutes of speech):
+
+| Preset               | Output                                                                     | Size, EN + PL | Per minute |
+| -------------------- | -------------------------------------------------------------------------- | ------------- | ---------- |
+| `compact`            | MP3 64 kbit/s                                                              | 11.3 MB       | ~0.5 MB    |
+| `standard` (default) | MP3 128 kbit/s                                                             | 22.6 MB       | ~1 MB      |
+| `high`               | MP3 192 kbit/s; with Piper's 22.05 kHz voices, MP3's maximum of 160 kbit/s | 28.3 MB       | ~1.2 MB    |
+| `lossless`           | WAV, the TTS output as is, not re-encoded                                  | 62.0 MB       | ~2.6 MB    |
+
+The sample rate and channels are never changed: no upsampling, resampling or downmixing. Piper voices
+are 22.05 kHz mono, and MP3 at that rate stops at 160 kbit/s, so `high` uses 160 and says so. `course
+build` copies the clips into `dist/`, so a build is about this size per lesson.
 
 **ElevenLabs (optional, paid).** Put `ELEVENLABS_API_KEY=…` in the workspace's `.env` (gitignored)
 or the environment; the key is never printed or written anywhere:
@@ -93,7 +109,9 @@ or the environment; the key is never printed or written anywhere:
 course narrate 01-architecture --lang pl --provider elevenlabs --voice <voice-id> [--model eleven_multilingual_v2]
 ```
 
-Its audio also stays in `audio/local/`; check your plan's terms before sharing a build.
+Its audio also stays in `audio/local/`; check your plan's terms before sharing a build. Presets map
+to ElevenLabs output formats as delivered (44.1 kHz, no re-encoding): `mp3_44100_64`,
+`mp3_44100_128`, `mp3_44100_192` (Creator tier or above) and `wav_44100` (Pro tier or above).
 
 **Generated audio is never committed.** `course narrate` refuses to run if `audio/local/` is not
 gitignored or already has tracked files. `--force` regenerates, `--prune` deletes clips that the

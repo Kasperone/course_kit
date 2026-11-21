@@ -36,7 +36,8 @@ committing generated audio or API keys.
 - Clips go to `audio/local/<lang>/<lesson>/` (gitignored), named `s<slide>-c<click>-<key12>.<ext>`.
 - Cache key: `sha256(JSON{text, provider, voice, model, settings})` with sorted settings. Settings
   hold everything else that changes the audio (Piper: length/noise scales, sentence silence, sample
-  rate, format, bitrate; ElevenLabs: output format). For Piper, `model` includes the sha256 of the
+  rate, channels, quality preset, format, effective bitrate; ElevenLabs: quality preset, output
+  format, format, bitrate). For Piper, `model` includes the sha256 of the
   `.onnx` file. An existing non-empty file with that name is reused; `--force` regenerates.
 - Older clips that a new manifest no longer uses are kept (switching providers back and forth must
   not pay a paid provider twice) and reported; `--prune` deletes them.
@@ -45,6 +46,33 @@ committing generated audio or API keys.
   the audio itself (WAV header, MP3 frame walk), not estimated.
 - `--dry-run` prints steps and character counts (a cost check before a paid run) and writes nothing.
 - Engine version is not in the key: after upgrading Piper, run with `--force`.
+
+### Audio quality presets
+
+`--audio-quality compact|standard|high|lossless`, or `course.json` `"audioQuality"` (validated). The
+CLI flag wins over `course.json`, and the default is `standard`. `course pin` keeps the field.
+
+| Preset     | Piper                                            | ElevenLabs `output_format`              | Faktura `01-architecture`, EN + PL (Piper) |
+| ---------- | ------------------------------------------------ | --------------------------------------- | ------------------------------------------ |
+| `compact`  | MP3 64 kbit/s                                    | `mp3_44100_64`                          | 11.3 MB                                    |
+| `standard` | MP3 128 kbit/s                                   | `mp3_44100_128`                         | 22.6 MB                                    |
+| `high`     | MP3 192 kbit/s requested; 160 at 22.05 kHz       | `mp3_44100_192` (Creator tier or above) | 28.3 MB                                    |
+| `lossless` | WAV: Piper's PCM in a WAV header, not re-encoded | `wav_44100` (Pro tier or above)         | 62.0 MB                                    |
+
+The sizes cover 114 clips and 23.5 minutes of speech, measured 2026-11-21. The tier notes come from
+the ElevenLabs API docs.
+
+- **The sample rate and channels are never changed.** ffmpeg gets no `-ar`/`-ac`. After encoding,
+  the MP3's first frame header is compared with the source WAV's sample rate and channel count, and
+  a mismatch is an error. There is no upsampling, resampling or downmixing.
+- MP3 at MPEG-2 rates (below 32 kHz, so Piper's 22.05 kHz voices) tops out at 160 kbit/s.
+  Encoders silently cap a higher request, so `high` caps it explicitly, warns, and records the
+  effective bitrate in the settings and the cache key. Upsampling just to reach 192 kbit/s would add
+  size without adding audio.
+- ElevenLabs audio is stored exactly as delivered, at 44.1 kHz.
+- The manifest records `format` and `settings.quality`/`settings.bitrate`. The player, the
+  `course dev` middleware and `course build` handle `.mp3` and `.wav` clips alike, which was checked
+  in a headless browser with lossless WAV clips.
 
 ### Provider adapters
 
@@ -58,9 +86,10 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
   (`~/.local/share/course_kit/piper-venv`, see README). `PIPER_BIN` overrides; otherwise the venv
   binary, then `piper` on `PATH`.
 - Run with `--output-raw`; the text goes in on **stdin** (never argv, where a leading `-` would be
-  an option). course_kit wraps the 16-bit PCM in a WAV header and, when `ffmpeg` is available
-  (`FFMPEG_BIN` or `PATH`), encodes mono 64 kbit/s MP3 through stdin/stdout. Without ffmpeg it
-  writes WAV and warns. No temp files, no shell.
+  an option). course_kit wraps the 16-bit PCM in a WAV header. For the MP3 presets it then encodes
+  through `ffmpeg` (`FFMPEG_BIN` or `PATH`) over stdin/stdout, at the preset's bitrate and the
+  voice's own sample rate and channels. `lossless` keeps the WAV. Without ffmpeg it writes WAV and
+  warns. No temp files, no shell.
 - **GPL boundary.** Piper is GPL-3.0-or-later. course_kit (MIT) only executes it as a separate
   program and exchanges data over pipes. It never vendors, bundles, links or imports Piper, never
   installs it, and its npm package contains no Piper code. Users install Piper themselves.
@@ -86,7 +115,7 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
 
 **ElevenLabs (optional, paid).**
 
-- `POST https://api.elevenlabs.io/v1/text-to-speech/<voice>?output_format=mp3_44100_128` with
+- `POST https://api.elevenlabs.io/v1/text-to-speech/<voice>?output_format=<preset format>` with
   `{text, model_id}`; default model `eleven_multilingual_v2` (it normalises numbers). Voice and
   model ids are validated before they go into the URL. 429/5xx are retried twice.
 - The key comes only from `ELEVENLABS_API_KEY` in the environment or the workspace's gitignored
