@@ -40,6 +40,7 @@ course narrate 02-invoices --lang all          # Piper, offline; audio/local/<la
 course build                                   # copies the clips next to the decks
 
 # 6. Q&A chat (see "Q&A chat"): put ANTHROPIC_API_KEY in .env, then course serve / course dev
+#    (or answer with your Claude Code / Cursor subscription: --provider claude-cli | cursor-cli)
 course ask 02-invoices --dry-run               # prompt size and cost estimate, no key needed
 ```
 
@@ -157,7 +158,8 @@ course ask 01-architecture "Why is the session cookie HttpOnly?" --lang pl   # s
 - **Without a key** (or offline, or without a context pack) the panel says what is missing and
   the deck keeps working. Opening `dist/` with any other static server shows "run `course serve`".
 - **Privacy.** Questions and the lesson materials (including the code quoted in the pack) go to
-  Anthropic. Secrets were already denylisted and redacted when the pack was built.
+  Anthropic (or, with `cursor-cli`, to Cursor and its model provider). Secrets were already
+  denylisted and redacted when the pack was built.
 
 **Model and settings.** The default model is `claude-sonnet-5-5` at effort `low`. Choose another with
 `--model` (on `serve`, `dev` and `ask`), the `COURSE_CHAT_MODEL` environment variable, or
@@ -188,9 +190,63 @@ Estimated cost per question for faktura lesson 01 (from `course ask --dry-run`, 
 | `claude-haiku-5-5`            | ~$0.004        | ~$0.001 |
 
 `refusalFallback` lets the API retry a declined answer on another model (Opus/Sonnet 5.5 only).
-Voice input is designed but not implemented yet. Step-4 workspaces get the panel after copying
-`addons/chat`, adding `"slidev-addon-course-chat": "file:addons/chat"` and `"course-chat"` to
-`package.json` (`devDependencies`, `slidev.addons`) and running `npm install`.
+
+### Providers: API key or CLI subscription
+
+The chat can answer through three providers. The Anthropic API stays the default.
+
+| Provider                  | Needs                                                                         | Billing      | Default model           |
+| ------------------------- | ----------------------------------------------------------------------------- | ------------ | ----------------------- |
+| `anthropic-api` (default) | `ANTHROPIC_API_KEY` in the environment or `.env`                              | per token    | `claude-sonnet-5-5`     |
+| `claude-cli`              | [Claude Code](https://claude.com/claude-code) logged in (`claude auth login`) | subscription | `sonnet`                |
+| `cursor-cli`              | Cursor agent CLI logged in (`cursor-agent login`)                             | subscription | `claude-sonnet-5-5-low` |
+
+```bash
+course serve --provider claude-cli                 # or: COURSE_CHAT_PROVIDER=claude-cli course serve
+course ask 01-architecture "Why HttpOnly?" --provider cursor-cli --model claude-opus-5-5-medium
+course ask 01-architecture --provider claude-cli --dry-run   # prompt size + "Provider status: ready"
+```
+
+Choose the provider like the model: `--provider` (on `serve`, `dev` and `ask`) wins over
+`COURSE_CHAT_PROVIDER`, which wins over `chat.provider` in `course.json`. `--model` and
+`COURSE_CHAT_MODEL` set the model of the selected provider; in `course.json`, `chat.model` is the API
+model and each CLI has its own block (`timeoutSeconds` 10–900, default 180):
+
+```json
+"chat": {
+  "provider": "claude-cli",
+  "claudeCli": { "model": "sonnet", "timeoutSeconds": 180 },
+  "cursorCli": { "model": "claude-sonnet-5-5-low" }
+}
+```
+
+Claude Code takes aliases (`sonnet`, `opus`, `haiku`) or full model names. Cursor model ids include
+the effort and depend on your account: list them with `cursor-agent models`. `CLAUDE_BIN` and
+`CURSOR_AGENT_BIN` (absolute paths) override the PATH lookup.
+
+How the CLI providers run, and what that costs you:
+
+- **No tools, no permissions.** The CLI is started directly (no shell) in an empty private temp
+  directory, never in the repo or the workspace. Claude Code runs with no tools, no MCP servers,
+  `--permission-mode dontAsk`, `--restricted`, `--safe-mode` and no session saved; Cursor runs in
+  read-only `--mode ask` with its sandbox on. Permission-skipping flags (`--dangerously-skip-permissions`,
+  `--force`, `--yolo`) are never used.
+- **The prompt goes through stdin** (Claude Code: our instructions and the lesson materials through a
+  0600 file in that temp directory, which is deleted afterwards), never through the command line.
+- **Limits.** Each answer has a timeout (default 180 s) and an 8 MB output cap; then the CLI and
+  anything it started are killed. `ANTHROPIC_*` and `ELEVENLABS_*` variables are removed from the
+  CLI's environment, so it always uses its own login.
+- **Slower and uncached.** The API provider reuses the cached ~23k-token prefix; a CLI provider
+  sends the whole prompt every time (whatever caching the CLI does on its own is outside
+  course_kit's control) and adds a few seconds of CLI start-up. Costs show as `subscription`.
+- **Status.** `course serve`/`dev` print the provider and whether it is ready; the panel says when
+  the CLI is missing or not logged in, with the command to run.
+- **Cursor keeps transcripts.** `cursor-agent` has no option to turn them off: it writes each
+  conversation (including the lesson materials) under `~/.cursor/projects/<temp-dir-name>/`.
+  course_kit itself still stores nothing.
+  Voice input is designed but not implemented yet. Step-4 workspaces get the panel after copying
+  `addons/chat`, adding `"slidev-addon-course-chat": "file:addons/chat"` and `"course-chat"` to
+  `package.json` (`devDependencies`, `slidev.addons`) and running `npm install`.
 
 ### Example
 

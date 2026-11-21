@@ -8,6 +8,8 @@ step 3 added `course pin`, Slidev `course build`/`course dev` and the first real
 ElevenLabs), `course voices`, the in-deck player addon and the Polish version of that lesson. Step 5
 adds the Q&A chat: a local backend on 127.0.0.1 (`course serve`, and inside `course dev`), `course ask`
 and the in-deck chat panel addon, answered by Claude and grounded in the lesson's pack and slides.
+Answers come from the Anthropic API (default) or, with `--provider claude-cli|cursor-cli`, from the
+user's Claude Code / Cursor subscription through their headless CLIs.
 
 ## Commands
 
@@ -30,9 +32,10 @@ course lesson new <lesson-id>
 course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 course pin [-C dir] [<commit>]                 # default: target HEAD; prints old -> new
 course build [-C dir] [--lesson <id>] [--lang <code>]   # dist/<id>/<lang>/ + dist/index.html
-course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>] [--model <id>] [--no-chat]
-course serve [-C dir] [--port 8787] [--model <id>] [--no-chat]   # dist/ + Q&A API, 127.0.0.1 only
-course ask <lesson-id> [question] [-C dir] [--lang <code>] [--slide <n>] [--model <id>] [--dry-run]
+course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>] [--provider <id>] [--model <id>] [--no-chat]
+course serve [-C dir] [--port 8787] [--provider <id>] [--model <id>] [--no-chat]   # dist/ + Q&A API, 127.0.0.1 only
+course ask <lesson-id> [question] [-C dir] [--lang <code>] [--slide <n>] [--provider <id>] [--model <id>] [--dry-run]
+               # providers: anthropic-api (default, key) | claude-cli | cursor-cli (subscription, no key)
 course narrate <lesson-id> [-C dir] [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
                [--model <id>] [--audio-quality compact|standard|high|lossless] [--force] [--prune] [--dry-run]
                # audio/local/<lang>/<id>/ + manifest.json; course.json "audioQuality" sets the default
@@ -70,6 +73,10 @@ course voices list
   workspace secrets.
 - `tests/chat-prompt.test.ts` — materials (pack states, symlinks, steps like narration), prompt layout and cache
   breakpoint, frame-tag escaping (hostile pack), ask validation, `SourceSplitter` markers.
+- `tests/chat-cli-provider.test.ts` — `claude-cli` / `cursor-cli` against fake CLIs on PATH
+  (`tests/helpers/fake-claude.mjs`, `fake-cursor-agent.mjs`): argument lists (no shell, no permission-skipping
+  flags), stdin / system-prompt file, empty temp cwd, stripped env, stream-json parsing, not installed / not
+  logged in, timeout and abort kill the process group, output cap, leftovers, status, markers, cost label.
 - `tests/chat-provider.test.ts` — the real Anthropic SDK against `tests/helpers/fake-anthropic.ts` (local mock
   Messages API): request shape, streaming, refusal, error codes, abort, key redaction.
 - `tests/chat-server.test.ts` — Host/Origin guards, limits, SSE, abort, no-key/no-pack states, static `dist/`.
@@ -93,6 +100,11 @@ Always run lint and tests before pushing.
   install it from course_kit. Voices are downloaded only by `course voices install`, into the user cache.
 - ElevenLabs: the key comes only from `ELEVENLABS_API_KEY` (env or the workspace `.env`); never print, log or
   write it. Tests use mocked HTTP only; never make live API calls.
+- Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
+  an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty temp cwd, with
+  no tools, a timeout, an output cap and `ANTHROPIC_*`/`ELEVENLABS_*` stripped from their env. Never add
+  `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
+  CLIs only; never run the real `claude` / `cursor-agent` from a test.
 - Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via
   `readWorkspaceSecret` in `src/lib/env.ts`); it never reaches the browser, logs, files or errors. Tests use the
   fake provider or the local mock API; `tests/setup.ts` refuses any non-loopback `fetch`. Never make live calls.
@@ -173,5 +185,10 @@ content must go through `redactSecrets` and `fence()`. Extend `src/analyzers/` f
   them identical). Its logic is in `chat-client.ts`; it renders answers as text only (no `v-html`, links or
   images) and may only fetch same-origin relative paths.
 - New config fields go into `src/lib/chat/config.ts` (validated, unknown fields rejected).
+- Providers: `anthropic-api` (default; the only one with the cached prefix), `claude-cli`, `cursor-cli`
+  (`src/lib/chat/providers.ts`, `cli-provider.ts`; ADR 0005 "Providers"). Precedence `--provider` >
+  `COURSE_CHAT_PROVIDER` > `chat.provider`; `--model`/`COURSE_CHAT_MODEL` apply to the selected provider,
+  `chat.model` is the API model and `chat.claudeCli`/`chat.cursorCli` hold the CLI models. A new provider
+  implements `AnswerProvider` (with `billing` and, if it can be unavailable, `check()`).
 - Voice input (whisper.cpp / ElevenLabs Scribe) is designed in ADR 0005 but not implemented; never download,
   build or install whisper.cpp or models from course_kit.

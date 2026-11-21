@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (step 5). Voice input is designed here but not implemented yet.
+Accepted (step 5). Voice input is designed here but not implemented yet. Amended in step 5 with
+subscription-backed CLI providers (see "Providers").
 
 ## Context
 
@@ -17,10 +18,10 @@ call its own origin or loopback. API keys must never reach the browser.
 
 - The backend runs **inside course_kit**, on `node:http`, bound to **127.0.0.1 only** (there is no
   host option).
-  - `course serve [-C] [--port 8787] [--model] [--no-chat]` serves the built `dist/` and the API
+  - `course serve [-C] [--port 8787] [--provider] [--model] [--no-chat]` serves the built `dist/` and the API
     from **one origin**. It replaces `npx vite preview` as the way to view a built course, and it
     answers single byte ranges, so narration clips can seek.
-  - `course dev <lesson> [--model] [--no-chat]` starts the backend on an ephemeral loopback port
+  - `course dev <lesson> [--provider] [--model] [--no-chat]` starts the backend on an ephemeral loopback port
     and passes it to Slidev as `COURSE_CHAT_PORT`. The chat addon's Vite plugin proxies
     `/@course-chat/` there with `changeOrigin: false`, so the browser still sees one origin and the
     backend's Host and Origin checks still apply. The e2e test checks that SSE is not buffered by
@@ -41,24 +42,24 @@ call its own origin or loopback. API keys must never reach the browser.
 
 ### HTTP API
 
-| Route                    | Request                                                                                                             | Response                                                                                                                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET status?lesson&lang` | –                                                                                                                   | `{apiVersion, answers: ready\|no-key\|disabled, model, pack: ok\|missing\|stale\|too-large, problem, packCommit, pinnedCommit, promptTokens, slides, limits, stt: "off"}`. No upstream call |
-| `POST ask`               | JSON ≤ 32 KB: `{lesson, lang, slide, click, question ≤ 2000 chars, history ≤ 6 turns}`. Unknown fields are rejected | `text/event-stream`                                                                                                                                                                         |
+| Route                    | Request                                                                                                             | Response                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET status?lesson&lang` | –                                                                                                                   | `{apiVersion, answers: ready\|no-key\|unavailable\|disabled, provider, providerState, providerMessage, billing, cachedPrompt, vendor, model, pack: ok\|missing\|stale\|too-large, problem, packCommit, pinnedCommit, promptTokens, slides, limits, stt: "off"}`. No upstream call (a CLI provider runs its local login-status command, cached for 60 s) |
+| `POST ask`               | JSON ≤ 32 KB: `{lesson, lang, slide, click, question ≤ 2000 chars, history ≤ 6 turns}`. Unknown fields are rejected | `text/event-stream`                                                                                                                                                                                                                                                                                                                                     |
 
 SSE events on `ask`:
 
-| Event                        | Meaning                                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| `start`                      | The answer has begun                                                                         |
-| `delta {text, source}`       | A piece of answer text; `source` is `lesson` or `general`                                    |
-| `scope {value: "off-topic"}` | The question is unrelated to the lesson                                                      |
-| `done {stopReason, usage}`   | The answer is complete. `max_tokens` means it was cut off                                    |
-| `error {code, message}`      | Codes: `refused`, `auth`, `offline`, `rate-limited`, `overloaded`, `bad-request`, `upstream` |
+| Event                        | Meaning                                                                                                                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`                      | The answer has begun                                                                                                                                                 |
+| `delta {text, source}`       | A piece of answer text; `source` is `lesson` or `general`                                                                                                            |
+| `scope {value: "off-topic"}` | The question is unrelated to the lesson                                                                                                                              |
+| `done {stopReason, usage}`   | The answer is complete. `max_tokens` means it was cut off                                                                                                            |
+| `error {code, message}`      | Codes: `refused`, `auth`, `offline`, `rate-limited`, `overloaded`, `bad-request`, `upstream`; CLI providers add `unavailable`, `not-logged-in`, `timeout`, `cut-off` |
 
 A `: ping` comment goes out every 15 s. Errors found before the stream starts are JSON with an HTTP
 status: 400, 403, 404, 405, 413, 415, 422 (`no-pack`, `too-large`), 429 (with `Retry-After`) or 503
-(`no-key`, `disabled`).
+(`no-key`, `unavailable`, `not-logged-in`, `disabled`). `start` carries `{model, provider, billing}`.
 
 ### Security
 
@@ -171,6 +172,91 @@ Nothing is truncated silently, except the oldest history turns.
   | Opus 5.5   | ~$0.14         | ~$0.025              |
   | Haiku 5.5  | ~$0.004        | ~$0.001              |
 
+### Providers
+
+Answers come from one of three providers behind the same `AnswerProvider` interface
+(`src/lib/chat/provider.ts`; selection in `providers.ts`, CLIs in `cli-provider.ts`). Each provider
+streams text and ends with a stop reason and usage, reports its `billing` (`api` or
+`subscription`) and, for CLIs, a cheap `check()` (installed and logged in).
+
+| Provider                  | Runs                                    | Auth                                | Default model           |
+| ------------------------- | --------------------------------------- | ----------------------------------- | ----------------------- |
+| `anthropic-api` (default) | `@anthropic-ai/sdk` in-process          | `ANTHROPIC_API_KEY` (env or `.env`) | `claude-sonnet-5-5`     |
+| `claude-cli`              | `claude -p` (Claude Code), stream-json  | the CLI's own login (subscription)  | `sonnet`                |
+| `cursor-cli`              | `cursor-agent -p` (Cursor), stream-json | the CLI's own login (subscription)  | `claude-sonnet-5-5-low` |
+
+**Why.** Many learners and authors already pay for Claude Code or Cursor and have no API key, or do
+not want per-token billing for a local tutor. The API provider stays the default because it is
+faster, uses the cached prefix and gives exact usage and cost.
+
+**Selection.** `--provider` > `COURSE_CHAT_PROVIDER` > `chat.provider` > `anthropic-api`. `--model`
+and `COURSE_CHAT_MODEL` apply to the selected provider; in `course.json`, `chat.model` is the API
+model and `chat.claudeCli` / `chat.cursorCli` hold `{model, timeoutSeconds}`. Model names are
+validated per provider (CLI names must start with a letter and contain no spaces or shell
+characters, so they cannot be read as options). Cursor's default comes from `cursor-agent models`
+(CLI 2026.11.19): "Claude Sonnet 5.5 Low", matching the API default of Sonnet 5.5 at effort low.
+Cursor ids are account-dependent, so the README points to that command.
+
+**Security model of the CLI providers.**
+
+- **Process.** `spawn(absolutePath, argv[], {shell: false, detached: true})`. The executable is
+  `CLAUDE_BIN` / `CURSOR_AGENT_BIN` (absolute paths only) or the first match in an absolute `PATH`
+  entry (relative entries are ignored). Nothing from the request is ever an argument: the only
+  variable arguments are the validated model, the effort and our own temp paths.
+- **Prompt.** Through stdin, never argv (no `ps` exposure, no argv size limit). Claude Code gets our
+  instructions and the materials through `--system-prompt-file`, replacing its own system prompt,
+  and the conversation on stdin. Cursor has no system-prompt option, so everything goes on stdin.
+  History is flattened into `<conversation>`/`<turn>` frames (frame tags escaped like the rest).
+- **Working directory.** A fresh `mkdtemp` directory (0700) with an empty `cwd/` subdirectory; the
+  system prompt file is 0600 next to it. Removed after every answer and status check. The CLI never
+  runs in the repository or the workspace.
+- **No tools.** Claude Code: `--tools ""`, `--strict-mcp-config` (no MCP servers),
+  `--permission-mode dontAsk` plus `--permission-prompts none` (anything that would need approval is
+  denied), `--restricted` (no user/project settings and their hooks, no code-running tools),
+  `--safe-mode` (no CLAUDE.md, plugins, skills), `--disable-slash-commands`,
+  `--no-session-persistence`. Cursor: `--mode ask` (read-only Q&A), `--sandbox enabled`, and
+  `--workspace` set to the empty directory. `--trust` is passed because headless Cursor refuses an
+  untrusted workspace; it trusts only that empty directory and grants no tool permission.
+- **Never.** `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--force`,
+  `-f`, `--yolo`, `--auto-review`, `--approve-mcps`, `bypassPermissions`/`acceptEdits`. A test checks
+  every argument list.
+- **Limits.** A timeout per answer (default 180 s, `timeoutSeconds` 10–900) and an 8 MB stdout cap;
+  either kills the whole process group (SIGTERM, SIGKILL 2 s later). An aborted request (browser
+  gone, Ctrl+C in `course ask`) does the same. After a normal exit the rest of the group gets
+  SIGTERM too: `cursor-agent` leaves a per-workspace `worker-server` running otherwise.
+- **Environment.** The child gets the parent's environment minus `ANTHROPIC_*` and `ELEVENLABS_*`
+  (and the other `SECRET_ENV_NAMES`), so a workspace key never reaches a CLI and the CLI always
+  uses its own login. Claude Code also gets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` = `chat.maxOutputTokens`.
+- **Status.** `claude auth status --json` (`loggedIn`) and `cursor-agent status --format json`
+  (`isAuthenticated`): only that boolean is read; account details are never parsed, logged or
+  returned. Results are cached for 60 s (failures for 5 s). Not installed / not logged in become
+  `answers: "unavailable"` with a message naming the install or login command.
+
+**Parsing.** Claude Code `stream-json` with `--include-partial-messages`: `stream_event`
+`text_delta`s are the answer; the `assistant` message is used only if no delta came, and the
+`result` text only if nothing was streamed. Cursor `stream-json` with `--stream-partial-output`:
+`assistant` lines with `timestamp_ms` are deltas; the CLI then repeats the buffered text without
+`timestamp_ms`, which is skipped once deltas were seen. `result.is_error` and non-zero exits are
+classified (not logged in, usage limit, rejected arguments, other) into the error codes above. The
+`[[general]]` / `[[off-topic]]` markers go through the same `SourceSplitter`, so the panel behaves
+the same for every provider.
+
+**Trade-offs.**
+
+- **Slower and uncached.** Only the API provider sets our cache breakpoint; a CLI provider resends
+  the whole ~23k-token prompt each time and adds CLI start-up (about 2 s for Claude Code and 5 s for
+  Cursor on a trivial prompt). Whatever caching a CLI does on its own is outside our control.
+- **Cost** shows as `subscription` (status `billing`, `course ask` and server logs); usage counts
+  are reported when the CLI provides them.
+- **Less control.** No `max_tokens` for Cursor (the output cap applies), no refusal fallback, and
+  each CLI adds its own system prompt or agent behaviour on top of ours. The CLIs' flags change over
+  time; an unknown flag surfaces as "rejected its arguments (is it up to date?)".
+- **Data at the CLI vendor.** With `cursor-cli` the materials go to Cursor (the panel's privacy line
+  says so). `cursor-agent` has no option to disable its transcripts and writes each conversation
+  under `~/.cursor/projects/<temp-dir-name>/`; Claude Code keeps nothing (`--no-session-persistence`).
+- **Tests** use fake `claude` / `cursor-agent` scripts on `PATH` (`tests/helpers/fake-*.mjs`), never
+  the real CLIs.
+
 ### Deck UI (`addons/chat`, `slidev-addon-course-chat`)
 
 - **Placement.** A separate local addon next to narration, in the template and the example. A test
@@ -206,13 +292,14 @@ Nothing is truncated silently, except the oldest history turns.
 
 ### Testing
 
-| Area                                          | How it is tested                                                                                                                                                                                                                                                                             |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit tests                                    | Config, prompt and materials (including a hostile pack), `SourceSplitter`, the server's guards, limits, SSE and abort with a fake provider, static serving, and the CLI commands                                                                                                             |
-| Anthropic provider                            | The **real SDK** against a local mock of the Messages API (request shape, streaming, refusal, error codes, abort, key redaction)                                                                                                                                                             |
-| Network                                       | `tests/setup.ts` rejects any `fetch` to a non-loopback host, so a live API call in a test is impossible                                                                                                                                                                                      |
-| E2E (`tests/chat-e2e.test.ts`, CI `deck` job) | Real Slidev 52.20.1 builds a probe workspace. The bundle carries the chat config, and a deck outside `lessons/` does not (negative control). `course serve` answers on one origin and refuses a foreign Origin and a rebinding Host. Through the dev server, the proxy streams incrementally |
-| Manual                                        | A headless-browser check of the built faktura deck with a mock API: the answer streams, the general part has its badge, the slide link navigates, no anchors or images appear, and only 127.0.0.1 requests are made                                                                          |
+| Area                                          | How it is tested                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit tests                                    | Config, prompt and materials (including a hostile pack), `SourceSplitter`, the server's guards, limits, SSE and abort with a fake provider, static serving, and the CLI commands                                                                                                                                                                                                                                                                          |
+| CLI providers                                 | Fake `claude` / `cursor-agent` on `PATH` (in a directory whose name contains shell syntax): argument lists without permission-skipping flags, stdin and system-prompt file, empty private cwd removed afterwards, stripped environment, stream-json parsing and fallbacks, not installed / not logged in, timeout and abort killing the process group, the output cap, leftover processes, markers and status through the server, `course ask` cost label |
+| Anthropic provider                            | The **real SDK** against a local mock of the Messages API (request shape, streaming, refusal, error codes, abort, key redaction)                                                                                                                                                                                                                                                                                                                          |
+| Network                                       | `tests/setup.ts` rejects any `fetch` to a non-loopback host, so a live API call in a test is impossible                                                                                                                                                                                                                                                                                                                                                   |
+| E2E (`tests/chat-e2e.test.ts`, CI `deck` job) | Real Slidev 52.20.1 builds a probe workspace. The bundle carries the chat config, and a deck outside `lessons/` does not (negative control). `course serve` answers on one origin and refuses a foreign Origin and a rebinding Host. Through the dev server, the proxy streams incrementally                                                                                                                                                              |
+| Manual                                        | A headless-browser check of the built faktura deck with a mock API: the answer streams, the general part has its badge, the slide link navigates, no anchors or images appear, and only 127.0.0.1 requests are made                                                                                                                                                                                                                                       |
 
 ## Alternatives considered
 
@@ -229,7 +316,8 @@ Nothing is truncated silently, except the oldest history turns.
 
 ## Consequences
 
-- One new runtime dependency, `@anthropic-ai/sdk` (Apache-2.0).
+- One new runtime dependency, `@anthropic-ai/sdk` (Apache-2.0). The CLI providers add none: the
+  CLIs are external programs the user installs and logs in to.
 - Each question costs money (see the table above) and sends the lesson materials, including quoted
   repository code, to Anthropic. The panel says so.
 - Step-4 workspaces need `addons/chat`, two `package.json` entries and `npm install`.
