@@ -8,6 +8,7 @@ fonts:
   serif: "ui-serif"
   mono: "ui-monospace"
   provider: "none"
+favicon: "data:,"
 browserExporter: false
 download: false
 info: |

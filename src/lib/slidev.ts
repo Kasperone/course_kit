@@ -20,6 +20,12 @@ export const SYSTEM_FONTS = {
 } as const
 
 /**
+ * Slidev's default favicon is hosted on cdn.jsdelivr.net. An empty data: URL loads nothing; a
+ * /favicon.svg path would break under `slidev build --base` and lesson decks have their own root.
+ */
+export const NO_FAVICON = 'data:,'
+
+/**
  * Headmatter for a generated deck. Values are emitted as JSON strings, which are valid YAML
  * scalars, so titles containing `: `, quotes or `#` cannot break the frontmatter. Besides title
  * and language, it pins the offline policy checked by offlineHeadmatterProblems().
@@ -33,6 +39,7 @@ export function deckFrontmatter(fields: { title: string; lang: string }): string
     `plantUmlServer: ${JSON.stringify(PLANTUML_DISABLED_SERVER)}`,
     'fonts:',
     ...Object.entries(SYSTEM_FONTS).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`),
+    `favicon: ${JSON.stringify(NO_FAVICON)}`,
     // No /export page or export button in the dev server, and no PDF download in builds.
     'browserExporter: false',
     'download: false',
@@ -62,8 +69,9 @@ function topLevelKey(block: string, key: string): { inline: string; children: st
 const NONE_RE = /^\s*["']?none["']?\s*(?:#.*)?$/
 
 /**
- * Why a deck's headmatter is not offline-safe (empty when it is): PlantUML must point at a data:
- * URL, fonts must use no web-font provider, and the browser exporter and PDF download must be off.
+ * Why a deck's headmatter is not offline-safe (empty when it is): PlantUML and the favicon must
+ * point at data: URLs, fonts must use no web-font provider, and the browser exporter and PDF
+ * download must be off.
  * Accepts the block (`fonts:` + indented `provider: none`) and flow (`fonts: { provider: none }`)
  * forms.
  */
@@ -87,6 +95,13 @@ export function offlineHeadmatterProblems(deckText: string): string[] {
     : fonts?.children.map((l) => l.match(/^\s+provider:(.*)$/)?.[1]).find((v) => v !== undefined)
   if (provider === undefined || !NONE_RE.test(provider)) {
     problems.push('fonts.provider must be "none" (system fonts, no Google Fonts requests)')
+  }
+
+  const favicon = topLevelKey(block, 'favicon')
+  if (!favicon || !/^\s*["']?data:/.test(favicon.inline)) {
+    problems.push(
+      `favicon must be ${JSON.stringify(NO_FAVICON)} (Slidev's default is loaded from cdn.jsdelivr.net)`,
+    )
   }
 
   const exporter = topLevelKey(block, 'browserExporter')
@@ -146,7 +161,7 @@ export function findWebFontFiles(courseDir: string): string[] {
   return scanWorkspace(courseDir, /\.(md|vue|css|html)$/i, (t) => WEB_FONT_HOST_RE.test(t))
 }
 
-export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' }
+export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | 'CDN favicon' }
 
 /** Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or web-font CDN. */
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
@@ -157,6 +172,9 @@ export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
     const text = readFileSync(file, 'utf8')
     if (/plantuml\.com/i.test(text)) hits.push({ file, what: 'PlantUML server' })
     if (WEB_FONT_HOST_RE.test(text)) hits.push({ file, what: 'web fonts' })
+    if (/\.html$/i.test(file) && /cdn\.jsdelivr\.net/i.test(text)) {
+      hits.push({ file, what: 'CDN favicon' })
+    }
   }
   return hits.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }

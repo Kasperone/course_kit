@@ -4,8 +4,9 @@
 // - no PlantUML: Slidev renders ```plantuml blocks and <PlantUml> as <img> requests to
 //   `plantUmlServer` (default https://www.plantuml.com), sending the diagram source off-machine;
 // - no web fonts from a CDN (Google Fonts, coollabs): decks use system fonts;
-// - the root deck's headmatter pins plantUmlServer to a data: URL, fonts.provider to "none",
-//   browserExporter to false (no /export page) and never enables `download`.
+// - the root deck's headmatter pins plantUmlServer and favicon (default: cdn.jsdelivr.net) to data:
+//   URLs, fonts.provider to "none", browserExporter to false (no /export page) and never enables
+//   `download`.
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -62,6 +63,9 @@ function headmatterProblems(text) {
         .find(([k]) => k.trim() === 'provider')?.[1]
     : fonts?.children.map((l) => l.match(/^\s+provider:(.*)$/)?.[1]).find((v) => v !== undefined)
   if (provider === undefined || !none.test(provider)) problems.push('fonts.provider must be "none"')
+  if (!/^\s*["']?data:/.test(key('favicon')?.inline ?? '')) {
+    problems.push('favicon must be a data: URL')
+  }
   if (!/^\s*false\s*(?:#.*)?$/.test(key('browserExporter')?.inline ?? '')) {
     problems.push('browserExporter must be false')
   }

@@ -13,6 +13,8 @@ fonts:
 # No export: no /export page in the dev server, no PDF download in builds.
 browserExporter: false
 download: false
+# Slidev's default favicon is loaded from cdn.jsdelivr.net; an empty data: URL loads nothing.
+favicon: 'data:,'
 drawings:
   persist: false
 ---

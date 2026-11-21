@@ -14,7 +14,7 @@ import {
 /**
  * Real Slidev builds against the committed example workspace. Runs only when its dependencies are
  * installed (`npm ci --prefix examples/faktura`, done by the CI `deck` job); skipped otherwise.
- * Each policy (PlantUML server, system fonts, no browser exporter) is checked together with a
+ * Each policy (PlantUML server, system fonts, data: favicon, no browser exporter) is checked with a
  * negative control that shows what Slidev does without it.
  */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -137,20 +137,36 @@ describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
     }
   }, 180_000)
 
-  it('dev server: no /export or /print page and no web fonts; the defaults enable both', async () => {
+  it('favicon: the data: URL means no CDN request; the default favicon is on cdn.jsdelivr.net', () => {
+    try {
+      const offline = buildProbe(OFFLINE)
+      expect(readFileSync(path.join(offline, 'index.html'), 'utf8')).toContain(
+        '<link rel="icon" href="data:,">',
+      )
+      expect(findForbiddenBuildRefs(offline)).toEqual([])
+
+      const online = buildProbe(without(/^favicon:.*\n/m))
+      expect(readFileSync(path.join(online, 'index.html'), 'utf8')).toContain('cdn.jsdelivr.net')
+      expect(findForbiddenBuildRefs(online).map((r) => r.what)).toContain('CDN favicon')
+    } finally {
+      cleanup()
+    }
+  }, 180_000)
+
+  it('dev server: no /export or /print page, web fonts or CDN favicon; the defaults enable all', async () => {
     try {
       const [env, page] = await devFetch(probeDeck(OFFLINE, ''), ['/@vite/env', '/'])
       expect(flag(env!, '__SLIDEV_FEATURE_BROWSER_EXPORTER__')).toBe('false')
       expect(flag(env!, '__SLIDEV_FEATURE_PRINT__')).toBe('false')
-      expect(page).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com/)
+      expect(page).not.toMatch(/fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net/)
 
-      const defaults = OFFLINE.replace(/^browserExporter:.*\n/m, '').replace(
-        /^fonts:\n(?: {2}.*\n)+/m,
-        '',
-      )
+      const defaults = OFFLINE.replace(/^browserExporter:.*\n/m, '')
+        .replace(/^fonts:\n(?: {2}.*\n)+/m, '')
+        .replace(/^favicon:.*\n/m, '')
       const [envOn, pageOn] = await devFetch(probeDeck(defaults, ''), ['/@vite/env', '/'])
       expect(flag(envOn!, '__SLIDEV_FEATURE_BROWSER_EXPORTER__')).toBe('true')
       expect(pageOn).toContain('fonts.googleapis.com')
+      expect(pageOn).toContain('cdn.jsdelivr.net')
     } finally {
       cleanup()
     }

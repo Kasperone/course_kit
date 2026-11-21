@@ -122,6 +122,7 @@ describe('course build', () => {
     ['plantUmlServer', /plantUmlServer must be/],
     ['provider', /fonts\.provider must be "none"/],
     ['browserExporter', /browserExporter must be false/],
+    ['favicon', /favicon must be "data:,"/],
   ])('refuses build and dev when the headmatter lacks %s', async (key, error) => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     const log = installFakeSlidev(workspace)
@@ -199,9 +200,14 @@ describe('PlantUML scanners', () => {
       path.join(dir, 'index.html'),
       '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans">',
     )
+    writeFileSync(
+      path.join(dir, 'other.html'),
+      '<link rel="icon" href="https://cdn.jsdelivr.net/gh/slidevjs/slidev/assets/favicon.png">',
+    )
     expect(findForbiddenBuildRefs(dir)).toEqual([
       { file: path.join(dir, 'assets', 'b.js'), what: 'PlantUML server' },
       { file: path.join(dir, 'index.html'), what: 'web fonts' },
+      { file: path.join(dir, 'other.html'), what: 'CDN favicon' },
     ])
   })
 
@@ -220,7 +226,8 @@ describe('PlantUML scanners', () => {
 
 describe('offline headmatter policy', () => {
   const deckWith = (head: string) => `---\n${head}\n---\n\n# x\n`
-  const base = 'plantUmlServer: "data:text/plain,plantuml-disabled"\nbrowserExporter: false\n'
+  const base =
+    'plantUmlServer: "data:text/plain,plantuml-disabled"\nfavicon: "data:,"\nbrowserExporter: false\n'
 
   it('accepts the generated headmatter', () => {
     expect(offlineHeadmatterProblems(deckFrontmatter({ title: 'a: b', lang: 'en' }))).toEqual([])
@@ -255,6 +262,16 @@ describe('offline headmatter policy', () => {
       /browserExporter/,
     ],
     ['download true', deckWith(`${base}fonts: {provider: none}\ndownload: true`), /download/],
+    [
+      'no favicon (Slidev default: cdn.jsdelivr.net)',
+      deckWith(`${base.replace('favicon: "data:,"\n', '')}fonts: {provider: none}`),
+      /favicon/,
+    ],
+    [
+      'CDN favicon',
+      deckWith(`${base.replace('"data:,"', 'https://cdn.example/f.png')}fonts: {provider: none}`),
+      /favicon/,
+    ],
     ['download auto', deckWith(`${base}fonts: {provider: none}\ndownload: "auto"`), /download/],
     [
       'remote PlantUML server',
