@@ -4,6 +4,8 @@
 // - no PlantUML: Slidev renders ```plantuml blocks and <PlantUml> as <img> requests to
 //   `plantUmlServer` (default https://www.plantuml.com), sending the diagram source off-machine;
 // - no web fonts from a CDN (Google Fonts, coollabs): decks use system fonts;
+// - no external URLs in deck code (Vue/TS/JS: components, setup files, addons such as the
+//   narration player); only localhost is allowed;
 // - the root deck's headmatter pins plantUmlServer to a data: URL, fonts.provider to "none",
 //   browserExporter to false (no /export page) and never enables `download`.
 import { readdirSync, readFileSync } from 'node:fs'
@@ -15,13 +17,16 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})\s*plantuml\b/im
 const COMPONENT = /<\s*plant-?uml\b/i
 const WEB_FONTS = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.coollabs\.io/i
 
-function* files(dir) {
+const EXTERNAL_URL =
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1)\b)[a-z0-9-]+\.[a-z0-9.-]+/i
+
+function* files(dir, skip = SKIP, ext = /\.(md|vue|css|html)$/i) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP.has(entry.name)) continue
+    if (skip.has(entry.name)) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are not followed.
-    if (entry.isDirectory()) yield* files(abs)
-    else if (entry.isFile() && /\.(md|vue|css|html)$/i.test(entry.name)) yield abs
+    if (entry.isDirectory()) yield* files(abs, skip, ext)
+    else if (entry.isFile() && ext.test(entry.name)) yield abs
   }
 }
 
@@ -32,6 +37,12 @@ for (const file of files(root)) {
   const rel = path.relative(root, file)
   if (/\.(md|vue)$/i.test(file) && (FENCE.test(text) || COMPONENT.test(text))) plantUml.push(rel)
   if (WEB_FONTS.test(text)) webFonts.push(rel)
+}
+
+// This script and other top-level helpers are not deck code (their comments may cite URLs).
+const external = []
+for (const file of files(root, new Set([...SKIP, 'scripts']), /\.(vue|[cm]?[jt]s)$/i)) {
+  if (EXTERNAL_URL.test(readFileSync(file, 'utf8'))) external.push(path.relative(root, file))
 }
 
 function headmatterProblems(text) {
@@ -85,6 +96,11 @@ if (webFonts.length > 0) {
   failed = true
   console.error('Web fonts from a CDN are not allowed (decks use system fonts). Offending files:')
   for (const f of webFonts) console.error(`  - ${f}`)
+}
+if (external.length > 0) {
+  failed = true
+  console.error('Deck code must not reference external URLs (only localhost). Offending files:')
+  for (const f of external) console.error(`  - ${f}`)
 }
 if (deck.length > 0) {
   failed = true
