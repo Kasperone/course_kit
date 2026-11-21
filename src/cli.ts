@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { runAsk } from './commands/ask.js'
+import { runClean } from './commands/clean.js'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { runLessonNew } from './commands/lesson-new.js'
@@ -298,6 +299,20 @@ program
       }
     },
   )
+
+program
+  .command('clean')
+  .description(
+    "Remove the Cursor agent's transcript folder for the cursor-cli chat provider (~/.cursor/projects)",
+  )
+  .option('--dry-run', 'List what would be removed; remove nothing', false)
+  .action((opts: { dryRun: boolean }) => {
+    try {
+      runClean({ dryRun: opts.dryRun })
+    } catch (err) {
+      fail('clean', err)
+    }
+  })
 
 program
   .command('narrate')
