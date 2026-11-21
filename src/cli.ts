@@ -27,10 +27,11 @@ program
         lang: opts.lang,
         submodule: opts.submodule,
       })
-      const { outDir, course } = await runInit(options)
+      const { outDir, course, notices } = await runInit(options)
       console.log(`Course workspace created at ${outDir}`)
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
+      for (const notice of notices) console.warn(`Note: ${notice}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error(`course init failed: ${message}`)

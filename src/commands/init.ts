@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -14,6 +15,7 @@ import {
   addSubmodule,
   checkoutSubmoduleCommit,
   initGitRepo,
+  isCommitOnRemoteBranch,
   readHeadCommit,
   readShareableRemote,
   resolveTargetRepo,
@@ -29,6 +31,19 @@ export const SUBMODULE_PATH = 'target-repo'
  * machine. The workspace also ships scripts/check-no-plantuml.mjs, which fails dev/build/export.
  */
 export const PLANTUML_DISABLED_SERVER = 'data:text/plain,plantuml-disabled'
+
+/**
+ * Offline headmatter besides PlantUML. Slidev's font provider defaults to Google Fonts and its
+ * default favicon is hosted on cdn.jsdelivr.net, so every deck would make third-party requests on
+ * load. System font stacks with provider "none" emit no font `<link>`, and an empty data: URL
+ * favicon emits no request (a /favicon.svg path would break under `slidev build --base`).
+ */
+export const OFFLINE_HEADMATTER = `fonts:
+  sans: 'system-ui'
+  serif: 'ui-serif'
+  mono: 'ui-monospace'
+  provider: 'none'
+favicon: 'data:,'`
 
 export type CourseJson = {
   schemaVersion: 1
@@ -103,6 +118,7 @@ theme: default
 title: ${JSON.stringify(title)}
 lang: ${lang}
 plantUmlServer: ${JSON.stringify(PLANTUML_DISABLED_SERVER)}
+${OFFLINE_HEADMATTER}
 ---
 
 # ${title}
@@ -143,18 +159,30 @@ export const LOCAL_CONFIG_FILE = 'course.local.json'
 
 function isInside(child: string, parent: string): boolean {
   const rel = path.relative(parent, child)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))
+}
+
+/** The home directory as written and as resolved: either may appear in a physical path. */
+export function homeDirs(home: string = os.homedir()): string[] {
+  if (!home) return []
+  try {
+    const real = realpathSync(home)
+    return real === path.resolve(home) ? [home] : [home, real]
+  } catch {
+    return [home]
+  }
 }
 
 /**
  * Workspace-relative path to the target, or null if any relative path would expose the local
  * layout: different drives, only the filesystem root in common, or a target inside the home
- * directory reached from outside it (`../../home/<user>/...`).
+ * directory reached from outside it (`../../home/<user>/...`). Pass physical paths (realpath):
+ * a relative path between symlinked spellings can point somewhere else on disk.
  */
 export function portableRelativePath(
   fromDir: string,
   toDir: string,
-  home: string = os.homedir(),
+  homes: string | string[] = homeDirs(),
 ): string | null {
   const from = path.resolve(fromDir)
   const to = path.resolve(toDir)
@@ -162,7 +190,8 @@ export function portableRelativePath(
   if (rootFrom !== path.parse(to).root) return null
   const firstSeg = (p: string) => p.slice(rootFrom.length).split(path.sep)[0]
   if (firstSeg(from) !== firstSeg(to)) return null
-  if (home && isInside(to, home) && !isInside(from, home)) return null
+  const inHome = (p: string) => [homes].flat().some((h) => h && isInside(p, path.resolve(h)))
+  if (inHome(to) && !inHome(from)) return null
   return path.relative(from, to).split(path.sep).join('/') || '.'
 }
 
@@ -184,22 +213,31 @@ function readLocalTargetRepo(courseDir: string): string | null {
 
 /**
  * Absolute target path for a workspace: COURSE_TARGET_REPO, then course.local.json, then
- * course.json `targetRepo` resolved against the workspace.
+ * course.json `targetRepo` resolved against the workspace's physical directory (the one init
+ * computed it from), so a workspace reached through a symlink still finds its target.
  */
 export function resolveCourseTargetRepo(courseDir: string, targetRepo: string | null): string {
   const override = process.env[TARGET_REPO_ENV]
   if (override) return path.resolve(override)
   const local = readLocalTargetRepo(courseDir)
   if (local) return local
-  if (targetRepo) return path.resolve(courseDir, targetRepo)
+  if (targetRepo) return path.resolve(physicalDir(courseDir), targetRepo)
   throw new Error(
     `No target repo path for ${courseDir}: set ${TARGET_REPO_ENV} or create ${LOCAL_CONFIG_FILE} with {"targetRepo": "/abs/path"}`,
   )
 }
 
+function physicalDir(dir: string): string {
+  try {
+    return realpathSync(dir)
+  } catch {
+    return path.resolve(dir)
+  }
+}
+
 export async function runInit(
   options: InitOptions,
-): Promise<{ outDir: string; course: CourseJson }> {
+): Promise<{ outDir: string; course: CourseJson; notices: string[] }> {
   const languages = validateLanguages(options.languages)
   const targetRepo = resolveTargetRepo(options.targetRepo)
   const pinnedCommit = readHeadCommit(targetRepo)
@@ -221,9 +259,15 @@ export async function runInit(
     writeLessonPlaceholders(outDir, languages)
     writeAudioTree(outDir)
 
-    const targetRel = portableRelativePath(outDir, targetRepo)
+    // targetRepo is git's physical top level; compare it with the physical workspace directory.
+    const targetRel = portableRelativePath(realpathSync(outDir), targetRepo)
     const targetRemote = readShareableRemote(targetRepo)
+    const notices: string[] = []
     if (targetRel === null) {
+      notices.push(
+        `course.json has no portable target path; this machine's path is in ${LOCAL_CONFIG_FILE} (gitignored). ` +
+          `Collaborators set ${TARGET_REPO_ENV} or create their own ${LOCAL_CONFIG_FILE}.`,
+      )
       writeFileSync(
         path.join(outDir, LOCAL_CONFIG_FILE),
         JSON.stringify({ targetRepo }, null, 2) + '\n',
@@ -251,9 +295,15 @@ export async function runInit(
       initGitRepo(outDir)
       addSubmodule(outDir, targetRepo, SUBMODULE_PATH, submoduleUrl)
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
+      if (submoduleUrl === targetRemote && !isCommitOnRemoteBranch(targetRepo, pinnedCommit)) {
+        notices.push(
+          `Pinned commit ${pinnedCommit} is on no remote-tracking branch of the target: push it, ` +
+            `or \`git submodule update\` will fail for anyone who clones this course.`,
+        )
+      }
     }
 
-    return { outDir, course }
+    return { outDir, course, notices }
   } catch (err) {
     // Do not leave a half-written workspace behind; it would block a re-run.
     if (existedBefore) {

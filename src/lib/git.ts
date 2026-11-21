@@ -46,8 +46,11 @@ export function readHeadCommit(repoPath: string): string {
 }
 
 /**
- * The target's `origin` URL if it is a network remote, with any credentials stripped. Local-path
- * remotes return null so that no absolute filesystem path ends up in committed files.
+ * The target's `origin` URL if it is a network remote, with credentials removed: password, query
+ * string (e.g. `?private_token=`) and fragment always; the user name only for http(s), where it
+ * is an account or token. ssh:// keeps it (`git@`), as scp-style URLs do: it is the login the
+ * host expects, and without it ssh would try the local user name. Local-path remotes return null
+ * so that no absolute filesystem path ends up in committed files.
  */
 export function readShareableRemote(repoPath: string): string | null {
   let url: string
@@ -59,8 +62,10 @@ export function readShareableRemote(repoPath: string): string | null {
   if (/^(?:https?|ssh|git):\/\//i.test(url)) {
     try {
       const u = new URL(url)
-      u.username = ''
+      if (u.protocol === 'http:' || u.protocol === 'https:') u.username = ''
       u.password = ''
+      u.search = ''
+      u.hash = ''
       return u.toString()
     } catch {
       return null
@@ -69,6 +74,16 @@ export function readShareableRemote(repoPath: string): string | null {
   // scp-like syntax: git@github.com:owner/repo.git (the user part is a login name, not a secret)
   if (/^[\w.-]+@[\w.-]+:[^/\\]/.test(url)) return url
   return null
+}
+
+/** True if a remote-tracking branch of `repoPath` contains `commit` (i.e. it was pushed). */
+export function isCommitOnRemoteBranch(repoPath: string, commit: string): boolean {
+  if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
+  try {
+    return gitOut(['-C', repoPath, 'branch', '-r', '--contains', commit]) !== ''
+  } catch {
+    return false
+  }
 }
 
 export function initGitRepo(dir: string): void {
