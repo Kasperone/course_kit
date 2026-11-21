@@ -126,8 +126,11 @@ export function uncommittedWarning(repoPath: string, commit: string): string | n
 }
 
 /**
- * The target's `origin` URL if it is a network remote, with any credentials stripped. Local-path
- * remotes return null so that no absolute filesystem path ends up in committed files.
+ * The target's `origin` URL if it is a network remote, with credentials removed: password, query
+ * string (e.g. `?private_token=`) and fragment always; the user name only for http(s), where it
+ * is an account or token. ssh:// keeps it (`git@`), as scp-style URLs do: it is the login the
+ * host expects, and without it ssh would try the local user name. Local-path remotes return null
+ * so that no absolute filesystem path ends up in committed files.
  */
 export function readShareableRemote(repoPath: string): string | null {
   let url: string
@@ -139,8 +142,10 @@ export function readShareableRemote(repoPath: string): string | null {
   if (/^(?:https?|ssh|git):\/\//i.test(url)) {
     try {
       const u = new URL(url)
-      u.username = ''
+      if (u.protocol === 'http:' || u.protocol === 'https:') u.username = ''
       u.password = ''
+      u.search = ''
+      u.hash = ''
       return u.toString()
     } catch {
       return null
@@ -149,6 +154,16 @@ export function readShareableRemote(repoPath: string): string | null {
   // scp-like syntax: git@github.com:owner/repo.git (the user part is a login name, not a secret)
   if (/^[\w.-]+@[\w.-]+:[^/\\]/.test(url)) return url
   return null
+}
+
+/** True if a remote-tracking branch of `repoPath` contains `commit` (i.e. it was pushed). */
+export function isCommitOnRemoteBranch(repoPath: string, commit: string): boolean {
+  if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
+  try {
+    return gitOut(['-C', repoPath, 'branch', '-r', '--contains', commit]) !== ''
+  } catch {
+    return false
+  }
 }
 
 export function initGitRepo(dir: string): void {
@@ -178,6 +193,28 @@ export function addSubmodule(
     { cwd: courseDir, stdio: 'pipe' },
   )
   execFileSync('git', ['add', '--', '.gitmodules'], { cwd: courseDir, stdio: 'pipe' })
+}
+
+/** A fetch over the network can be slow, but must not hang `course pin` forever. */
+const FETCH_TIMEOUT_MS = 300_000
+
+/**
+ * Fetch a submodule checkout's `origin` (branches and tags, then its HEAD) and return the commit
+ * the remote's HEAD points at. In submodule mode the checkout's own HEAD is the current pin, so
+ * new target commits are only visible after this. Writes only to the workspace's submodule.
+ */
+export function fetchSubmoduleOrigin(subDir: string): string {
+  for (const args of [
+    ['fetch', '--quiet', 'origin'],
+    ['fetch', '--quiet', 'origin', 'HEAD'],
+  ]) {
+    try {
+      execFileSync('git', ['-C', subDir, ...args], { stdio: 'pipe', timeout: FETCH_TIMEOUT_MS })
+    } catch (err) {
+      throw new Error(`Could not fetch origin in ${subDir}: ${gitErrorDetail(err)}`)
+    }
+  }
+  return resolveCommit(subDir, 'FETCH_HEAD')
 }
 
 export function checkoutSubmoduleCommit(

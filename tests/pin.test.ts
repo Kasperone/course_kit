@@ -1,4 +1,4 @@
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runInit } from '../src/commands/init.js'
@@ -76,17 +76,54 @@ describe('course pin', () => {
     expect(statSync(index).mtimeMs).toBe(mtime)
   })
 
-  it('moves the submodule checkout in submodule mode', async () => {
+  it('moves the submodule checkout to a new target commit (fetched from origin)', async () => {
     const fx = await makeWorkspace(undefined, { submodule: true })
     writeFiles(fx.repoDir, { 'NEW.md': 'new\n' })
     const next = commitAll(fx.repoDir, 'next')
     const sub = path.join(fx.workspace, 'target-repo')
-    git(sub, ['fetch', '-q', 'origin'])
 
     const result = runPin({ cwd: fx.workspace, commit: next })
     expect(result.pinned).toBe(next)
     expect(git(sub, ['rev-parse', 'HEAD']).trim()).toBe(next)
     expect(pinnedIn(fx.workspace)).toBe(next)
+    expect(git(fx.workspace, ['ls-files', '-s', 'target-repo'])).toContain(next)
+  })
+
+  it('bare `course pin` in submodule mode pins the HEAD of the submodule origin', async () => {
+    const fx = await makeWorkspace(undefined, { submodule: true })
+    writeFiles(fx.repoDir, { 'NEW.md': 'new\n' })
+    const next = commitAll(fx.repoDir, 'next')
+
+    const result = runPin({ cwd: fx.workspace })
+    expect(result.previous).toBe(fx.pinned)
+    expect(result.pinned).toBe(next)
+    expect(result.changed).toBe(true)
+    expect(git(path.join(fx.workspace, 'target-repo'), ['rev-parse', 'HEAD']).trim()).toBe(next)
+  })
+
+  it('leaves the submodule and its gitlink alone when course.json cannot be written', async () => {
+    const fx = await makeWorkspace(undefined, { submodule: true })
+    writeFiles(fx.repoDir, { 'NEW.md': 'new\n' })
+    const next = commitAll(fx.repoDir, 'next')
+    const real = path.join(fx.root, 'real-course.json')
+    renameSync(path.join(fx.workspace, 'course.json'), real)
+    symlinkSync(real, path.join(fx.workspace, 'course.json'))
+
+    expect(() => runPin({ cwd: fx.workspace, commit: next })).toThrow(/symlink/)
+    const sub = path.join(fx.workspace, 'target-repo')
+    expect(git(sub, ['rev-parse', 'HEAD']).trim()).toBe(fx.pinned)
+    expect(git(fx.workspace, ['ls-files', '-s', 'target-repo'])).toContain(fx.pinned)
+  })
+
+  it('keeps course.json at the old pin when the submodule checkout cannot move', async () => {
+    const fx = await makeWorkspace(undefined, { submodule: true })
+    writeFiles(fx.repoDir, { 'app.txt': 'changed upstream\n' })
+    const next = commitAll(fx.repoDir, 'next')
+    // A local edit to the same file makes `git checkout` refuse to switch.
+    writeFiles(path.join(fx.workspace, 'target-repo'), { 'app.txt': 'local edit\n' })
+
+    expect(() => runPin({ cwd: fx.workspace, commit: next })).toThrow()
+    expect(pinnedIn(fx.workspace)).toBe(fx.pinned)
   })
 })
 

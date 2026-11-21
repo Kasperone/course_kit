@@ -15,8 +15,8 @@ import { DEFAULT_LESSON_GLOBS, type LessonJson } from '../lesson.js'
 import { buildDocExcerpts, DOC_CANDIDATES } from './docs.js'
 import { estimateTokens } from './estimate.js'
 import { selectEntries, type Skipped } from './files.js'
-import { isProbablyBinaryPath, resolveLimits, type PackLimits } from './limits.js'
-import { fence, inlineCode, tableCell } from './markdown.js'
+import { resolveLimits, type PackLimits } from './limits.js'
+import { fence, inlineCode, numberedExcerpt, tableCell } from './markdown.js'
 import { redactSecrets } from './redact.js'
 import { sensitiveReason } from './sensitive.js'
 import { findRelatedTests } from './tests-heuristic.js'
@@ -69,16 +69,6 @@ export type BuildContextPackOptions = {
 const MAX_DOC_BYTES = 1024 * 1024
 /** Max skipped paths listed per reason in the pack (all are in the JSON). */
 const MAX_SKIPPED_LISTED = 50
-
-function numberedExcerpt(content: string, maxLines: number): { text: string; truncated: number } {
-  const lines = content.split('\n')
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  const slice = lines.slice(0, maxLines)
-  return {
-    text: slice.map((line, i) => `${String(i + 1).padStart(6, ' ')}|${line}`).join('\n'),
-    truncated: lines.length - slice.length,
-  }
-}
 
 function selectionReport(
   matched: number,
@@ -196,15 +186,15 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     sensitiveReason,
   )
   const skipped = [...selection.skipped]
-  const selectedPaths = selection.included.map((e) => e.path)
+  const candidatePaths = selection.included.map((e) => e.path)
 
   // Related tests go through the same filters as selected files, with their own cap. Tests that
   // are already selected are listed as related but not embedded twice.
-  const includedPaths = new Set(selectedPaths)
+  const includedPaths = new Set(candidatePaths)
   const relatedPaths: string[] = []
   const related: TreeEntry[] = []
   for (const p of findRelatedTests(
-    selectedPaths,
+    candidatePaths,
     blobs.map((e) => e.path),
   )) {
     if (includedPaths.has(p)) {
@@ -212,7 +202,10 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
       continue
     }
     const entry = byPath.get(p)!
-    if (entry.symlink || isProbablyBinaryPath(p)) continue
+    if (entry.symlink) {
+      skipped.push({ path: p, reason: 'symlink', detail: 'related test' })
+      continue
+    }
     const sensitive = sensitiveReason(p)
     if (sensitive) {
       skipped.push({ path: p, reason: 'sensitive', detail: `${sensitive} (related test)` })
@@ -268,14 +261,16 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
   )
   const fileSections: string[] = []
+  // Binary by content (NUL byte): reported as skipped only, never counted or listed as embedded.
+  const binaryByContent = new Set<string>()
   for (const entry of embedded) {
     const text = readText(entry.path)
-    fileSections.push(`### ${inlineCode(entry.path)}`, '')
     if (text === null) {
+      binaryByContent.add(entry.path)
       skipped.push({ path: entry.path, reason: 'binary', detail: 'NUL byte in content' })
-      fileSections.push('_Skipped (binary content at the pinned commit)._', '')
       continue
     }
+    fileSections.push(`### ${inlineCode(entry.path)}`, '')
     const { text: numbered, truncated } = numberedExcerpt(text, limits.maxLinesPerFile)
     fileSections.push(fence(numbered))
     if (truncated > 0) {
@@ -286,7 +281,10 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     fileSections.push('')
   }
 
-  const includedSet = new Set(embedded.map((e) => e.path))
+  const isText = (p: string) => !binaryByContent.has(p)
+  const selectedPaths = selection.included.map((e) => e.path).filter(isText)
+  const relatedTextPaths = relatedPaths.filter(isText)
+  const includedSet = new Set(embedded.map((e) => e.path).filter(isText))
   const docs = buildDocExcerpts(
     docEntries.map((e) => ({
       path: e.path,
@@ -296,7 +294,20 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     limits.maxDocExcerptLines,
   )
 
-  const logLines = logTouchingPaths(repo, commit, selectedPaths, limits.maxLogEntries)
+  // Commit subjects and author names are repository text too: redact them, and render each line
+  // as inline code so it cannot add Markdown structure to the pack.
+  const LOG_SOURCE = '(git log)'
+  const rawLog = logTouchingPaths(repo, commit, selectedPaths, limits.maxLogEntries)
+  const logResult = redactSecrets(rawLog.join('\n'), LOG_SOURCE)
+  const logLines = rawLog.length ? logResult.text.split('\n') : []
+  if (logResult.redactions.length > 0) {
+    redactions.push({
+      path: LOG_SOURCE,
+      count: logResult.redactions.length,
+      lines: [...new Set(logResult.redactions.map((r) => r.line))],
+      kinds: [...new Set(logResult.redactions.map((r) => r.kind))],
+    })
+  }
   const analyzerSections = await runAnalyzers(
     {
       pinnedCommit: commit,
@@ -348,9 +359,9 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     '',
     selectionReport(
       selection.matched,
-      selection.included.length,
+      selectedPaths.length,
       selection.artifacts.length,
-      related.length,
+      related.filter((e) => isText(e.path)).length,
       skipped,
       selection.missingFiles,
       selection.unmatchedGlobs,
@@ -371,13 +382,13 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     ...fileSections,
     '## Related tests (heuristic)',
     '',
-    relatedPaths.length
-      ? relatedPaths.map((t) => `- ${inlineCode(t)}`).join('\n')
+    relatedTextPaths.length
+      ? relatedTextPaths.map((t) => `- ${inlineCode(t)}`).join('\n')
       : '_None matched heuristics._',
     '',
     '## Recent history (selected paths)',
     '',
-    logLines.length ? logLines.map((l) => `- ${l}`).join('\n') : '_No log entries._',
+    logLines.length ? logLines.map((l) => `- ${inlineCode(l)}`).join('\n') : '_No log entries._',
     '',
     '## Language-specific analysis',
     '',
@@ -408,7 +419,7 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     limits,
     matchedFiles: selection.matched,
     selectedFiles: selectedPaths,
-    relatedTests: relatedPaths,
+    relatedTests: relatedTextPaths,
     skipped,
     missingFiles: selection.missingFiles,
     unmatchedGlobs: selection.unmatchedGlobs,

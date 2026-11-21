@@ -8,17 +8,19 @@ fonts:
   serif: "ui-serif"
   mono: "ui-monospace"
   provider: "none"
+favicon: "data:,"
 browserExporter: false
 download: false
+mcp: false
 info: |
   Lesson 01 of the Faktura course. Every fact on these slides comes from the context pack built
-  from faktura at commit 52ac4142b8b30d558c49ddc8668e85dd58f54c03; the slide footers name the files
+  from faktura at commit 9fdc71413184a383f428bb9e50a8ae1672eb007a; the slide footers name the files
   and lines.
 ---
 
 # Faktura: architecture overview
 
-Lesson 01 · faktura @ `52ac414`
+Lesson 01 · faktura @ `9fdc714`
 
 <div class="abs-bl m-6 text-xs opacity-60">Sources: README.md L1–3</div>
 
@@ -417,7 +419,7 @@ In the next lessons we will go deeper into each of these parts.
 
 # Sources
 
-All from faktura at `52ac4142b8b30d558c49ddc8668e85dd58f54c03` (context pack `01-architecture`):
+All from faktura at `9fdc71413184a383f428bb9e50a8ae1672eb007a` (context pack `01-architecture`):
 
 <div class="text-sm grid grid-cols-2 gap-x-6">
 <div>

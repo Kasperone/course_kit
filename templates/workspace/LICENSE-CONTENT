@@ -1,6 +1,6 @@
 Lesson content license notice
 
-Copyright (c) 2026 Kasperone
+Copyright (c) <year> <course author>
 
 Lesson text, slide text and narration scripts in course workspaces created with course_kit
 (the `lessons/` directory of a workspace) are licensed under the Creative Commons Attribution 4.0
@@ -10,7 +10,7 @@ To view a copy of this license, visit https://creativecommons.org/licenses/by/4.
 Full legal code: https://creativecommons.org/licenses/by/4.0/legalcode
 
 This notice does not cover:
-- the course_kit software (MIT, see LICENSE);
+- the course_kit software (MIT, see https://github.com/Kasperone/course_kit/blob/main/LICENSE);
 - generated narration audio, which must stay in `audio/local/` and is not licensed for
   redistribution;
 - source code quoted from the target repository, which keeps its own license.

@@ -8,17 +8,19 @@ fonts:
   serif: "ui-serif"
   mono: "ui-monospace"
   provider: "none"
+favicon: "data:,"
 browserExporter: false
 download: false
+mcp: false
 info: |
   Lekcja 01 kursu Faktura. Każdy fakt na tych slajdach pochodzi z context packa zbudowanego z
-  repozytorium faktura w commicie 52ac4142b8b30d558c49ddc8668e85dd58f54c03; stopki slajdów podają
+  repozytorium faktura w commicie 9fdc71413184a383f428bb9e50a8ae1672eb007a; stopki slajdów podają
   pliki i linie.
 ---
 
 # Faktura: przegląd architektury
 
-Lekcja 01 · faktura @ `52ac414`
+Lekcja 01 · faktura @ `9fdc714`
 
 <div class="abs-bl m-6 text-xs opacity-60">Źródła: README.md L1–3</div>
 
@@ -420,7 +422,7 @@ W kolejnych lekcjach zagłębimy się w każdą z tych części.
 
 # Źródła
 
-Wszystko z repozytorium faktura w commicie `52ac4142b8b30d558c49ddc8668e85dd58f54c03` (context pack `01-architecture`):
+Wszystko z repozytorium faktura w commicie `9fdc71413184a383f428bb9e50a8ae1672eb007a` (context pack `01-architecture`):
 
 <div class="text-sm grid grid-cols-2 gap-x-6">
 <div>

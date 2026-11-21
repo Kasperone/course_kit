@@ -36,17 +36,31 @@ No PDF/PNG export and no Playwright or `playwright-chromium` dependency (decided
 `playwright-chromium`. Decks also make no requests beyond the local server (Kasper, 2026-11-21).
 Every generated deck's headmatter therefore pins:
 
-| Key               | Value                                                                          | Why (checked in the Slidev 52.20.1 source)                                                                                                                                                                             |
-| ----------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plantUmlServer`  | `"data:text/plain,plantuml-disabled"`                                          | see below                                                                                                                                                                                                              |
-| `fonts`           | `sans: system-ui`, `serif: ui-serif`, `mono: ui-monospace`, `provider: "none"` | The default provider `google` adds a `fonts.googleapis.com` stylesheet for the theme fonts (Avenir Next, Nunito Sans, Fira Code). With `none`, no web-font link is emitted, and Slidev appends system fallback stacks. |
-| `browserExporter` | `false`                                                                        | The default `"dev"` registers the `/export` route and the export button in the dev server. `false` removes both.                                                                                                       |
-| `download`        | `false`                                                                        | `true`/`"auto"` would export a PDF at build time and enable the `/print` route.                                                                                                                                        |
+| Key               | Value                                                                          | Why (checked in the Slidev 52.20.1 source)                                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `plantUmlServer`  | `"data:text/plain,plantuml-disabled"`                                          | see below                                                                                                                                                                                                                |
+| `fonts`           | `sans: system-ui`, `serif: ui-serif`, `mono: ui-monospace`, `provider: "none"` | The default provider `google` adds a `fonts.googleapis.com` stylesheet for the theme fonts (Avenir Next, Nunito Sans, Fira Code). With `none`, no web-font link is emitted, and Slidev appends system fallback stacks.   |
+| `favicon`         | `"data:,"`                                                                     | The default favicon is `https://cdn.jsdelivr.net/gh/slidevjs/slidev/assets/favicon.png`, linked from every page. An empty data: URL loads nothing (a `public/` path would break under `--base`).                         |
+| `browserExporter` | `false`                                                                        | The default `"dev"` registers the `/export` route and the export button in the dev server. `false` removes both.                                                                                                         |
+| `mcp`             | `false`                                                                        | The default `true` serves an unauthenticated MCP server at `/__mcp` in the dev server whose tools (`slidev-update-slide`, …) rewrite the deck files; any page on localhost could strip this policy. `false` answers 403. |
+| `download`        | `false`                                                                        | `true`/`"auto"` would export a PDF at build time and enable the `/print` route.                                                                                                                                          |
 
 `course build`/`course dev` refuse to start Slidev unless each deck they run has this headmatter.
 The check accepts the block form and the flow form (`fonts: { provider: none }`). They also refuse
 any workspace Markdown/Vue/CSS/HTML file that references a web-font CDN (`fonts.googleapis.com`,
-`fonts.gstatic.com`, `fonts.coollabs.io`). After a build, the output scan fails on those hosts too.
+`fonts.gstatic.com`, `fonts.coollabs.io`). After a build, the output scan fails on those hosts too,
+and on `cdn.jsdelivr.net` in an HTML file (the default favicon).
+
+Workspace Markdown/Vue/CSS/HTML must not load remote resources while a slide renders: Markdown
+images, `src`/`href`/`poster`/… on loading tags (`img`, `iframe`, `script`, `link`, `video`, `audio`,
+`source`, …, also Vue `:src`), CSS `url()`/`@import`, `<Tweet>`/`<Youtube>`, and `image:`/
+`background:` frontmatter pointing at another host (loopback is allowed). Plain links are fine: they
+make no request until clicked. Context packs are skipped (they quote the target as data). Slide
+imports (`src: ./other.md`) must stay inside the scanned files: no absolute paths, paths outside the
+workspace, skipped directories (`node_modules/`, `dist/`, `audio/`, `target-repo/`) or symlinks, so
+everything Slidev renders has passed the checks above. This is pattern matching, not a sandbox: a
+deck author who wants to load something remote can still find a way; the guard catches mistakes and
+the common forms.
 The template's `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) applies the same rules to
 the root `slides.md` for `npm run dev/build`.
 
@@ -85,9 +99,13 @@ The e2e test covers the rest of the deck policy the same way, each with a negati
 
 - Fonts: the policy headmatter gives a build with no web-font host; Slidev's default gives
   `fonts.googleapis.com`.
+- Favicon: the policy gives `<link rel="icon" href="data:,">`; the default links the jsDelivr
+  favicon, and the output scan reports it.
+- MCP: with `mcp: false` a JSON-RPC `initialize` to `/__mcp` gets Slidev's "disabled" 403; without
+  it, the same call gets the server's `serverInfo`.
 - Dev server: with the policy, `/@vite/env` defines `__SLIDEV_FEATURE_BROWSER_EXPORTER__` and
-  `__SLIDEV_FEATURE_PRINT__` as `false` and the page has no Google Fonts link; with the defaults,
-  the exporter is `true` and the link is present.
+  `__SLIDEV_FEATURE_PRINT__` as `false` and the page has no Google Fonts or jsDelivr link; with the
+  defaults, the exporter is `true` and both links are present.
 
 Locally, a headless-browser network log of all 13 faktura slides (build) and of `/export/` (dev)
 showed only localhost requests.

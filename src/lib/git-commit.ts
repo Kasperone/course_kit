@@ -8,7 +8,11 @@ import { FULL_SHA_RE } from './git.js'
  * - revisions must be full SHAs and are passed after `--end-of-options`;
  * - paths are parsed from NUL-separated output (`-z`), so quoting and non-ASCII names are safe;
  * - pathspecs are literal (`--literal-pathspecs`), so file names are never pathspec magic;
- * - stderr is captured, never printed to the user's terminal.
+ * - stderr is captured, never printed to the user's terminal;
+ * - config that can run programs is pinned on the command line, which overrides repository config:
+ *   implicit bare repositories are refused (`safe.bareRepository=explicit`; a shared workspace could
+ *   commit a bare repo's files and make it the target), signatures are never verified (no
+ *   `gpg.program`), and no fsmonitor hook runs.
  */
 
 export type TreeEntry = {
@@ -22,13 +26,28 @@ export type TreeEntry = {
   symlink: boolean
 }
 
-const BASE_ARGS = ['--no-pager', '--literal-pathspecs', '-c', 'core.quotePath=false']
+const BASE_ARGS = [
+  '--no-pager',
+  '--literal-pathspecs',
+  '-c',
+  'core.quotePath=false',
+  '-c',
+  'safe.bareRepository=explicit',
+  '-c',
+  'log.showSignature=false',
+  '-c',
+  'core.fsmonitor=false',
+]
+
+/** A read of a large repository is still seconds; a hung git (e.g. a lock on NFS) must not hang us. */
+const GIT_TIMEOUT_MS = 120_000
 
 function git(repo: string, args: string[], opts: { input?: string; maxBuffer?: number } = {}) {
   return execFileSync('git', [...BASE_ARGS, '-C', repo, ...args], {
     input: opts.input,
     maxBuffer: opts.maxBuffer ?? 64 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
   })
 }
 

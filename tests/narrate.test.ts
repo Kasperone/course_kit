@@ -27,8 +27,10 @@ lang: "en"
 plantUmlServer: "data:text/plain,plantuml-disabled"
 fonts:
   provider: "none"
+favicon: "data:,"
 browserExporter: false
 download: false
+mcp: false
 ---
 
 # One

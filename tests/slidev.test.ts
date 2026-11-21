@@ -1,12 +1,16 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { runBuild, runDev } from '../src/commands/slidev.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
 import {
   deckFrontmatter,
   findForbiddenBuildRefs,
+  findOutsideImports,
   findPlantUmlFiles,
+  findRemoteAssetFiles,
   findWebFontFiles,
   offlineHeadmatterProblems,
 } from '../src/lib/slidev.js'
@@ -73,6 +77,22 @@ describe('course build', () => {
     expect(() => runBuild({ cwd: workspace, lesson: '09-missing' })).toThrow(/Unknown lesson/)
   })
 
+  it('takes the index title from the headmatter only, never from a later slide', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    const file = deck(workspace, '01-placeholder', 'en')
+    const text = readFileSync(file, 'utf8').replace(/^title: .*\n/m, '')
+    writeFileSync(
+      file,
+      `${text}\n---\ntitle: Later slide\n---\n\n\`\`\`yaml\ntitle: sample\n\`\`\`\n`,
+    )
+    runBuild({ cwd: workspace })
+    const index = readFileSync(path.join(workspace, 'dist', 'index.html'), 'utf8')
+    expect(index).not.toContain('Later slide')
+    expect(index).not.toContain('sample')
+    expect(index).toContain('01-placeholder')
+  })
+
   it('escapes deck titles in the index', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     installFakeSlidev(workspace)
@@ -122,6 +142,8 @@ describe('course build', () => {
     ['plantUmlServer', /plantUmlServer must be/],
     ['provider', /fonts\.provider must be "none"/],
     ['browserExporter', /browserExporter must be false/],
+    ['favicon', /favicon must be "data:,"/],
+    ['mcp', /mcp must be false/],
   ])('refuses build and dev when the headmatter lacks %s', async (key, error) => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     const log = installFakeSlidev(workspace)
@@ -199,9 +221,14 @@ describe('PlantUML scanners', () => {
       path.join(dir, 'index.html'),
       '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans">',
     )
+    writeFileSync(
+      path.join(dir, 'other.html'),
+      '<link rel="icon" href="https://cdn.jsdelivr.net/gh/slidevjs/slidev/assets/favicon.png">',
+    )
     expect(findForbiddenBuildRefs(dir)).toEqual([
       { file: path.join(dir, 'assets', 'b.js'), what: 'PlantUML server' },
       { file: path.join(dir, 'index.html'), what: 'web fonts' },
+      { file: path.join(dir, 'other.html'), what: 'CDN favicon' },
     ])
   })
 
@@ -220,7 +247,9 @@ describe('PlantUML scanners', () => {
 
 describe('offline headmatter policy', () => {
   const deckWith = (head: string) => `---\n${head}\n---\n\n# x\n`
-  const base = 'plantUmlServer: "data:text/plain,plantuml-disabled"\nbrowserExporter: false\n'
+  const base =
+    'plantUmlServer: "data:text/plain,plantuml-disabled"\nfavicon: "data:,"\nmcp: false\n' +
+    'browserExporter: false\n'
 
   it('accepts the generated headmatter', () => {
     expect(offlineHeadmatterProblems(deckFrontmatter({ title: 'a: b', lang: 'en' }))).toEqual([])
@@ -246,15 +275,39 @@ describe('offline headmatter policy', () => {
     ],
     [
       'exporter on',
-      deckWith(`${base.replace('false', 'true')}fonts: {provider: none}`),
+      deckWith(
+        `${base.replace('browserExporter: false', 'browserExporter: true')}fonts: {provider: none}`,
+      ),
       /browserExporter/,
     ],
     [
       'exporter dev',
-      deckWith(`${base.replace('false', 'dev')}fonts: {provider: none}`),
+      deckWith(
+        `${base.replace('browserExporter: false', 'browserExporter: dev')}fonts: {provider: none}`,
+      ),
       /browserExporter/,
     ],
     ['download true', deckWith(`${base}fonts: {provider: none}\ndownload: true`), /download/],
+    [
+      'MCP server on (Slidev default)',
+      deckWith(`${base.replace('mcp: false\n', '')}fonts: {provider: none}`),
+      /mcp must be false/,
+    ],
+    [
+      'MCP server true',
+      deckWith(`${base.replace('mcp: false', 'mcp: true')}fonts: {provider: none}`),
+      /mcp must be false/,
+    ],
+    [
+      'no favicon (Slidev default: cdn.jsdelivr.net)',
+      deckWith(`${base.replace('favicon: "data:,"\n', '')}fonts: {provider: none}`),
+      /favicon/,
+    ],
+    [
+      'CDN favicon',
+      deckWith(`${base.replace('"data:,"', 'https://cdn.example/f.png')}fonts: {provider: none}`),
+      /favicon/,
+    ],
     ['download auto', deckWith(`${base}fonts: {provider: none}\ndownload: "auto"`), /download/],
     [
       'remote PlantUML server',
@@ -265,5 +318,141 @@ describe('offline headmatter policy', () => {
     ],
   ])('flags %s', (_what, text, error) => {
     expect(offlineHeadmatterProblems(text).join('\n')).toMatch(error)
+  })
+})
+
+/** Markup that loads a remote resource on render (true) vs. links and local assets (false). */
+const REMOTE_CASES: Array<[string, string, boolean]> = [
+  ['Markdown image', '![logo](https://example.com/logo.png)\n', true],
+  ['protocol-relative image', '![logo](//cdn.example/x.png)\n', true],
+  ['iframe', '<iframe src="https://example.org/embed"></iframe>\n', true],
+  ['multi-line img', "<img\n  class='x'\n  src='http://e.com/a.png'>\n", true],
+  ['Vue :src', '<img :src="`https://e.com/${x}`">\n', true],
+  ['video poster', '<video poster="https://e.com/p.jpg"></video>\n', true],
+  ['script', '<script src="https://cdn.example/x.js"></script>\n', true],
+  ['stylesheet link', '<link rel="stylesheet" href="https://cdn.example/x.css">\n', true],
+  ['CSS url()', '<style>.a { background: url(https://e.com/bg.png) }</style>\n', true],
+  ['Tweet', '<Tweet id="20" />\n', true],
+  ['Youtube', '<Youtube id="abc" />\n', true],
+  ['background frontmatter', '---\nlayout: cover\nbackground: https://e.com/x.jpg\n---\n', true],
+  ['plain link', '[GitHub](https://github.com/Kasperone/faktura)\n', false],
+  ['bare URL in text', 'See https://example.com for details.\n', false],
+  ['anchor tag', '<a href="https://example.com">x</a>\n', false],
+  ['local image', '![a](./img/a.png) <img src="/images/a.png">\n', false],
+  ['loopback image', '<img src="http://localhost:5173/a.png">\n', false],
+]
+
+describe('remote assets and slide imports', () => {
+  it.each(REMOTE_CASES)('%s -> flagged: %s', (_what, text, flagged) => {
+    const dir = makeTempDir('remote')
+    mkdirSync(path.join(dir, 'lessons'))
+    writeFileSync(path.join(dir, 'lessons', 'x.md'), text)
+    expect(findRemoteAssetFiles(dir)).toEqual(flagged ? ['lessons/x.md'] : [])
+  })
+
+  it('skips context packs (they quote the target repo as data)', () => {
+    const dir = makeTempDir('remote-pack')
+    mkdirSync(path.join(dir, 'lessons', '01'), { recursive: true })
+    writeFileSync(
+      path.join(dir, 'lessons', '01', 'context-pack.md'),
+      '     1|![badge](https://img.shields.io/x.svg)\n',
+    )
+    expect(findRemoteAssetFiles(dir)).toEqual([])
+  })
+
+  it('flags slide imports that leave the scanned files', () => {
+    const dir = makeTempDir('imports')
+    const lesson = path.join(dir, 'lessons', '01', 'en')
+    mkdirSync(lesson, { recursive: true })
+    mkdirSync(path.join(dir, 'shared'))
+    mkdirSync(path.join(dir, 'node_modules', 'pkg'), { recursive: true })
+    const outside = makeTempDir('imports-outside')
+    symlinkSync(outside, path.join(dir, 'linked'))
+    writeFileSync(
+      path.join(lesson, 'slides.md'),
+      [
+        '---\ntheme: default\n---\n# a',
+        '---\nsrc: ../../../shared/ok.md\n---',
+        '---\nsrc: "../../../shared/ok.md#2-3"\n---',
+        '---\nsrc: ../../../../escape.md\n---',
+        '---\nsrc: /etc/slides.md\n---',
+        '---\nsrc: ../../../node_modules/pkg/x.md\n---',
+        '---\nsrc: ../../../linked/x.md\n---',
+        '```yaml\nsrc: ../../../../in-a-code-block.md\n```',
+      ].join('\n'),
+    )
+    expect(findOutsideImports(dir)).toEqual([
+      'lessons/01/en/slides.md -> ../../../../escape.md',
+      'lessons/01/en/slides.md -> ../../../linked/x.md',
+      'lessons/01/en/slides.md -> ../../../node_modules/pkg/x.md',
+      'lessons/01/en/slides.md -> /etc/slides.md',
+    ])
+  })
+
+  it('course build refuses a deck with a remote image or an outside import', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const log = installFakeSlidev(workspace)
+    const file = deck(workspace, '01-placeholder', 'en')
+    const original = readFileSync(file, 'utf8')
+    writeFileSync(file, `${original}\n![logo](https://example.com/logo.png)\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Remote images.*lessons\/01-placeholder/)
+    writeFileSync(file, `${original}\n---\nsrc: ../../../../elsewhere.md\n---\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Slide imports \(src:\)/)
+    writeFileSync(file, `${original}\n[a link](https://example.com) is fine\n`)
+    expect(() => runBuild({ cwd: workspace })).not.toThrow()
+    expect(calls(log)).toHaveLength(1)
+  })
+})
+
+describe('check-deck.mjs agrees with the TypeScript policy', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const template = path.join(repoRoot, 'templates', 'workspace', 'scripts')
+  const example = path.join(repoRoot, 'examples', 'faktura', 'scripts')
+
+  it('the example workspace ships the template guard unchanged', () => {
+    expect(readFileSync(path.join(example, 'check-deck.mjs'), 'utf8')).toBe(
+      readFileSync(path.join(template, 'check-deck.mjs'), 'utf8'),
+    )
+  })
+
+  const guardFails = (dir: string): boolean => {
+    try {
+      execFileSync(process.execPath, [path.join(dir, 'scripts', 'check-deck.mjs'), dir], {
+        stdio: 'pipe',
+      })
+      return false
+    } catch {
+      return true
+    }
+  }
+
+  const head = deckFrontmatter({ title: 't', lang: 'en' })
+  const HEADMATTER_CASES: Array<[string, string]> = [
+    ['generated', head],
+    ['no plantUmlServer', head.replace(/^plantUmlServer:.*\n/m, '')],
+    [
+      'google fonts',
+      head
+        .replace('"provider": "none"', '"provider": "google"')
+        .replace('provider: "none"', 'provider: "google"'),
+    ],
+    ['no favicon', head.replace(/^favicon:.*\n/m, '')],
+    ['exporter on', head.replace('browserExporter: false', 'browserExporter: dev')],
+    ['mcp on', head.replace('mcp: false', 'mcp: true')],
+    ['download', head.replace('download: false', 'download: true')],
+    ['flow fonts', head.replace(/^fonts:\n(?: {2}.*\n)+/m, 'fonts: { provider: none }\n')],
+  ]
+
+  it.each(HEADMATTER_CASES)('root deck headmatter: %s', async (_what, headmatter) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const text = `${headmatter}\n\n# x\n`
+    writeFileSync(path.join(workspace, 'slides.md'), text)
+    expect(guardFails(workspace)).toBe(offlineHeadmatterProblems(text).length > 0)
+  })
+
+  it.each(REMOTE_CASES)('lesson markup: %s', async (_what, body) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    writeFileSync(path.join(workspace, 'lessons', 'extra.md'), body)
+    expect(guardFails(workspace)).toBe(findRemoteAssetFiles(workspace).length > 0)
   })
 })
