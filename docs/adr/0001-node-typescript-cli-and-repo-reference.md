@@ -33,12 +33,18 @@ Two modes:
 | **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`, then rewrites the `.gitmodules` URL to a portable one. |
 
 No committed file contains a machine-specific absolute path: `course.json` also records
-`targetRemote` (the target's network `origin` URL with credentials stripped, or `null`), and
+`targetRemote` (the target's network `origin` URL without password, query string or fragment, and
+without the user name for http(s); ssh keeps its `git@` login, or `null`), and
 `.gitmodules` uses `targetRemote` when available, otherwise the relative path. When every relative
 path would still reveal the local layout (only `/` in common, or a target inside `$HOME` reached
 from outside it, e.g. `../../home/<user>/repo`), `targetRepo` is `null` and the absolute path is
-written to the gitignored `course.local.json` instead. Resolution order: `COURSE_TARGET_REPO`,
-then `course.local.json`, then `course.json`.
+written to the gitignored `course.local.json` instead, and `course init` says so. The relative path
+is computed between physical paths (`realpath` of the workspace, git's top level of the target) and
+resolved against the workspace's physical directory, and a symlinked `$HOME` counts under both its
+names, so symlinks can neither leak `/home/<user>` nor make the path point elsewhere. Resolution
+order: `COURSE_TARGET_REPO`, then `course.local.json`, then `course.json`. With `--submodule` and a
+network URL, `course init` warns if no remote-tracking branch contains the pinned commit (others
+could not clone it).
 
 Default is **pinned path only**: cheapest, no nested git setup, sufficient for local courses where
 the target repo path is stable. Submodule is optional for teams that want the target tree vendored
@@ -55,9 +61,23 @@ Mermaid only. Slidev (checked against 51.8.2) has no switch to turn PlantUML off
    `plantUmlServer: 'data:text/plain,plantuml-disabled'`, so a stray PlantUML block becomes a
    local no-op instead of a network request.
 2. **Guard:** `scripts/check-no-plantuml.mjs` runs as `predev`, `prebuild` and `preexport` and fails
-   if any Markdown file in the workspace contains a PlantUML fence.
+   if any Markdown file in the workspace contains a PlantUML fence. It never follows symlinks.
 
 Re-check both when upgrading Slidev.
+
+### Offline
+
+Decks make no third-party requests when opened. Besides PlantUML, Slidev has two online defaults
+(checked against 51.8.2 and 52.20.1): its font provider is Google Fonts (`theme: default` asks for
+Nunito Sans and Fira Code) and its favicon is `https://cdn.jsdelivr.net/gh/slidevjs/slidev/assets/favicon.png`.
+Every generated deck's headmatter therefore also sets:
+
+- `fonts:` system stacks (`system-ui`, `ui-serif`, `ui-monospace`) with `provider: 'none'`, so no
+  font `<link>` is emitted;
+- `favicon: 'data:,'`, an empty data: URL, so no icon is fetched. A `public/` file would not do:
+  lesson decks have their own root, and `slidev build --base` would break an absolute path.
+
+The workspace pins `@slidev/cli` to `^51.8.2`, the version these defaults were checked against.
 
 ## Consequences
 
