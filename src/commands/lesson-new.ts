@@ -3,7 +3,7 @@ import { mkdirInside } from '../lib/fs-safe.js'
 import type { CourseJson } from './init.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { validateLessonId } from '../lib/validate.js'
-import { lessonDir, resolveWorkspace } from '../lib/workspace.js'
+import { lessonDir, readWorkspace } from '../lib/workspace.js'
 
 export { validateLessonId }
 
@@ -17,7 +17,8 @@ export function runLessonNew(options: LessonNewOptions): {
   course: CourseJson
 } {
   validateLessonId(options.lessonId)
-  const { courseDir, course } = resolveWorkspace(options.cwd)
+  // Only course.json is needed: a fresh clone without the target (or its submodule) works too.
+  const { courseDir, course } = readWorkspace(options.cwd)
   const root = lessonDir(courseDir, options.lessonId)
   if (existsSync(root)) {
     throw new Error(`Lesson already exists: ${root}`)

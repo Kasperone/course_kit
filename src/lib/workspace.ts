@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { resolveCourseTargetRepo, TARGET_REPO_ENV, type CourseJson } from '../commands/init.js'
 import { FULL_SHA_RE } from './git.js'
@@ -63,10 +63,32 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
   }
 }
 
+function physical(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/**
+ * Refuse a target inside the workspace unless it is the submodule. course.json and even the
+ * gitignored course.local.json come with a shared workspace, so they could point at repository
+ * files planted in it (e.g. a committed bare repo whose config runs programs).
+ */
+function assertTargetOutsideWorkspace(courseDir: string, target: string): void {
+  const rel = path.relative(physical(courseDir), physical(target))
+  if (rel === '' || !(rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))) {
+    throw new Error(
+      `Target repo ${target} is inside the course workspace. Use --submodule mode, or set ${TARGET_REPO_ENV} to a clone outside it.`,
+    )
+  }
+}
+
 /**
  * Where to read the pinned commit from: COURSE_TARGET_REPO if set; the checked-out submodule in
  * submodule mode; otherwise course.local.json, then course.json `targetRepo` resolved against the
- * workspace.
+ * workspace (never inside it).
  */
 export function resolveTargetRepoPath(courseDir: string, course: CourseJson): string {
   if (process.env[TARGET_REPO_ENV]) return resolveCourseTargetRepo(courseDir, course.targetRepo)
@@ -80,10 +102,13 @@ export function resolveTargetRepoPath(courseDir: string, course: CourseJson): st
     }
     return sub
   }
-  return resolveCourseTargetRepo(courseDir, course.targetRepo)
+  const target = resolveCourseTargetRepo(courseDir, course.targetRepo)
+  assertTargetOutsideWorkspace(courseDir, target)
+  return target
 }
 
-export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
+/** course.json of the workspace at `cwd`, without touching the target repository. */
+export function readWorkspace(cwd: string = process.cwd()): Omit<Workspace, 'targetRepoPath'> {
   const courseDir = path.resolve(cwd)
   const coursePath = path.join(courseDir, 'course.json')
   if (!existsSync(coursePath)) {
@@ -95,6 +120,12 @@ export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
     readJsonFile(coursePath, readFileSync(coursePath, 'utf8')),
     coursePath,
   )
+  return { courseDir, course }
+}
+
+/** The workspace at `cwd` plus the path of the repository that holds its pinned commit. */
+export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
+  const { courseDir, course } = readWorkspace(cwd)
   return { courseDir, course, targetRepoPath: resolveTargetRepoPath(courseDir, course) }
 }
 

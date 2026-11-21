@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
@@ -6,6 +7,7 @@ import { runContext } from '../src/commands/context.js'
 import { PLANTUML_DISABLED_SERVER, TARGET_REPO_ENV } from '../src/commands/init.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
+import { git } from './helpers/git.js'
 
 function editJson(file: string, edit: (obj: Record<string, unknown>) => void): void {
   const obj = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
@@ -53,6 +55,27 @@ describe('lesson ids', () => {
       expect(fm.fonts).toMatchObject({ provider: 'none' })
       expect(fm.favicon).toBe('data:,')
     }
+  })
+})
+
+describe('lesson new without the target', () => {
+  it('works when no target path is known or the submodule is not checked out', async () => {
+    const fx = await makeWorkspace()
+    editJson(path.join(fx.workspace, 'course.json'), (c) => {
+      c.targetRepo = null
+    })
+    expect(() => runLessonNew({ lessonId: '02-a', cwd: fx.workspace })).not.toThrow()
+
+    editJson(path.join(fx.workspace, 'course.json'), (c) => {
+      c.referenceMode = 'submodule'
+      c.submodulePath = 'target-repo'
+    })
+    expect(existsSync(path.join(fx.workspace, 'target-repo'))).toBe(false)
+    expect(() => runLessonNew({ lessonId: '02-b', cwd: fx.workspace })).not.toThrow()
+    // Commands that read the target still say what is missing.
+    await expect(runContext({ lessonId: '02-b', cwd: fx.workspace })).rejects.toThrow(
+      /not checked out/,
+    )
   })
 })
 
@@ -158,9 +181,84 @@ describe('target repo resolution', () => {
     const fx = await makeWorkspace()
     const moved = path.join(fx.root, 'clone-elsewhere')
     renameSync(fx.repoDir, moved)
-    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow()
+    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
+      /Pinned commit [0-9a-f]{40} is not available/,
+    )
     process.env[TARGET_REPO_ENV] = moved
     const meta = await runContext({ lessonId: '01-placeholder', cwd: fx.workspace })
     expect(meta.pinnedCommit).toBe(fx.pinned)
+  })
+})
+
+/**
+ * A cloned workspace can commit a bare repository's files (HEAD, objects/, refs/, config) and
+ * point `targetRepo` at them. Git discovers implicit bare repos and honours their config, so
+ * `log.showSignature` plus `gpg.program` would run a program on a commit with a gpgsig header.
+ */
+function plantBareRepo(dir: string, marker: string): string {
+  git(path.dirname(dir), ['init', '-q', '--bare', path.basename(dir)])
+  const gd = ['--git-dir', dir]
+  const blobOid = execGit(dir, [...gd, 'hash-object', '-w', '--stdin'], '# hi\n')
+  const tree = execGit(dir, [...gd, 'mktree'], `100644 blob ${blobOid}\tREADME.md\n`)
+  const commit = execGit(
+    dir,
+    [...gd, 'hash-object', '-t', 'commit', '-w', '--stdin'],
+    `tree ${tree}\nauthor a <a@x> 0 +0000\ncommitter a <a@x> 0 +0000\n` +
+      'gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQ==\n -----END PGP SIGNATURE-----\n\nsigned\n',
+  )
+  const program = path.join(path.dirname(dir), 'gpg-pwn.sh')
+  writeFileSync(program, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`)
+  chmodSync(program, 0o755)
+  writeFileSync(
+    path.join(dir, 'config'),
+    readFileSync(path.join(dir, 'config'), 'utf8') +
+      `[log]\n\tshowSignature = true\n[gpg]\n\tprogram = ${program}\n`,
+  )
+  return commit
+}
+
+function execGit(cwd: string, args: string[], input: string): string {
+  return execFileSync('git', args, { cwd, input, encoding: 'utf8' }).trim()
+}
+
+describe('hostile workspace', () => {
+  it('never runs a program from a bare repo committed inside the workspace', async () => {
+    const fx = await makeWorkspace()
+    const marker = path.join(fx.root, 'PWNED')
+    const commit = plantBareRepo(path.join(fx.workspace, 'evil'), marker)
+    editJson(path.join(fx.workspace, 'course.json'), (c) => {
+      c.targetRepo = 'evil'
+      c.pinnedCommit = commit
+    })
+    editJson(lessonJson(fx.workspace), (l) => {
+      l.files = ['README.md']
+      l.globs = []
+    })
+
+    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
+      /inside the course workspace/,
+    )
+    expect(existsSync(marker)).toBe(false)
+
+    // Even when the user points COURSE_TARGET_REPO at it, git refuses the implicit bare repo.
+    process.env[TARGET_REPO_ENV] = path.join(fx.workspace, 'evil')
+    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
+      /safe\.bareRepository/,
+    )
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('rejects a course.local.json target inside the workspace too', async () => {
+    const fx = await makeWorkspace()
+    editJson(path.join(fx.workspace, 'course.json'), (c) => {
+      c.targetRepo = null
+    })
+    writeFileSync(
+      path.join(fx.workspace, 'course.local.json'),
+      JSON.stringify({ targetRepo: path.join(fx.workspace, 'lessons') }),
+    )
+    await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
+      /inside the course workspace/,
+    )
   })
 })
