@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { withoutSecrets } from './env.js'
 import { FULL_SHA_RE } from './git.js'
 
 /**
@@ -48,6 +49,8 @@ function git(repo: string, args: string[], opts: { input?: string; maxBuffer?: n
     maxBuffer: opts.maxBuffer ?? 64 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: GIT_TIMEOUT_MS,
+    // Provider keys never reach git or anything it spawns (hooks, helpers).
+    env: withoutSecrets(),
   })
 }
 

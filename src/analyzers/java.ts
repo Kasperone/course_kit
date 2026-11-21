@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fence, inlineCode } from '../lib/context-pack/markdown.js'
 import { isTestPath } from '../lib/context-pack/tests-heuristic.js'
+import { withoutSecrets } from '../lib/env.js'
 import { FlowchartBuilder } from './mermaid.js'
 import type { AnalyzerContext, AnalyzerSection, RepoAnalyzer } from './types.js'
 
@@ -18,7 +19,11 @@ const JDEPS_TIMEOUT_MS = 60_000
 function jdepsAvailable(): boolean {
   if (jdepsProbe === undefined) {
     try {
-      execFileSync('jdeps', ['-version'], { stdio: 'pipe', timeout: JDEPS_TIMEOUT_MS })
+      execFileSync('jdeps', ['-version'], {
+        stdio: 'pipe',
+        timeout: JDEPS_TIMEOUT_MS,
+        env: withoutSecrets(),
+      })
       jdepsProbe = true
     } catch {
       jdepsProbe = false
@@ -34,6 +39,7 @@ export const defaultJdepsRunner: JdepsRunner = (file) => {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: JDEPS_TIMEOUT_MS,
+      env: withoutSecrets(),
     })
   } catch {
     return null

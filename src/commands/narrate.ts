@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { withoutSecrets } from '../lib/env.js'
 import { assertNoSymlinkBelow, mkdirInside, writeFileInside } from '../lib/fs-safe.js'
 import { audioDuration, type AudioFormat } from '../lib/narration/audio.js'
 import {
@@ -39,6 +40,7 @@ function git(courseDir: string, args: string[]): { status: number; stdout: strin
     const stdout = execFileSync('git', ['--no-optional-locks', '-C', courseDir, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutSecrets(),
     })
     return { status: 0, stdout }
   } catch (err) {

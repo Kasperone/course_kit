@@ -113,6 +113,8 @@ Always run lint and tests before pushing.
 - Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via
   `readWorkspaceSecret` in `src/lib/env.ts`); it never reaches the browser, logs, files or errors. Tests use the
   fake provider or the local mock API; `tests/setup.ts` refuses any non-loopback `fetch`. Never make live calls.
+- Child processes course_kit starts (git, jdeps, Slidev) get `withoutSecrets()` from `src/lib/env.ts`: provider
+  keys never reach them or anything they spawn.
 - Agents never read, print or edit a workspace `.env` (e.g. `examples/faktura/.env`); only the program reads it.
 - Test workers are capped at 4 (`vitest.config.ts`); run heavy suites with `nice -n 10 ionice -c3`.
 - Write files inside a workspace only through `src/lib/fs-safe.ts` (`writeFileInside`, `mkdirInside`): they refuse

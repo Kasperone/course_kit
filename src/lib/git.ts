@@ -1,6 +1,10 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { withoutSecrets } from './env.js'
+
+// Every git process here gets the environment without provider keys (withoutSecrets): git, its
+// hooks and its helpers never need them.
 
 /** Full SHA-1 (40 hex) or SHA-256 (64 hex) object name. */
 export const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -10,6 +14,7 @@ function gitOut(args: string[], cwd?: string): string {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: withoutSecrets(),
   }).trim()
 }
 
@@ -96,7 +101,7 @@ export function uncommittedChanges(repoPath: string): string[] {
         '--porcelain=v1',
         '-z',
       ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: withoutSecrets() },
     )
   } catch {
     return []
@@ -167,7 +172,7 @@ export function isCommitOnRemoteBranch(repoPath: string, commit: string): boolea
 }
 
 export function initGitRepo(dir: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'pipe' })
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'pipe', env: withoutSecrets() })
 }
 
 export function addSubmodule(
@@ -182,7 +187,7 @@ export function addSubmodule(
   execFileSync(
     'git',
     ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--', absTarget, submodulePath],
-    { cwd: courseDir, stdio: 'pipe' },
+    { cwd: courseDir, stdio: 'pipe', env: withoutSecrets() },
   )
   // `submodule add` records the absolute local path in .gitmodules. Replace it with a portable URL
   // (network remote or relative path) so no /home/<user>/... path is committed. The local
@@ -190,9 +195,13 @@ export function addSubmodule(
   execFileSync(
     'git',
     ['config', '-f', '.gitmodules', `submodule.${submodulePath}.url`, committedUrl],
-    { cwd: courseDir, stdio: 'pipe' },
+    { cwd: courseDir, stdio: 'pipe', env: withoutSecrets() },
   )
-  execFileSync('git', ['add', '--', '.gitmodules'], { cwd: courseDir, stdio: 'pipe' })
+  execFileSync('git', ['add', '--', '.gitmodules'], {
+    cwd: courseDir,
+    stdio: 'pipe',
+    env: withoutSecrets(),
+  })
 }
 
 /** A fetch over the network can be slow, but must not hang `course pin` forever. */
@@ -209,7 +218,11 @@ export function fetchSubmoduleOrigin(subDir: string): string {
     ['fetch', '--quiet', 'origin', 'HEAD'],
   ]) {
     try {
-      execFileSync('git', ['-C', subDir, ...args], { stdio: 'pipe', timeout: FETCH_TIMEOUT_MS })
+      execFileSync('git', ['-C', subDir, ...args], {
+        stdio: 'pipe',
+        timeout: FETCH_TIMEOUT_MS,
+        env: withoutSecrets(),
+      })
     } catch (err) {
       throw new Error(`Could not fetch origin in ${subDir}: ${gitErrorDetail(err)}`)
     }
@@ -223,6 +236,14 @@ export function checkoutSubmoduleCommit(
   commit: string,
 ): void {
   const subDir = path.join(courseDir, submodulePath)
-  execFileSync('git', ['checkout', '-q', '--detach', commit], { cwd: subDir, stdio: 'pipe' })
-  execFileSync('git', ['add', '--', submodulePath], { cwd: courseDir, stdio: 'pipe' })
+  execFileSync('git', ['checkout', '-q', '--detach', commit], {
+    cwd: subDir,
+    stdio: 'pipe',
+    env: withoutSecrets(),
+  })
+  execFileSync('git', ['add', '--', submodulePath], {
+    cwd: courseDir,
+    stdio: 'pipe',
+    env: withoutSecrets(),
+  })
 }
