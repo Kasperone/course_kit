@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { readWorkspaceSecret, redactSecrets } from '../env.js'
 import { ffmpegBin, hasFfmpeg, pcm16ToWav, wavToMp3, type AudioFormat } from './audio.js'
 import {
   AUDIO_QUALITY_PRESETS,
@@ -178,17 +179,8 @@ const ELEVENLABS_ID_RE = /^[A-Za-z0-9_]{1,64}$/
 
 /** Read ELEVENLABS_API_KEY from the environment, else from `<courseDir>/.env`. */
 export function loadElevenLabsKey(courseDir: string, env: NodeJS.ProcessEnv = process.env): string {
-  const fromEnv = env[ELEVENLABS_KEY_ENV]?.trim()
-  if (fromEnv) return fromEnv
-  const file = path.join(courseDir, '.env')
-  if (existsSync(file)) {
-    for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
-      const m = line.match(/^\s*(?:export\s+)?ELEVENLABS_API_KEY\s*=\s*(.*?)\s*$/)
-      if (!m) continue
-      const value = m[1]!.replace(/^(['"])(.*)\1$/, '$2').trim()
-      if (value) return value
-    }
-  }
+  const key = readWorkspaceSecret(courseDir, ELEVENLABS_KEY_ENV, env)
+  if (key) return key
   throw new Error(
     `${ELEVENLABS_KEY_ENV} is not set. Export it or put it in the workspace's .env (gitignored).`,
   )
@@ -206,7 +198,7 @@ export type ElevenLabsOptions = {
 
 /** Replace every occurrence of the key, so it can never leak through an error message. */
 function redactKey(text: string, key: string): string {
-  return key ? text.split(key).join('‹redacted›') : text
+  return redactSecrets(text, [key])
 }
 
 export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvider {
