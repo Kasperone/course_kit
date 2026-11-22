@@ -1,6 +1,15 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -155,6 +164,61 @@ describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
       cleanup()
     }
   }, 180_000)
+
+  it('asset paths: Slidev bundles any file a local path points to, so the guard refuses secrets (negative control)', () => {
+    // Slidev only refuses paths outside its Vite root, and only for Markdown/HTML images: CSS url()
+    // and image:/background: frontmatter reach any file, and ?raw puts a file's text into the bundle.
+    // The files next to the deck are > 4 KiB so Vite emits them as files; the outside one is inlined.
+    const marker = 'asset-leak-marker'
+    const big = `${marker}\n${'x'.repeat(5000)}\n`
+    const outsideDir = mkdtempSync(path.join(tmpdir(), 'course-kit-asset-'))
+    const outsideFile = path.join(outsideDir, 'outside.txt')
+    // Small files are inlined as base64 data URIs: look for the marker's base64 at every alignment.
+    const needles = [0, 1, 2].map((pad) =>
+      Buffer.from(`${'x'.repeat(pad)}${marker}`)
+        .toString('base64')
+        .slice(4, 12),
+    )
+    const bundleHasMarker = (out: string): boolean =>
+      readdirSync(out, { withFileTypes: true, recursive: true }).some((e) => {
+        if (!e.isFile()) return false
+        const text = readFileSync(path.join(e.parentPath, e.name)).toString('latin1')
+        return text.includes(marker) || needles.some((n) => text.includes(n))
+      })
+    const cases: Array<[string, string]> = [
+      ['?raw', '![](./dummy.env?raw)\n'],
+      ['url() of an env file', '<style>.x { background: url(./dummy.env) }</style>\n'],
+      ['image: frontmatter', '\n---\nlayout: image\nimage: ./secret.txt\n---\n\n# s\n'],
+      ['url() outside the workspace', `<style>.x { background: url(${outsideFile}) }</style>\n`],
+    ]
+    for (const [what, body] of cases) {
+      // cleanup() below removes outsideDir after each case, so it is recreated here.
+      mkdirSync(outsideDir, { recursive: true })
+      scratch.push(outsideDir)
+      writeFileSync(outsideFile, `${marker}\n`)
+      try {
+        const entry = probeDeck(OFFLINE, body)
+        const dir = path.dirname(entry)
+        writeFileSync(path.join(dir, 'dummy.env'), big)
+        writeFileSync(path.join(dir, 'secret.txt'), big)
+        writeFileSync(path.join(dir, 'ok.png'), 'x')
+        // The output goes outside the workspace: built .html/.css would be scanned by the guard.
+        const out = path.join(outsideDir, 'out')
+        // Without the guard the real build contains the secret ...
+        execFileSync(process.execPath, [slidevBin(workspace), 'build', entry, '--out', out], {
+          cwd: workspace,
+          stdio: 'pipe',
+        })
+        expect(bundleHasMarker(out), what).toBe(true)
+        // ... and the guard sees the reference, but not a harmless image next to the deck.
+        const probe = path.relative(workspace, entry).split(path.sep).join('/')
+        expect(findOutsideImports(workspace), what).toHaveLength(1)
+        expect(findOutsideImports(workspace)[0], what).toMatch(new RegExp(`^${probe} -> asset `))
+      } finally {
+        cleanup()
+      }
+    }
+  }, 300_000)
 
   it('PlantUML: the data: server keeps diagrams off plantuml.com; the scan catches the default', () => {
     try {

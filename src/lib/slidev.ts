@@ -285,6 +285,98 @@ export function snippetImports(text: string): SnippetImport[] {
   return out
 }
 
+/** A reference that is not a local file: a URL scheme (but `file:` is local), `//host`, `#id`. */
+const NON_LOCAL_REF = /^(?:(?!file:)[a-z][a-z0-9+.-]+:|\/\/|#)/i
+
+/** Quoted string literals inside a Vue bound attribute value (`:src="'../a.png'"`). */
+function stringLiterals(expr: string): string[] {
+  return [...expr.matchAll(/(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2]!)
+}
+
+/**
+ * Local file references that Slidev (Vite) turns into asset imports at build time, whatever their
+ * extension: Markdown images and reference definitions, `src`/`srcset`/`poster`/... attributes
+ * (also Vue `:src` string literals), CSS `url()` and `@import`, slide `image:`/`background:`
+ * frontmatter and `import`/`import()`/`new URL()` specifiers in Vue code. Remote URLs, `data:` URLs
+ * and `#fragments` are not local and are left out. Every line is scanned, fences included
+ * (Slidev resolves images inside ```md magic-move blocks); a false positive only matters when the
+ * path itself is refused.
+ */
+export function localAssetRefs(text: string): string[] {
+  const refs: string[] = []
+  const add = (ref: string | undefined, code = false) => {
+    if (ref === undefined) return
+    const r = ref.trim()
+    if (r === '' || (code && !/^(?:\.|\/|@\/)/.test(r))) return
+    refs.push(r)
+  }
+
+  for (const m of text.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]*)>|([^\s)]+))/g)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/gm)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)/gi)) {
+    add(m[1] ?? m[2] ?? m[3])
+  }
+  for (const m of text.matchAll(/@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)')/gi)) {
+    add(m[1] ?? m[2])
+  }
+  for (const m of text.matchAll(/^[ \t]*(?:image|background)[ \t]*:[ \t]*(.+?)[ \t]*$/gim)) {
+    add(m[1]!.replace(/^(["'])(.*)\1$/, '$2').replace(/[ \t]+#.*$/, ''))
+  }
+  for (const m of text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?(["'`])([^"'`]+)\1/g)) {
+    add(m[2], true)
+  }
+  for (const m of text.matchAll(/\bnew\s+URL\s*\(\s*(["'`])([^"'`]+)\1/g)) add(m[2], true)
+
+  const tag = /<\s*([A-Za-z][\w:.-]*)((?:[^>"'`]|"[^"]*"|'[^']*'|`[^`]*`)*)>/g
+  const attr = /([\w:.@#-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))/g
+  for (const t of text.matchAll(tag)) {
+    const name = t[1]!.toLowerCase()
+    for (const a of t[2]!.matchAll(attr)) {
+      const bound = /^(?::|v-bind:)/i.test(a[1]!)
+      const key = a[1]!.replace(/^(?::|v-bind:)/i, '').toLowerCase()
+      const value = a[2] ?? a[3] ?? a[4] ?? ''
+      const wanted =
+        ['src', 'srcset', 'poster', 'xlink:href', 'background'].includes(key) ||
+        (key === 'href' && name !== 'a') ||
+        (key === 'data' && name === 'object')
+      if (!wanted) continue
+      for (const v of bound ? stringLiterals(value) : [value]) {
+        if (key === 'srcset') for (const c of v.split(',')) add(c.trim().split(/\s+/)[0])
+        else add(v)
+      }
+    }
+  }
+  return [...new Set(refs)]
+}
+
+/**
+ * Absolute paths a local reference can resolve to. Relative references start at the file's own
+ * directory (`@/` is the deck's directory, like for snippets). A leading `/` is Vite's: the
+ * `public/` directory or the root, an existing filesystem path, or `/@fs/<path>`. Query and
+ * fragment are dropped; the raw, percent-decoded and backslash-normalised spellings are all tried.
+ */
+function assetTargets(root: string, file: string, ref: string): string[] {
+  if (NON_LOCAL_REF.test(ref)) return []
+  const base = ref.replace(/^file:\/\//i, '').replace(/[?#].*$/s, '')
+  if (base === '') return []
+  const spellings = new Set([base, base.replace(/\\/g, '/')])
+  try {
+    spellings.add(decodeURIComponent(base).replace(/\\/g, '/'))
+  } catch {
+    // not percent-encoded: the raw spelling is all there is
+  }
+  const targets: string[] = []
+  for (const v of spellings) {
+    if (v.startsWith('/@fs/')) targets.push(v.slice(4))
+    else if (v.startsWith('/')) {
+      targets.push(path.join(root, 'public', v), path.join(root, v))
+      if (existsSync(v)) targets.push(v)
+    } else if (v.startsWith('@/')) targets.push(path.resolve(path.dirname(file), v.slice(2)))
+    else targets.push(path.resolve(path.dirname(file), v))
+  }
+  return targets
+}
+
 /** Why Slidev must not read `target` (absolute) for an import of `ref`, or null if it may. */
 function importProblem(root: string, target: string, ref: string): string | null {
   const rel = path.relative(root, target)
@@ -310,19 +402,28 @@ function importProblem(root: string, target: string, ref: string): string | null
 }
 
 /**
- * Slide imports that Slidev would render but the checks never saw: `src: ./other.md` and code
- * snippets (`<<< ./code.ts`). Refused: absolute paths, paths outside the workspace, into a
- * directory the guard skips, through a symlink, to a context pack or a secret-looking file
- * (`.env*`, keys: the context-pack denylist), and snippets in a PlantUML language (Slidev renders
- * them as a PlantUML request) or Mermaid snippets that load a remote image. Returns "file -> src" and "file -> <<< path" strings.
+ * Slide imports and asset paths that Slidev would read but the checks never saw: `src: ./other.md`,
+ * code snippets (`<<< ./code.ts`) and every local file reference that becomes an asset import
+ * (images, `url()`, `image:`/`background:` frontmatter, Vue imports; see `localAssetRefs`; Slidev
+ * itself refuses only paths outside its Vite root, and then only for some of those forms). Refused:
+ * absolute paths, paths outside the workspace, into a directory the guard skips, through a symlink,
+ * to a context pack or a secret-looking file (`.env*`, keys: the context-pack denylist), and
+ * snippets in a PlantUML language (Slidev renders them as a PlantUML request) or Mermaid snippets
+ * that load a remote image. Returns "file -> src", "file -> <<< path" and "file -> asset path"
+ * strings.
  */
 export function findOutsideImports(courseDir: string): string[] {
   const root = path.resolve(courseDir)
   const offenders: string[] = []
   for (const file of walkFiles(root, GUARD_SKIP)) {
-    if (!/\.md$/i.test(file) || path.basename(file) === 'context-pack.md') continue
+    if (!/\.(md|vue|css|html)$/i.test(file) || path.basename(file) === 'context-pack.md') continue
     const text = readFileSync(file, 'utf8')
     const from = path.relative(root, file).split(path.sep).join('/')
+    for (const ref of localAssetRefs(text)) {
+      const bad = assetTargets(root, file, ref).some((t) => importProblem(root, t, '') !== null)
+      if (bad) offenders.push(`${from} -> asset ${ref}`)
+    }
+    if (!/\.md$/i.test(file)) continue
     for (const src of slideImports(text)) {
       if (importProblem(root, path.resolve(path.dirname(file), src), src)) {
         offenders.push(`${from} -> ${src}`)
@@ -339,7 +440,7 @@ export function findOutsideImports(courseDir: string): string[] {
       if (bad) offenders.push(`${from} -> <<< ${snippet.path}`)
     }
   }
-  return offenders.sort()
+  return [...new Set(offenders)].sort()
 }
 
 function mentionsRemoteAsset(file: string): boolean {

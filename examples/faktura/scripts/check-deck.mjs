@@ -7,13 +7,15 @@
 // - no remote images, embeds, scripts or styles (Markdown images, src/href on loading tags, CSS
 //   url()/@import, <Tweet>/<Youtube>, image:/background:/url: frontmatter, reference-style link
 //   definitions, Mermaid `img:` nodes); inline plain links are fine;
-// - slide imports (`src:` and `<<<` code snippets) stay inside the scanned files (no absolute
-//   paths, symlinks, skipped directories, context packs or secret-looking files such as `.env*`
-//   and keys) and are no PlantUML snippets;
+// - slide imports (`src:` and `<<<` code snippets) and every local file Slidev turns into an asset
+//   import (Markdown images, src/srcset/poster attributes, CSS url(), image:/background:
+//   frontmatter, Vue imports) stay inside the scanned files (no absolute paths, paths outside the
+//   workspace, symlinks, skipped directories, context packs or secret-looking files such as
+//   `.env*` and keys) and are no PlantUML snippets;
 // - the root deck's headmatter pins plantUmlServer and favicon (default: cdn.jsdelivr.net) to data:
 //   URLs, fonts.provider to "none", browserExporter and mcp to false (no /export page, no
 //   deck-editing /__mcp endpoint) and never enables `download`.
-import { lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
@@ -121,6 +123,88 @@ function importLeavesTree(target, ref) {
   return SECRET_FILE.some((re) => re.test(rel.split(path.sep).join('/')))
 }
 
+// A reference that is not a local file: a URL scheme (but `file:` is local), `//host`, `#id`.
+const NON_LOCAL_REF = /^(?:(?!file:)[a-z][a-z0-9+.-]+:|\/\/|#)/i
+
+// Quoted string literals inside a Vue bound attribute value (`:src="'../a.png'"`).
+const stringLiterals = (expr) => [...expr.matchAll(/(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2])
+
+// Local file references that Slidev (Vite) turns into asset imports at build time, whatever their
+// extension: Markdown images and reference definitions, src/srcset/poster/... attributes (also Vue
+// :src string literals), CSS url() and @import, image:/background: frontmatter and
+// import/import()/new URL() specifiers in Vue code. Every line is scanned, fences included.
+function localAssetRefs(text) {
+  const refs = []
+  const add = (ref, code = false) => {
+    if (ref === undefined) return
+    const r = ref.trim()
+    if (r === '' || (code && !/^(?:\.|\/|@\/)/.test(r))) return
+    refs.push(r)
+  }
+  for (const m of text.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]*)>|([^\s)]+))/g)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/gm)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)/gi)) {
+    add(m[1] ?? m[2] ?? m[3])
+  }
+  for (const m of text.matchAll(/@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)')/gi)) {
+    add(m[1] ?? m[2])
+  }
+  for (const m of text.matchAll(/^[ \t]*(?:image|background)[ \t]*:[ \t]*(.+?)[ \t]*$/gim)) {
+    add(m[1].replace(/^(["'])(.*)\1$/, '$2').replace(/[ \t]+#.*$/, ''))
+  }
+  for (const m of text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?(["'`])([^"'`]+)\1/g)) {
+    add(m[2], true)
+  }
+  for (const m of text.matchAll(/\bnew\s+URL\s*\(\s*(["'`])([^"'`]+)\1/g)) add(m[2], true)
+
+  const tag = /<\s*([A-Za-z][\w:.-]*)((?:[^>"'`]|"[^"]*"|'[^']*'|`[^`]*`)*)>/g
+  const attr = /([\w:.@#-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))/g
+  for (const t of text.matchAll(tag)) {
+    const name = t[1].toLowerCase()
+    for (const a of t[2].matchAll(attr)) {
+      const bound = /^(?::|v-bind:)/i.test(a[1])
+      const key = a[1].replace(/^(?::|v-bind:)/i, '').toLowerCase()
+      const value = a[2] ?? a[3] ?? a[4] ?? ''
+      const wanted =
+        ['src', 'srcset', 'poster', 'xlink:href', 'background'].includes(key) ||
+        (key === 'href' && name !== 'a') ||
+        (key === 'data' && name === 'object')
+      if (!wanted) continue
+      for (const v of bound ? stringLiterals(value) : [value]) {
+        if (key === 'srcset') for (const c of v.split(',')) add(c.trim().split(/\s+/)[0])
+        else add(v)
+      }
+    }
+  }
+  return [...new Set(refs)]
+}
+
+// Absolute paths a local reference can resolve to. Relative references start at the file's own
+// directory (`@/` is the deck's directory). A leading `/` is Vite's: the public/ directory or the
+// root, an existing filesystem path, or `/@fs/<path>`. Query and fragment are dropped; the raw,
+// percent-decoded and backslash-normalised spellings are all tried.
+function assetTargets(file, ref) {
+  if (NON_LOCAL_REF.test(ref)) return []
+  const base = ref.replace(/^file:\/\//i, '').replace(/[?#].*$/s, '')
+  if (base === '') return []
+  const spellings = new Set([base, base.replace(/\\/g, '/')])
+  try {
+    spellings.add(decodeURIComponent(base).replace(/\\/g, '/'))
+  } catch {
+    // not percent-encoded: the raw spelling is all there is
+  }
+  const targets = []
+  for (const v of spellings) {
+    if (v.startsWith('/@fs/')) targets.push(v.slice(4))
+    else if (v.startsWith('/')) {
+      targets.push(path.join(root, 'public', v), path.join(root, v))
+      if (existsSync(v)) targets.push(v)
+    } else if (v.startsWith('@/')) targets.push(path.resolve(path.dirname(file), v.slice(2)))
+    else targets.push(path.resolve(path.dirname(file), v))
+  }
+  return targets
+}
+
 function mentionsRemoteAsset(file) {
   try {
     return lstatSync(file).isFile() && REMOTE_ASSET.test(readFileSync(file, 'utf8'))
@@ -159,6 +243,11 @@ for (const file of files(root)) {
   if (/\.(md|vue)$/i.test(file) && (FENCE.test(text) || COMPONENT.test(text))) plantUml.push(rel)
   if (WEB_FONTS.test(text)) webFonts.push(rel)
   if (REMOTE_ASSET.test(text)) remote.push(rel)
+  for (const ref of localAssetRefs(text)) {
+    if (assetTargets(file, ref).some((t) => importLeavesTree(t, ''))) {
+      imports.push(`${rel.split(path.sep).join('/')} -> asset ${ref}`)
+    }
+  }
   if (/\.md$/i.test(file)) {
     for (const src of slideImports(text)) {
       if (importLeavesTree(path.resolve(path.dirname(file), src), src)) {
@@ -244,7 +333,7 @@ if (remote.length > 0) {
 if (imports.length > 0) {
   failed = true
   console.error(
-    'Slide imports (src: and <<< snippets) must stay inside the scanned workspace files (no context packs, secret-looking files or PlantUML snippets):',
+    'Slide imports (src: and <<< snippets) and asset paths (images, url(), image:/background:, Vue imports) must stay inside the scanned workspace files (no context packs, secret-looking files or PlantUML snippets):',
   )
   for (const f of imports) console.error(`  - ${printable(f)}`)
 }

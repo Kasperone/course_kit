@@ -47,7 +47,7 @@ course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
   offline headmatter, remote assets, slide imports), Slidev's environment (no API keys), post-build scan, symlinked `dist/`, and `check-deck.mjs`
   against the same cases (the example's copy must equal the template's).
 - `tests/fs-safe.test.ts` — no workspace write follows a symlink.
-- `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: PlantUML, fonts, favicon, the dev
+- `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: snippet and asset-path leaks, PlantUML, fonts, favicon, the dev
   server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job runs it).
 - `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
   the git >= 2.38 check.
@@ -96,8 +96,8 @@ Decks are Mermaid-only, fully offline and export-free (ADR 0001, 0003). Every de
 `provider: "none"`, `browserExporter: false`, `mcp: false` and `download: false`. `course build`/`course dev` refuse to start Slidev otherwise, or if
 any workspace file has a PlantUML fence or `<PlantUml>` component, references a web-font CDN or loads a remote
 resource (images, embeds, scripts, styles, `url:` iframe layouts, reference-style images, Mermaid `img:` nodes; inline
-plain links are fine), or if a slide `src:` import or `<<<` snippet
-leaves the checked files, targets a context pack or a secret-looking file (`.env*`, keys) or is a PlantUML snippet.
+plain links are fine), or if a slide `src:` import, `<<<` snippet or local asset path (Markdown/HTML images, `srcset`/`poster`, CSS `url()`, `image:`/`background:`
+frontmatter, Vue imports) leaves the checked files, targets a context pack or a secret-looking file (`.env*`, keys) or is a PlantUML snippet.
 Context packs are skipped by every scan. `course dev` checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with
 `childEnv()` plus `NODE_*`/`VITE_*`/`SLIDEV_*` (secret-looking names are dropped even under those wildcards) and a
 10-minute build timeout. The template's
