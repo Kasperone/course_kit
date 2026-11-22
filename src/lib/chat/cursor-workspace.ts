@@ -1,4 +1,12 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import {
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isPlainObject } from '../validate.js'
@@ -11,7 +19,10 @@ import { isPlainObject } from '../validate.js'
 
 const home = (env: NodeJS.ProcessEnv): string => env.HOME || os.homedir()
 
-/** `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`). Always empty. */
+/**
+ * `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`). Holds nothing
+ * but our own deny-all `.cursor/cli.json` (see `CURSOR_DENY_ALL_CONFIG`).
+ */
 export function cursorWorkspaceDir(env: NodeJS.ProcessEnv = process.env): string {
   const xdg = env.XDG_CACHE_HOME
   const cache = xdg && path.isAbsolute(xdg) ? xdg : path.join(home(env), '.cache')
@@ -32,8 +43,28 @@ export function cursorProjectSlug(workspace: string): string {
 }
 
 /**
- * Create the stable workspace if missing (0700) and return it. It must be a real directory of the
- * current user, not a symlink, so `--trust` can only ever cover this one empty directory.
+ * Project-level permissions for the Cursor agent (`.cursor/cli.json`, merged over the user's own
+ * config; deny rules win): no shell, no file reads or writes, no web fetches, no MCP tools. Cursor's
+ * `--mode ask` is read-only but still agentic (file read/search, possibly web and MCP tools), and
+ * the prompt carries untrusted repository text, so the tools are denied as well. The patterns are
+ * the agent's own grammar (`Shell(cmd)`, `Read(glob)`, `Write(glob)`, `WebFetch(domain)`,
+ * `Mcp(server:tool)`; verified against cursor-agent 2026.11.19).
+ */
+export const CURSOR_DENY_ALL_CONFIG = {
+  permissions: {
+    allow: [] as string[],
+    deny: ['Shell(*)', 'Read(**)', 'Write(**)', 'WebFetch(*)', 'Mcp(*:*)'],
+  },
+}
+
+const CURSOR_CONFIG_TEXT = `${JSON.stringify(CURSOR_DENY_ALL_CONFIG, null, 2)}\n`
+
+/**
+ * Create the stable workspace if missing (0700), check that it is what we expect and return it. It
+ * must be a real directory of the current user, not a symlink, so `--trust` can only ever cover this
+ * one directory. `--trust` also makes Cursor load project config and rules from the workspace, so
+ * it must hold nothing but our deny-all `.cursor/cli.json`: any other entry (a stray file, a
+ * `.cursor/mcp.json`, rules or hooks) makes the provider unavailable instead of being trusted.
  */
 export function ensureCursorWorkspace(dir: string): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -44,6 +75,32 @@ export function ensureCursorWorkspace(dir: string): string {
   if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
     throw new Error(`${dir} is owned by another user`)
   }
+  const refuse = (what: string): never => {
+    throw new Error(
+      `${dir} must hold nothing but .cursor/cli.json (found ${JSON.stringify(what).slice(0, 80)}). ` +
+        "Remove the extra entry, or the whole directory (`course clean` removes Cursor's folder for it).",
+    )
+  }
+  for (const e of readdirSync(dir)) if (e !== '.cursor') refuse(e)
+  const cursorDir = path.join(dir, '.cursor')
+  try {
+    const cst = lstatSync(cursorDir)
+    if (!cst.isDirectory()) refuse('.cursor')
+    for (const e of readdirSync(cursorDir)) if (e !== 'cli.json') refuse(`.cursor/${e}`)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    mkdirSync(cursorDir, { mode: 0o700 })
+  }
+  const config = path.join(cursorDir, 'cli.json')
+  let current: string | null = null
+  try {
+    if (!lstatSync(config).isFile()) refuse('.cursor/cli.json')
+    current = readFileSync(config, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  // Rewritten when missing or changed (a leftover permissive file is ours to replace).
+  if (current !== CURSOR_CONFIG_TEXT) writeFileSync(config, CURSOR_CONFIG_TEXT, { mode: 0o600 })
   return dir
 }
 

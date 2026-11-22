@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runAsk, renderParts } from '../src/commands/ask.js'
@@ -167,10 +167,56 @@ describe('course dev with the chat backend', () => {
       else process.env.ANTHROPIC_API_KEY = saved
     }
   })
+
+  it('Ctrl+C: the signal reaches Slidev, the parent stays up, and the backend is closed after it', async () => {
+    const { workspace } = await makeWorkspace()
+    installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, 'slidev-hang'), '')
+    const logs: string[] = []
+    const before = { int: process.listenerCount('SIGINT'), term: process.listenerCount('SIGTERM') }
+    const run = runDev({ lesson: '01-placeholder', cwd: workspace, log: (l) => logs.push(l) })
+    const pidOf = (): number | null => {
+      try {
+        const lines = readFileSync(path.join(workspace, 'slidev-env.log'), 'utf8')
+          .trim()
+          .split('\n')
+        return (JSON.parse(lines[0]!) as { pid: number }).pid
+      } catch {
+        return null
+      }
+    }
+    let pid: number | null = null
+    for (let i = 0; i < 100 && pid === null; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      pid = pidOf()
+    }
+    expect(pid).not.toBeNull()
+    const url = /Q&A backend on (http:\/\/127\.0\.0\.1:\d+)/.exec(logs.join('\n'))?.[1]
+    expect(url).toBeDefined()
+    try {
+      // The terminal sends SIGINT to the whole foreground group; here only the parent gets it.
+      process.emit('SIGINT')
+      const outcome = await Promise.race([
+        run.then(() => 'exited'),
+        new Promise<string>((r) => setTimeout(() => r('still running'), 15_000)),
+      ])
+      expect(outcome).toBe('exited')
+    } finally {
+      try {
+        process.kill(pid!, 'SIGKILL') // only needed when the signal was not forwarded
+      } catch {
+        // already gone
+      }
+    }
+    // The cleanup ran: the backend no longer answers, and our handlers are gone again.
+    await expect(fetch(`${url}/@course-chat/v1/status`)).rejects.toThrow()
+    expect(process.listenerCount('SIGINT')).toBe(before.int)
+    expect(process.listenerCount('SIGTERM')).toBe(before.term)
+  }, 30_000)
 })
 
 describe('course build: provider hosts and keys never reach the deck', () => {
-  it('fails when the built output contains an API key or a provider API host', async () => {
+  it('fails when the built output contains an API key', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     installFakeSlidev(workspace)
     writeFileSync(path.join(workspace, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`)
@@ -188,9 +234,32 @@ describe('course build: provider hosts and keys never reach the deck', () => {
     expect(message).not.toContain(KEY)
     expect(envLog(workspace)[0]!.secrets).toEqual([])
 
-    writeFileSync(file, `${head}\n# x\n\n<!-- api.anthropic.com -->\n`)
-    expect(() => runBuild({ cwd: workspace })).toThrow(/index\.html \(provider API\)/)
-    expect(findForbiddenBuildRefs(path.join(workspace, 'dist'))[0]!.what).toBe('provider API')
     expect(existsSync(path.join(workspace, 'dist'))).toBe(true)
+  })
+
+  it('a lesson that only mentions a provider host in prose still builds; deck code that calls it does not', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    const file = path.join(workspace, 'lessons', '01-placeholder', 'en', 'slides.md')
+    const head = deckFrontmatter({ title: 'x', lang: 'en' })
+    // The review's repro: the client of the repo under study posts to api.anthropic.com. The fake
+    // build copies the deck into index.html, so the host is in the built output.
+    writeFileSync(
+      file,
+      `${head}\n# x\n\nThe client posts to api.anthropic.com over HTTPS, and to api.elevenlabs.io.\n`,
+    )
+    runBuild({ cwd: workspace })
+    expect(
+      readFileSync(path.join(workspace, 'dist', '01-placeholder', 'en', 'index.html'), 'utf8'),
+    ).toContain('api.anthropic.com')
+    expect(findForbiddenBuildRefs(path.join(workspace, 'dist'))).toEqual([])
+
+    // What keeps a deck from talking to the provider is the pre-build rule on deck code.
+    mkdirSync(path.join(workspace, 'components'), { recursive: true })
+    writeFileSync(
+      path.join(workspace, 'components', 'Call.vue'),
+      '<script setup>fetch("https://api.anthropic.com/v1/messages")</script>',
+    )
+    expect(() => runBuild({ cwd: workspace })).toThrow(/must not reference external URLs/)
   })
 })

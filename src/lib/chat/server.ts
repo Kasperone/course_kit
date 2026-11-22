@@ -199,6 +199,9 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
   }
   /** For redaction: the workspace Anthropic key, whatever the provider. */
   const secrets = () => [source?.apiKey() ?? null]
+  /** A message for the browser or the log: no key, no URL password, never the workspace's path. */
+  const safeMessage = (message: string): string =>
+    redactSecrets(message.split(courseDir).join('<workspace>'), secrets())
 
   function materialsFor(c: CourseJson, lesson: unknown, lang: unknown): LessonMaterials {
     if (typeof lesson !== 'string' || typeof lang !== 'string') {
@@ -209,7 +212,7 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
     } catch (err) {
       if (err instanceof LessonNotFoundError) throw new HttpError(404, 'not-found', err.message)
       const msg = err instanceof Error ? err.message : String(err)
-      throw new HttpError(400, 'bad-request', msg.replace(courseDir, '<workspace>'))
+      throw new HttpError(400, 'bad-request', safeMessage(msg))
     }
   }
 
@@ -383,7 +386,7 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
           ? err
           : new ProviderError('upstream', err instanceof Error ? err.message : String(err))
       outcome = pe.code
-      event('error', { code: pe.code, message: redactSecrets(pe.message, secrets()) })
+      event('error', { code: pe.code, message: safeMessage(pe.message) })
     } finally {
       finished = true
       clearInterval(heartbeat)
@@ -430,16 +433,10 @@ export async function startChatServer(options: ChatServerOptions): Promise<ChatS
           err instanceof HttpError
             ? err
             : new HttpError(500, 'internal', err instanceof Error ? err.message : String(err))
-        if (!(err instanceof HttpError))
-          log(`500 ${url.pathname}: ${redactSecrets(e.message, secrets())}`)
+        if (!(err instanceof HttpError)) log(`500 ${url.pathname}: ${safeMessage(e.message)}`)
         else if (e.status >= 400) log(`${e.status} ${req.method} ${url.pathname} (${e.code})`)
         if (res.headersSent) return void res.end()
-        sendJson(
-          res,
-          e.status,
-          { error: e.code, message: redactSecrets(e.message, secrets()) },
-          e.headers,
-        )
+        sendJson(res, e.status, { error: e.code, message: safeMessage(e.message) }, e.headers)
       })
       return
     }

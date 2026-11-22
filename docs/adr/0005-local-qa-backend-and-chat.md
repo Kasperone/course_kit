@@ -90,8 +90,9 @@ status: 400, 403, 404, 405, 413, 415, 422 (`no-pack`, `too-large`), 429 (with `R
     counts, never questions, answers or keys.
   - Slidev (`course dev`, `course build`) runs without `ANTHROPIC_*` and `ELEVENLABS_API_KEY` in its
     environment.
-  - `course build` fails if the output contains a workspace key or `api.anthropic.com` /
-    `api.elevenlabs.io`.
+  - `course build` fails if the output contains a workspace key. It does not scan for the provider
+    hosts: they may appear in a lesson's prose, and deck code that calls an external URL is refused
+    before the build.
 
 ### Grounding and prompt (no RAG)
 
@@ -143,7 +144,7 @@ Nothing is truncated silently, except the oldest history turns.
 
 - Everything in `<lesson_materials>` is declared as data, never instructions. Any frame tag inside
   repository text (`</context_pack>`, `<question>`, …) is escaped.
-- The model has no tools.
+- The model has no tools (Cursor: read-only ask mode with every tool denied by the workspace config; see "Providers").
 - The panel renders only paragraphs, lists, inline code, bold and fenced code. It never uses
   `v-html` and never renders links or images, so an injected answer cannot make the browser load
   anything.
@@ -209,24 +210,40 @@ Cursor ids are account-dependent, so the README points to that command.
   History is flattened into `<conversation>`/`<turn>` frames (frame tags escaped like the rest).
 - **Working directory.** A fresh `mkdtemp` directory (0700) with an empty `cwd/` subdirectory; the
   system prompt file is 0600 next to it. Removed after every answer and status check. The CLI never
-  runs in the repository or the workspace. Exception: Cursor runs in one stable empty workspace,
-  `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`, 0700, created if
-  missing, refused if it is a symlink or not ours), because Cursor keeps a transcript folder per
+  runs in the repository or the workspace. Exception: Cursor runs in one stable workspace that holds
+  only our deny-all `.cursor/cli.json`, `$XDG_CACHE_HOME/course-kit/cursor-ws` (default
+  `~/.cache/course-kit/cursor-ws`, 0700, created if missing, refused if it is a symlink or not ours,
+  and refused as `unavailable` before every run if it holds anything else), because Cursor keeps a transcript folder per
   workspace path and a fresh directory per question would leave one behind each time. The private
   temp directory is still made per answer for anything else.
-- **No tools.** Claude Code: `--tools ""`, `--strict-mcp-config` (no MCP servers),
+- **No tools (Claude Code), read-only ask mode with every tool denied (Cursor).** Claude Code:
+  `--tools ""`, `--strict-mcp-config` (no MCP servers),
   `--permission-mode dontAsk` plus `--permission-prompts none` (anything that would need approval is
   denied), `--restricted` (no user/project settings and their hooks, no code-running tools),
   `--safe-mode` (no CLAUDE.md, plugins, skills), `--disable-slash-commands`,
-  `--no-session-persistence`. Cursor: `--mode ask` (read-only Q&A), `--sandbox enabled`, and
-  `--workspace` set to the empty workspace. `--trust` is passed because headless Cursor refuses an
-  untrusted workspace; it trusts only that one empty directory and grants no tool permission.
+  `--no-session-persistence`. Cursor: `--mode ask` (read-only Q&A, but still agentic: it has file
+  read/search tools and, depending on the CLI version, web and MCP tools, and the prompt carries
+  untrusted repository text), `--sandbox enabled`, and `--workspace` set to the stable workspace.
+  `--trust` is passed because headless Cursor refuses an untrusted workspace; it makes Cursor load the
+  workspace's project config, so before every run the directory must hold nothing but
+  `.cursor/cli.json` (a stray file, `.cursor/mcp.json`, rules or hooks make the provider
+  `unavailable`; a symlinked `cli.json` is refused). That file, rewritten on every run, is the
+  project-level permission config of the installed cursor-agent (2026.11.19 reads it, validated, and
+  merges it over the user's config) and denies `Shell(*)`, `Read(**)`, `Write(**)`, `WebFetch(*)` and
+  `Mcp(*:*)`. Residual risk: an agent version that ignores or renames that file, or a Cursor tool
+  outside those five kinds, is still limited to ask mode and the sandbox, and Cursor writes the
+  conversation to `~/.cursor/projects/` (see `course clean`); the answer is never trusted as
+  instructions (it is rendered as text only).
 - **Never.** `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--force`,
   `-f`, `--yolo`, `--auto-review`, `--approve-mcps`, `bypassPermissions`/`acceptEdits`. A test checks
   every argument list.
 - **Limits.** A timeout per answer (default 180 s, `timeoutSeconds` 10–900) and an 8 MB stdout cap;
   either kills the whole process group (SIGTERM, SIGKILL 2 s later). An aborted request (browser
-  gone, Ctrl+C in `course ask`) does the same. After a normal exit the rest of the group gets
+  gone, Ctrl+C in `course ask`/`course serve`) does the same. `course dev` keeps its own process up on
+  SIGINT/SIGTERM and passes the signal to Slidev, so the backend is closed (and a running answer
+  aborted, its group killed) after Slidev has exited; without a handler Node would die at once and
+  the CLI, which sits in its own process group and never sees the terminal's signal, would run on.
+  After a normal exit the rest of the group gets
   SIGTERM too: `cursor-agent` leaves a per-workspace `worker-server` running otherwise.
 - **Environment: an allowlist** (`cliChildEnv()` in `cli-provider.ts`), for answer runs and status
   commands alike. A denylist would let everything else in the user's shell through (`GITHUB_TOKEN`,
@@ -239,7 +256,10 @@ Cursor ids are account-dependent, so the README points to that command.
   `NODE_TLS_REJECT_UNAUTHORIZED`). Proxy URLs may carry credentials (`http://user:secret@proxy:3128`), and a CLI
   can echo one in its error: the first line of a CLI's output that goes into an error or status message, and every
   message the server sends or logs (`redactSecrets` in `src/lib/env.ts`), has the password of any
-  `user:password@host` URL removed (`redactUrlCredentials`, ADR 0002); and each CLI's own login/config variables (`CliSpec.envNames`,
+  `user:password@host` URL removed (`redactUrlCredentials`, ADR 0002), and the token-like values the CLI
+  itself is given (`CLAUDE_CODE_OAUTH_TOKEN`, `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`; `cliSecretValues()`)
+  replaced by `‹redacted›`, since a CLI can echo its credential in an error; the server also strips the
+  workspace path (every occurrence) from every error body and log line; and each CLI's own login/config variables (`CliSpec.envNames`,
   names taken from `cursor-agent --help`, the variables its code reads and the `claude` binary):
   Claude Code `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; a subscription token, not an API
   key), `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`; Cursor `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`,

@@ -575,17 +575,13 @@ export function findExternalUrlFiles(courseDir: string): string[] {
   return offenders.sort()
 }
 
-export type BuildRef = {
-  file: string
-  what: 'PlantUML server' | 'web fonts' | 'CDN favicon' | 'provider API'
-}
-
-/** Hosts of the paid APIs: only the local backend may talk to them, never the deck. */
-export const PROVIDER_API_HOST_RE = /api\.anthropic\.com|api\.elevenlabs\.io/i
+export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | 'CDN favicon' }
 
 /**
- * Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server, a web-font CDN or a
- * provider API host (the deck must only talk to the local backend).
+ * Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or a web-font CDN.
+ * Provider API hosts are not scanned for: a lesson about a repo that talks to Anthropic may say
+ * `api.anthropic.com` in prose. Deck code cannot call them (`findExternalUrlFiles` refuses any
+ * external URL before the build) and keys are caught by `findSecretsInBuild`.
  */
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
   const hits: BuildRef[] = []
@@ -598,7 +594,6 @@ export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
     if (/\.html$/i.test(file) && /cdn\.jsdelivr\.net/i.test(text)) {
       hits.push({ file, what: 'CDN favicon' })
     }
-    if (PROVIDER_API_HOST_RE.test(text)) hits.push({ file, what: 'provider API' })
   }
   return hits.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }

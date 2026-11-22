@@ -201,6 +201,8 @@ Lesson decks also load the chat addon (`addons/chat`, see
 `/@course-chat/v1/`: `course serve` serves the built decks and that API from one origin on
 127.0.0.1, and `course dev` proxies it to the in-process backend. `course serve` is now the
 recommended way to view `dist/` (the deck links work under `vite preview` too, but the chat then
-says the backend is not running). The post-build scan also fails on `api.anthropic.com`,
-`api.elevenlabs.io` and on any API key from the workspace's `.env`, and Slidev runs without
-provider keys in its environment.
+says the backend is not running). The post-build scan also fails on any API key from the
+workspace's `.env`, and Slidev runs without provider keys in its environment. Provider hosts are not
+scanned for in the output: a lesson about a repo that talks to Anthropic may mention
+`api.anthropic.com` in prose, and deck code cannot call it because any external URL in deck code is
+refused before the build.

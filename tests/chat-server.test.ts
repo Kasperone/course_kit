@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -356,6 +356,22 @@ describe('chat server: limits', () => {
   })
 })
 
+describe('chat server: the workspace path never reaches the browser or the log', () => {
+  it('a malformed course.json is a 500 without the absolute path', async () => {
+    const { port, ws, logs } = await start()
+    writeFileSync(path.join(ws, 'course.json'), '{ not json')
+    const res = await raw(port, {
+      path: '/@course-chat/v1/status?lesson=01-x&lang=en',
+    })
+    expect(res.status).toBe(500)
+    const body = JSON.parse(res.body) as { error: string; message: string }
+    expect(body.error).toBe('internal')
+    expect(body.message).toContain('<workspace>')
+    expect(res.body).not.toContain(ws)
+    expect(logs.join('\n')).not.toContain(ws)
+  })
+})
+
 describe('course serve static files', () => {
   it('serves dist/ with traversal and symlink protection and byte ranges', async () => {
     const { port, ws } = await start()
@@ -389,6 +405,30 @@ describe('course serve static files', () => {
     expect((await raw(port, { path: clip, headers: { range: 'bytes=99-' } })).status).toBe(416)
     expect((await raw(port, { method: 'POST', path: '/' })).status).toBe(405)
   })
+
+  // root can read a mode-000 file, so there is nothing to fail on.
+  it.skipIf(process.getuid?.() === 0)(
+    'one unreadable file ends that response, not the server',
+    async () => {
+      const { port, ws } = await start()
+      const locked = path.join(ws, 'dist', 'locked.js')
+      writeFileSync(locked, 'console.log(1)')
+      chmodSync(locked, 0o000)
+      try {
+        // The headers are already out when the open fails: the response is cut, whatever the client sees.
+        await raw(port, { path: '/locked.js' }).catch(() => null)
+        // The process is alive and keeps serving.
+        expect((await raw(port, { path: '/' })).body).toBe('<html>index</html>')
+        // A file removed after the stat (`course build` clears dist/ while the server runs) is the
+        // same case: nothing throws.
+        rmSync(locked)
+        expect((await raw(port, { path: '/locked.js' })).status).toBe(404)
+        expect((await raw(port, { path: '/' })).status).toBe(200)
+      } finally {
+        rmSync(locked, { force: true })
+      }
+    },
+  )
 
   it('parseRange', () => {
     expect(parseRange(undefined, 10)).toBeNull()
