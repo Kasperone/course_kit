@@ -3,6 +3,7 @@
 // https://www.plantuml.com and would send the diagram source off-machine. This workspace uses
 // Mermaid only; fail dev/build/export if any Markdown file contains a PlantUML block or Slidev's
 // <PlantUml> component (it renders `server`/`code` props as given, bypassing `plantUmlServer`).
+// Vue files are scanned too: Slidev registers components/*.vue automatically, so a deck can use one.
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -13,19 +14,19 @@ const PACK = /^context-pack\.md$/
 const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 const COMPONENT = /<\s*plant-?uml\b/i
 
-function* markdownFiles(dir) {
+function* deckFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (SKIP.has(entry.name)) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are never followed: a loop would never end, and a link can point outside the deck.
-    if (entry.isDirectory()) yield* markdownFiles(abs)
+    if (entry.isDirectory()) yield* deckFiles(abs)
     // Generated context packs quote the target repo and are never rendered as slides.
-    else if (entry.isFile() && entry.name.endsWith('.md') && !PACK.test(entry.name)) yield abs
+    else if (entry.isFile() && /\.(md|vue)$/.test(entry.name) && !PACK.test(entry.name)) yield abs
   }
 }
 
 const offenders = []
-for (const file of markdownFiles(root)) {
+for (const file of deckFiles(root)) {
   const text = readFileSync(file, 'utf8')
   if (FENCE.test(text) || COMPONENT.test(text)) offenders.push(path.relative(root, file))
 }
