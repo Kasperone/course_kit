@@ -9,6 +9,7 @@ import {
   deckFrontmatter,
   findForbiddenBuildRefs,
   findOutsideImports,
+  slideImports,
   localAssetRefs,
   findPlantUmlFiles,
   findRemoteAssetFiles,
@@ -388,6 +389,15 @@ describe('offline headmatter policy', () => {
 const REMOTE_CASES: Array<[string, string, boolean]> = [
   ['Markdown image', '![logo](https://example.com/logo.png)\n', true],
   ['protocol-relative image', '![logo](//cdn.example/x.png)\n', true],
+  ['https:host image (no slashes)', '<img src="https:evil.example/x.png">\n', true],
+  ['https:/host image (one slash)', '<img src="https:/evil.example/x.png">\n', true],
+  ['backslash protocol-relative image', '<img src="\\\\evil.example/x.png">\n', true],
+  ['https:host Markdown image', '![x](https:evil.example/x.png)\n', true],
+  [
+    'https:host CSS url()',
+    '<style>.a { background: url(https:evil.example/b.png) }</style>\n',
+    true,
+  ],
   ['iframe', '<iframe src="https://example.org/embed"></iframe>\n', true],
   ['multi-line img', "<img\n  class='x'\n  src='http://e.com/a.png'>\n", true],
   ['Vue :src', '<img :src="`https://e.com/${x}`">\n', true],
@@ -415,6 +425,7 @@ const REMOTE_CASES: Array<[string, string, boolean]> = [
   ['anchor tag', '<a href="https://example.com">x</a>\n', false],
   ['local image', '![a](./img/a.png) <img src="/images/a.png">\n', false],
   ['loopback image', '<img src="http://localhost:5173/a.png">\n', false],
+  ['https:localhost image', '<img src="https:localhost/a.png">\n', false],
 ]
 
 /** PlantUML markup (true) vs. text that merely looks like it (false). */
@@ -503,6 +514,45 @@ const SNIPPET_CASES: Array<[string, string, boolean]> = [
   ['a src: import of a context pack', '---\nsrc: ../context-pack.md\n---\n', true],
   ['a src: import of .env', '---\nsrc: ../../../.env\n---\n', true],
   ['a src: import of a deck', '---\nsrc: ./local.md\n---\n', false],
+  [
+    'a src: import of .env in a yaml code block',
+    '\n---\n\n```yaml\nsrc: ../../../.env\n```\n',
+    true,
+  ],
+  ['a src: import of .env, quoted key', '---\n"src": ../../../.env\n---\n', true],
+  ['a src: import of .env, single-quoted key', "---\n'src': ../../../.env\n---\n", true],
+  ['a src: import of .env, indented mapping', '---\n  src: ../../../.env\n---\n', true],
+  [
+    'a src: import of .env, key with a space before the colon',
+    '---\nsrc : ../../../.env\n---\n',
+    true,
+  ],
+  ['a src: import of .env, flow mapping', '---\n{ src: ../../../.env }\n---\n', true],
+  [
+    'a src: import of .env, flow mapping, quoted',
+    '---\n{ layout: x, "src": "../../../.env" }\n---\n',
+    true,
+  ],
+  ['a src: import of .env, value on the next line', '---\nsrc:\n  ../../../.env\n---\n', true],
+  ['a src: import of .env, folded value', '---\nsrc: >-\n  ../../../.env\n---\n', true],
+  ['a src: import of .env, trailing comment', '---\nsrc: "../../../.env" # note\n---\n', true],
+  [
+    'a src: import of .env, in a tilde-fenced yaml block',
+    '\n---\n\n~~~yaml\nsrc: ../../../.env\n~~~\n',
+    true,
+  ],
+  [
+    'a src: import of a context pack in a yaml code block',
+    '\n---\n\n```yaml\nsrc: ../context-pack.md\n```\n',
+    true,
+  ],
+  [
+    'a src: import of a deck in a yaml code block',
+    '\n---\n\n```yaml\nsrc: ./local.md\n```\n',
+    false,
+  ],
+  ['a src: import of a deck, flow mapping', '---\n{ src: ./local.md }\n---\n', false],
+  ['a src: import of a deck with a slide range', '---\nsrc: "./local.md#2-3"\n---\n', false],
 ]
 
 const ASSET_ENV = '../../../.env'
@@ -635,10 +685,29 @@ describe('remote assets and slide imports', () => {
     )
     expect(findOutsideImports(dir)).toEqual([
       'lessons/01/en/slides.md -> ../../../../escape.md',
+      'lessons/01/en/slides.md -> ../../../../in-a-code-block.md',
       'lessons/01/en/slides.md -> ../../../linked/x.md',
       'lessons/01/en/slides.md -> ../../../node_modules/pkg/x.md',
       'lessons/01/en/slides.md -> /etc/slides.md',
     ])
+  })
+
+  it('reads src: in every spelling Slidev accepts', () => {
+    expect(slideImports('---\nsrc: ./a.md\n---\n')).toEqual(['./a.md'])
+    expect(slideImports('```yaml\nsrc: ../a.md\n```')).toEqual(['../a.md'])
+    expect(slideImports('"src": ./a.md\n\'src\': ./b.md\n  src: ./c.md')).toEqual([
+      './a.md',
+      './b.md',
+      './c.md',
+    ])
+    expect(slideImports('{ src: ./a.md }\n{layout: x, "src": "./b.md", title: y}')).toEqual([
+      './a.md',
+      './b.md',
+    ])
+    expect(slideImports('src:\n\n  ./a.md')).toEqual(['./a.md'])
+    expect(slideImports('src: "./a.md#2-3" # note')).toEqual(['./a.md'])
+    // Not imports: other keys, attributes and an empty value.
+    expect(slideImports('source: ./a.md\n<img src="./a.png">\nsrc:\n')).toEqual([])
   })
 
   it('parses Slidev snippet imports like Slidev does', () => {
@@ -669,6 +738,30 @@ describe('remote assets and slide imports', () => {
     writeFileSync(path.join(deckDir, 'extra.md'), body)
     const found = findOutsideImports(dir)
     expect(found.length > 0, found.join('\n')).toBe(flagged)
+  })
+
+  it('resolves `@/` against the entry deck too, also inside a file pulled in with src:', () => {
+    const dir = makeTempDir('at-root')
+    const deckDir = path.join(dir, 'lessons', '01', 'en')
+    mkdirSync(deckDir, { recursive: true })
+    mkdirSync(path.join(dir, 'shared'))
+    writeFileSync(path.join(deckDir, 'slides.md'), '# deck\n')
+    // The symlink exists only in the deck directory: from shared/part.md, `@/linked/x.txt` only
+    // reaches the outside when Slidev's userRoot (the deck) is the base.
+    const outside = makeTempDir('at-root-outside')
+    writeFileSync(path.join(outside, 'x.txt'), 'x\n')
+    symlinkSync(outside, path.join(deckDir, 'linked'))
+    writeFileSync(path.join(deckDir, 'ok.txt'), 'ok\n')
+    writeFileSync(
+      path.join(dir, 'shared', 'part.md'),
+      '<<< @/linked/x.txt\n\n![](@/linked/x.txt)\n',
+    )
+    expect(findOutsideImports(dir)).toEqual([
+      'shared/part.md -> <<< @/linked/x.txt',
+      'shared/part.md -> asset @/linked/x.txt',
+    ])
+    writeFileSync(path.join(dir, 'shared', 'part.md'), '<<< @/ok.txt\n\n![](@/ok.txt)\n')
+    expect(findOutsideImports(dir)).toEqual([])
   })
 
   it('checks CSS, HTML and Vue files too, relative to the file', () => {
@@ -898,6 +991,18 @@ describe('check-deck.mjs agrees with the TypeScript policy', () => {
     const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
     writeFileSync(path.join(deckDir, 'extra.md'), body)
     expect(guardFails(workspace)).toBe(findOutsideImports(workspace).length > 0)
+  })
+
+  it('resolves `@/` against the entry deck too (symlink in the deck directory)', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
+    mkdirSync(path.join(workspace, 'shared'))
+    const outside = makeTempDir('at-root-mjs-outside')
+    writeFileSync(path.join(outside, 'x.txt'), 'x\n')
+    symlinkSync(outside, path.join(deckDir, 'linked'))
+    writeFileSync(path.join(workspace, 'shared', 'part.md'), '<<< @/linked/x.txt\n')
+    expect(findOutsideImports(workspace)).toEqual(['shared/part.md -> <<< @/linked/x.txt'])
+    expect(guardFails(workspace)).toBe(true)
   })
 
   it('skips context packs for the PlantUML and web-font checks, and refuses to import one', async () => {

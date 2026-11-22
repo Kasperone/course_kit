@@ -40,8 +40,14 @@ committing generated audio or API keys.
   format, format, bitrate). For Piper, `model` includes the sha256 of the
   `.onnx` file. An existing non-empty file with that name is reused if it is valid audio (its duration
   can be read); otherwise it is regenerated. A provider response is validated before it is cached, so
-  a proxy's HTML page or a truncated MP3 never stays in the cache (the error names the clip).
-  `--force` regenerates.
+  a proxy's HTML page or a truncated MP3 never stays in the cache (the error names the clip). A WAV
+  whose data chunk is shorter than its header declares (the streamed placeholders `0` and
+  `0xFFFFFFFF` aside) and an MP3 whose last frame is cut off are not valid audio. Clips and the
+  manifest are written to `<file>.part` and renamed into place, so an interrupted run (Ctrl-C, full
+  disk) leaves no half-written clip under its real name; leftover `.part` files are removed at the
+  start of the next run. `--force` regenerates. All providers are built, and the never-commit guard
+  runs, for every language before the first clip is synthesized (`--lang all --voice <pl voice>`
+  fails before Polish is narrated, not after).
 - Older clips that a new manifest no longer uses are kept (switching providers back and forth must
   not pay a paid provider twice) and reported; `--prune` deletes them.
 - `manifest.json` next to the clips: lesson, lang, provider, voice, model, format, settings,
@@ -129,7 +135,9 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
 
 - `POST https://api.elevenlabs.io/v1/text-to-speech/<voice>?output_format=<preset format>` with
   `{text, model_id}`; default model `eleven_multilingual_v2` (it normalises numbers). Voice and
-  model ids are validated before they go into the URL. 429/5xx are retried twice.
+  model ids are validated before they go into the URL. 429/5xx are retried twice. The request uses
+  `redirect: 'error'`: Node's fetch forwards a custom header such as `xi-api-key` across origins on a
+  redirect, and the endpoint never needs one.
 - The key comes only from `ELEVENLABS_API_KEY` in the environment or the workspace's gitignored
   `.env`. It is sent only in the `xi-api-key` header. It is never printed, logged, written to a
   manifest or file, or included in an error message (any occurrence in a provider error is
@@ -143,7 +151,11 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
   `audio/local/<lang>/<lesson>/` is ignored by git, so a narrower rule such as
   `audio/local/**/*.mp3` fails, and that nothing under `audio/local/` except `.gitkeep` is tracked.
   Otherwise it stops before calling any provider. Its git calls use the same hardening arguments
-  as calls on a target repository (a workspace can be a clone of someone else's).
+  as calls on a target repository (a workspace can be a clone of someone else's). The guard only
+  steps aside when there is nothing to commit to: no `git` binary, or git answering "not a git
+  repository". Git older than 2.38 (the "please upgrade" error of `init` and `pin`), a timeout,
+  "dubious ownership" or any other failure of `rev-parse`, `check-ignore` or `ls-files` refuses the
+  run instead of passing silently.
 - course_kit's own test suite fails if the repository tracks any audio file.
 - `audio/ATTRIBUTION.md` (generated from the voice registry by `course init`) names the voices,
   data licences and the never-commit rule, with a table to fill in for ElevenLabs voices.
@@ -181,7 +193,10 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
 - `course build`/`course dev` and the template's `scripts/check-deck.mjs` now also refuse deck
   code (`.vue`, `.ts`, `.js`, `.mjs`, … outside `node_modules`, `dist`, `audio`, `scripts`) that
   references an external URL (`http(s)://`, `ws(s)://` or protocol-relative); loopback hosts are
-  allowed.
+  allowed. Inline `<script>` blocks in a slide's Markdown (outside code fences) are scanned too:
+  Slidev compiles them into the slide's component. XML namespace identifiers
+  (`xmlns="http://www.w3.org/2000/svg"`, `createElementNS("http://www.w3.org/2000/svg", …)`) are
+  names, not requests, and are ignored.
 - Checked in a headless browser on the built faktura deck and on `course dev`: turning narration
   on at slide 1 loads `s01-c00-….mp3` from localhost and starts playback; navigation and the
   language switch load the matching clips; no request leaves localhost.

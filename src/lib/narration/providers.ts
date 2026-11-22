@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readWorkspaceSecret, redactSecrets } from '../env.js'
 import { ffmpegBin, hasFfmpeg, pcm16ToWav, wavToMp3, type AudioFormat } from './audio.js'
+import { escapeControls } from '../context-pack/markdown.js'
 import { piperEnv } from './env.js'
 import {
   AUDIO_QUALITY_PRESETS,
@@ -276,6 +277,8 @@ export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvide
             },
             body,
             signal,
+            // The endpoint never redirects; fetch would forward `xi-api-key` to another host.
+            redirect: 'error',
           })
           if (res.ok) return { audio: Buffer.from(await res.arrayBuffer()) }
           // Redact first, then cut: a key that straddles the limit must not survive as a prefix.
@@ -301,7 +304,9 @@ export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvide
             `ElevenLabs did not answer within ${seconds(timeoutMs)} (${attempt} attempts)`,
           )
         }
-        throw new Error(`ElevenLabs HTTP ${r.status}${r.detail ? `: ${r.detail}` : ''}`)
+        throw new Error(
+          `ElevenLabs HTTP ${r.status}${r.detail ? `: ${escapeControls(r.detail)}` : ''}`,
+        )
       }
     },
   }

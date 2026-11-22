@@ -65,13 +65,19 @@ Workspace Markdown/Vue/CSS/HTML must not load remote resources while a slide ren
 images, `src`/`href`/`poster`/… on loading tags (`img`, `iframe`, `script`, `link`, `video`, `audio`,
 `source`, …, also Vue `:src`), CSS `url()`/`@import`, `<Tweet>`/`<Youtube>`, and `image:`/
 `background:`/`url:` frontmatter (`url:` feeds Slidev's `iframe` layouts) pointing at another host
-(loopback is allowed), reference-style link definitions (`[label]: https://…`, which also flags
+(loopback is allowed; the `https:host` and `https:/host` spellings count too, browsers resolve them like `https://host`), reference-style link definitions (`[label]: https://…`, which also flags
 reference-style plain links) and Mermaid image nodes (`A@{ img: "https://…" }`). Inline plain links
 are fine: they make no request until clicked. Context packs are skipped by every scan (they quote the target
 as data: a Google Fonts `<link>` or a pom's `<plantuml.version>` in a pack must not stop a build), and for that
 reason no deck may import one. Slide imports must stay inside the scanned files: `src: ./other.md` and Slidev's
-code snippets (`<<< ../code.ts`, resolved against the deck's own directory, `@/` included; `<<<` is scanned on
-every line, also in fences, block quotes and lists, because Slidev resolves it there too). Refused: absolute paths,
+code snippets (`<<< ../code.ts`, resolved against the deck's own directory; `<<<` is scanned on
+every line, also in fences, block quotes and lists, because Slidev resolves it there too). `@/` is Slidev's
+`userRoot`, the entry deck's directory even inside a file pulled in with `src:`, so it is checked against the
+importing file's directory and against every deck directory (a `slides.md`). `src:` is likewise scanned on every
+line, fences included, in every spelling Slidev's frontmatter parser accepts (verified on 52.20.1 with `.env` as
+the target): the canonical `---` block, a ` ```yaml ` code block at the start of a slide (`@slidev/parser`'s
+`matter()`), a quoted key (`"src": x`), an indented mapping, the flow form (`{ src: x }`) and a value on the next
+line. A false positive (prose starting a line with `src:`) only matters when its path is itself refused. Refused: absolute paths,
 paths outside the workspace, skipped directories (`node_modules/`, `dist/`, `audio/`, `target-repo/`), symlinks,
 context packs and secret-looking files (the context-pack denylist: `.env*`, keys, kubeconfigs, …, plus
 `course.local.json`), snippets in a PlantUML language (Slidev renders them as a PlantUML request) and Mermaid
@@ -91,7 +97,9 @@ ignored) and applies the import rules above: nothing outside the workspace, no s
 context pack or secret-looking file. The boundary is the workspace, like for `src:`, so shared images in the
 workspace keep working. Remote, `data:` and `#fragment` references are not local; plain links (`[x](path)`,
 `<a href>`) import nothing and are not checked. Every line is scanned, fences included, so a false positive needs a
-path that is itself refused. So everything Slidev renders has passed the checks above. This is pattern matching, not a sandbox: a
+path that is itself refused. The checks cover Markdown, Vue, CSS and HTML files. Code Slidev loads on its own
+(`styles/index.ts`, `setup/*.ts`) is deck code: it is scanned for external URLs, but not for local import
+specifiers, so `import x from '../../../.env?raw'` there is not refused. This is pattern matching, not a sandbox: a
 deck author who wants to load something remote can still find a way; the guard catches mistakes and
 the common forms.
 The template's `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) applies the same rules to
@@ -179,7 +187,9 @@ Lesson decks now load the workspace's narration addon (`addons/narration`, see
 `node_modules`, `dist`, `audio` and `scripts`) must not reference external URLs; loopback hosts are
 allowed (a host such as `localhost.evil.com` is not loopback, in `https://` and `//` URLs alike).
 `course build`/`course dev` and `scripts/check-deck.mjs` enforce it. Vue, JS/TS and JSX/TSX files are
-scanned (Slidev registers all of them). Only `node_modules` and `.git` are skipped at any depth;
+scanned (Slidev registers all of them), and so are the `<script>` blocks of slide Markdown outside code
+fences (Slidev compiles them into the slide's component). XML namespace identifiers such as
+`xmlns="http://www.w3.org/2000/svg"` are names, not requests, and are ignored. Only `node_modules` and `.git` are skipped at any depth;
 `dist`, `target-repo`, `audio` and `scripts` are skipped only as top-level workspace directories,
 because Slidev loads `components/**` at any depth, so a nested `components/scripts/` or
 `components/audio/` is deck code.

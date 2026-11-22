@@ -88,10 +88,13 @@ function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}
   return opts.trim === false ? out : out.trim()
 }
 
-/** Git call that writes inside the workspace we are creating (`cwd`). */
-function gitWrite(cwd: string, args: string[]): void {
+/**
+ * Git call that writes inside the workspace we are creating (`cwd`). `hardened` adds the pinned
+ * config for calls that run in, or read, the target repository's submodule clone.
+ */
+function gitWrite(cwd: string, args: string[], hardened = false): void {
   requireModernGit()
-  execFileSync('git', args, {
+  execFileSync('git', hardened ? [...GIT_HARDENING_ARGS, ...args] : args, {
     cwd,
     stdio: 'pipe',
     env: childEnv(),
@@ -234,7 +237,17 @@ function repoFilterOverrides(repoPath: string): string[] {
  * any other failure throws, so a clean answer is never a guess.
  */
 export function uncommittedChanges(repoPath: string): string[] {
-  if (gitRead(repoPath, ['rev-parse', '--is-inside-work-tree']) !== 'true') return []
+  let inside: string
+  try {
+    inside = gitRead(repoPath, ['rev-parse', '--is-inside-work-tree'])
+  } catch (err) {
+    // A bare repository, or a `.git` directory passed as the path: git < 2.45 treats the latter as
+    // an implicit bare repository and `safe.bareRepository=explicit` refuses it. Either way there
+    // is no work tree to have changes in.
+    if (/cannot use bare repository/i.test(gitErrorDetail(err))) return []
+    throw err
+  }
+  if (inside !== 'true') return []
   const out = gitRead(
     repoPath,
     [
@@ -393,6 +406,6 @@ export function checkoutSubmoduleCommit(
   commit: string,
 ): void {
   if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
-  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit])
-  gitWrite(courseDir, ['add', '--', submodulePath])
+  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit], true)
+  gitWrite(courseDir, ['add', '--', submodulePath], true)
 }
