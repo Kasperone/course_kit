@@ -47,8 +47,25 @@ function fakeBin(): { dir: string; root: string } {
 }
 
 /** PATH: the fakes, then node's own directory (the fakes run on `#!/usr/bin/env node`). */
+/**
+ * The fakes take their settings from `fake-cli.json` next to them, not from variables: the real CLI
+ * gets an allowlisted environment, so a `FAKE_CLI_*` variable would never arrive.
+ */
+function writeFakeSettings(dir: string, settings: Record<string, string>): void {
+  writeFileSync(path.join(dir, 'fake-cli.json'), JSON.stringify(settings))
+}
+
+/** Change a fake's setting (and the test-side copy of it in `env`) while a test is running. */
+function setFake(env: NodeJS.ProcessEnv, name: string, value: string): void {
+  const dir = env.PATH!.split(path.delimiter)[0]!
+  const file = path.join(dir, 'fake-cli.json')
+  const settings = JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>
+  writeFakeSettings(dir, { ...settings, [name]: value })
+  env[name] = value
+}
+
 function cliEnv(dir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return {
+  const env = {
     PATH: [dir, path.dirname(process.execPath)].join(path.delimiter),
     // A private HOME: the Cursor workspace (~/.cache/course-kit/cursor-ws) must not land in the real one.
     HOME: makeTempDir('cli-home'),
@@ -58,6 +75,13 @@ function cliEnv(dir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     FAKE_CLI_LOG: path.join(makeTempDir('cli-log'), 'calls.jsonl'),
     ...extra,
   }
+  writeFakeSettings(
+    dir,
+    Object.fromEntries(
+      Object.entries(env).filter(([k, v]) => k.startsWith('FAKE_CLI_') && v),
+    ) as Record<string, string>,
+  )
+  return env
 }
 
 type Logged = {
@@ -68,6 +92,7 @@ type Logged = {
   cwdEntries: string[]
   system: { path: string; mode: number; text: string } | null
   keyVars: string[]
+  env: Record<string, string>
   maxTokens: string | null
   pid: number
 }
@@ -206,17 +231,165 @@ describe('CLI providers: argument lists', () => {
     expect(src).not.toMatch(/shell: true|execSync|exec\(|execFile/)
   })
 
-  it('child env: no ANTHROPIC_* / ELEVENLABS_* variables', () => {
-    const env = cliChildEnv({
-      PATH: '/bin',
-      ANTHROPIC_API_KEY: KEY,
-      ANTHROPIC_AUTH_TOKEN: 't',
-      ANTHROPIC_BASE_URL: 'http://x',
-      ELEVENLABS_API_KEY: 'e',
+  // Variables of a developer's shell that no CLI needs: they must stay in this process.
+  const SHELL = {
+    GITHUB_TOKEN: 'gh-must-never-reach-a-cli',
+    GH_TOKEN: 'gh2-must-never-reach-a-cli',
+    NPM_TOKEN: 'npm-must-never-reach-a-cli',
+    ELEVENLABS_API_KEY: 'el-must-never-reach-a-cli',
+    ANTHROPIC_API_KEY: KEY,
+    ANTHROPIC_AUTH_TOKEN: 't',
+    ANTHROPIC_BASE_URL: 'http://x',
+    AWS_SECRET_ACCESS_KEY: 'aws-must-never-reach-a-cli',
+    AWS_ACCESS_KEY_ID: 'aws-id',
+    OPENAI_API_KEY: 'openai-must-never-reach-a-cli',
+    DATABASE_URL: 'postgres://u:p@h/db',
+    SSH_AUTH_SOCK: '/run/agent',
+    GIT_ASKPASS: '/bin/askpass',
+    NODE_OPTIONS: '--require=/x.js',
+    NODE_TLS_REJECT_UNAUTHORIZED: '0',
+    SOME_UNRELATED: 'x',
+  }
+  const BASE = {
+    PATH: '/bin',
+    HOME: '/home/u',
+    USER: 'u',
+    LANG: 'pl_PL.UTF-8',
+    LC_ALL: 'C',
+    LC_MESSAGES: 'en_US.UTF-8',
+    TMPDIR: '/tmp/x',
+    TEMP: '/tmp/y',
+    TMP: '/tmp/z',
+    TERM: 'xterm',
+  }
+  const NETWORK = {
+    HTTPS_PROXY: 'http://proxy:3128',
+    https_proxy: 'http://proxy:3128',
+    NO_PROXY: 'localhost',
+    NODE_EXTRA_CA_CERTS: '/etc/ca.pem',
+  }
+
+  it('child env is an allowlist: the base, the network settings and the CLI own variables', () => {
+    const claudeOwn = {
       CLAUDE_CODE_OAUTH_TOKEN: 'subscription-login',
+      CLAUDE_CONFIG_DIR: '/home/u/.claude-work',
+    }
+    const cursorOwn = {
+      CURSOR_API_KEY: 'cursor-key',
+      CURSOR_CONFIG_DIR: '/home/u/.cursor-work',
+      CURSOR_API_ENDPOINT: 'https://api2.cursor.sh',
+    }
+    const source = { ...BASE, ...NETWORK, ...claudeOwn, ...cursorOwn, ...SHELL }
+    // Each CLI gets its own variables and not the other one's.
+    expect(cliChildEnv(source, CLI_SPECS['claude-cli'])).toEqual({
+      ...BASE,
+      ...NETWORK,
+      ...claudeOwn,
     })
-    expect(env).toEqual({ PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: 'subscription-login' })
+    expect(cliChildEnv(source, CLI_SPECS['cursor-cli'])).toEqual({
+      ...BASE,
+      ...NETWORK,
+      ...cursorOwn,
+    })
   })
+
+  it('child env: nothing from the shell reaches a CLI, whatever it is called', () => {
+    for (const id of ['claude-cli', 'cursor-cli'] as const) {
+      const env = cliChildEnv({ ...BASE, ...SHELL }, CLI_SPECS[id])
+      expect(env, id).toEqual(BASE)
+      expect(JSON.stringify(env), id).not.toMatch(/must-never-reach|postgres:|--require/)
+    }
+  })
+
+  it('child env: a provider key never passes, even from a CLI list; names match case-insensitively', () => {
+    expect(
+      cliChildEnv(
+        {
+          PATH: '/bin',
+          ANTHROPIC_API_KEY: KEY,
+          ELEVENLABS_API_KEY: 'e',
+          Path: 'C:\\bin',
+          Https_Proxy: 'p',
+        },
+        { envNames: ['ANTHROPIC_API_KEY', 'ELEVENLABS_API_KEY'] },
+      ),
+    ).toEqual({ PATH: '/bin', Path: 'C:\\bin', Https_Proxy: 'p' })
+  })
+
+  it('every CLI spec lists its own variables, and none is a provider key', () => {
+    for (const spec of Object.values(CLI_SPECS)) {
+      expect(spec.envNames.length, spec.id).toBeGreaterThan(0)
+      for (const name of spec.envNames)
+        expect(name, spec.id).not.toMatch(/^(ANTHROPIC|ELEVENLABS)_/)
+    }
+    expect(CLI_SPECS['claude-cli'].envNames).toEqual(
+      expect.arrayContaining(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR']),
+    )
+    expect(CLI_SPECS['cursor-cli'].envNames).toEqual(
+      expect.arrayContaining(['CURSOR_API_KEY', 'CURSOR_CONFIG_DIR']),
+    )
+  })
+})
+
+describe('what the spawned CLIs and their login-status commands see', () => {
+  it.each(['claude-cli', 'cursor-cli'] as const)(
+    '%s: no shell secret reaches the answer run or the status command',
+    async (id) => {
+      const { dir } = fakeBin()
+      const own =
+        id === 'claude-cli'
+          ? { CLAUDE_CODE_OAUTH_TOKEN: 'subscription-login' }
+          : { CURSOR_API_KEY: 'cursor-key' }
+      const other =
+        id === 'claude-cli' ? { CURSOR_API_KEY: 'cursor-key' } : { CLAUDE_CODE_OAUTH_TOKEN: 'sub' }
+      const env = cliEnv(dir, {
+        ...own,
+        ...other,
+        GITHUB_TOKEN: 'gh-must-never-reach-a-cli',
+        NPM_TOKEN: 'npm-must-never-reach-a-cli',
+        SOME_UNRELATED: 'x',
+        HTTPS_PROXY: 'http://proxy:3128',
+      })
+      const { p } = provider(id, env)
+      expect(await p.check?.()).toMatchObject({ state: 'ready' })
+      await collect(p)
+
+      const run = calls(env)[0]!
+      const status = readFileSync(`${env.FAKE_CLI_LOG}.status`, 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l) as { env: Record<string, string> })[0]!
+      for (const [what, seen] of [
+        ['answer run', run.env],
+        ['status command', status.env],
+      ] as const) {
+        const names = Object.keys(seen)
+        expect(names, `${what}: ${JSON.stringify(names)}`).not.toEqual(
+          expect.arrayContaining(['GITHUB_TOKEN']),
+        )
+        for (const gone of [
+          'GITHUB_TOKEN',
+          'NPM_TOKEN',
+          'SOME_UNRELATED',
+          'ELEVENLABS_API_KEY',
+          'ANTHROPIC_API_KEY',
+          'ANTHROPIC_BASE_URL',
+          'FAKE_CLI_LOG',
+          'FAKE_CLI_MODE',
+        ]) {
+          expect(seen, `${what}: ${gone}`).not.toHaveProperty(gone)
+        }
+        for (const name of Object.keys(other)) {
+          expect(seen, `${what}: ${name}`).not.toHaveProperty(name)
+        }
+        // What the CLI needs to find itself, its login and the network still arrives.
+        expect(seen.PATH, what).toBe(env.PATH)
+        expect(seen.HOME, what).toBe(env.HOME)
+        expect(seen.HTTPS_PROXY, what).toBe('http://proxy:3128')
+        for (const [name, value] of Object.entries(own)) expect(seen[name], what).toBe(value)
+      }
+    },
+  )
 })
 
 describe('claude-cli (fake Claude Code on PATH)', () => {
@@ -522,7 +695,7 @@ describe('CLI providers through the chat server and course ask', () => {
     expect(st.body).not.toContain(KEY)
     await server.close()
 
-    env.FAKE_CLI_LOGGED_OUT = '1'
+    setFake(env, 'FAKE_CLI_LOGGED_OUT', '1')
     server = await startChatServer({
       courseDir: ws,
       port: 0,
@@ -595,7 +768,7 @@ describe('CLI providers through the chat server and course ask', () => {
     expect(call.stdin).toContain('<lesson_materials')
     expect(call.stdin).toContain('<question>\nWhat is X?\n</question>')
 
-    env.FAKE_CLI_ANSWER = '[[off-topic]]\nLet us get back to the lesson.'
+    setFake(env, 'FAKE_CLI_ANSWER', '[[off-topic]]\nLet us get back to the lesson.')
     const off = parseSse((await askRaw(server.port, { ...ask, question: 'Best pizza?' })).body)
     expect(off.some((e) => e.event === 'scope')).toBe(true)
     expect(

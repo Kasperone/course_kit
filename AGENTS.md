@@ -81,7 +81,7 @@ course voices list
   breakpoint, frame-tag escaping (hostile pack), ask validation, `SourceSplitter` markers.
 - `tests/chat-cli-provider.test.ts` — `claude-cli` / `cursor-cli` against fake CLIs on PATH
   (`tests/helpers/fake-claude.mjs`, `fake-cursor-agent.mjs`): argument lists (no shell, no permission-skipping
-  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), stripped env, stream-json parsing, not installed / not
+  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), allowlisted env for runs and status (GITHUB_TOKEN etc. do not reach the child; the fakes read `fake-cli.json`, not variables), stream-json parsing, not installed / not
   logged in, timeout and abort kill the process group, output cap, leftovers, status, markers, cost label.
 - `tests/chat-clean.test.ts` — `course clean`: slug and cache-dir paths, `--dry-run`, only our folder removed, symlink and
   foreign-workspace refusal.
@@ -112,7 +112,7 @@ Always run lint and tests before pushing.
   write it. Tests use mocked HTTP only; never make live API calls.
 - Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
   an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty cwd (Cursor: the one stable `cursor-ws` in the cache dir, never with course files; `--trust` only for it), with
-  no tools, a timeout, an output cap and `ANTHROPIC_*`/`ELEVENLABS_*` stripped from their env. Never add
+  no tools, a timeout, an output cap and an allowlisted env (`cliChildEnv()`: base, proxy/CA and the CLI's own `CliSpec.envNames`; `ANTHROPIC_*`/`ELEVENLABS_*` never pass; a variable a CLI needs goes into its `envNames` with a test). Never add
   `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
   CLIs only; never run the real `claude` / `cursor-agent` from a test.
 - Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via
@@ -120,7 +120,7 @@ Always run lint and tests before pushing.
   fake provider or the local mock API; `tests/setup.ts` refuses any non-loopback `fetch`. Never make live calls.
 - Child processes course_kit starts (git, jdeps, Slidev, the narration audio guard) get `childEnv()` from
   `src/lib/child-env.ts` (an allowlist): provider keys never reach them or anything they spawn. The chat CLI
-  providers build their own stripped environment (`cli-provider.ts`).
+  providers build their own allowlisted environment (`cliChildEnv()` in `cli-provider.ts`).
 - Agents never read, print or edit a workspace `.env` (e.g. `examples/faktura/.env`); only the program reads it.
 - Test workers are capped at 4 (`vitest.config.ts`); run heavy suites with `nice -n 10 ionice -c3`.
 - Write files inside a workspace only through `src/lib/fs-safe.ts` (`writeFileInside`, `mkdirInside`): they refuse

@@ -244,8 +244,10 @@ How the CLI providers run, and what that costs you:
 - **The prompt goes through stdin** (Claude Code: our instructions and the lesson materials through a
   0600 file in that temp directory, which is deleted afterwards), never through the command line.
 - **Limits.** Each answer has a timeout (default 180 s) and an 8 MB output cap; then the CLI and
-  anything it started are killed. `ANTHROPIC_*` and `ELEVENLABS_*` variables are removed from the
-  CLI's environment, so it always uses its own login.
+  anything it started are killed. The CLI gets an allowlisted environment
+  (`PATH`, `HOME`, locale, temp dirs, proxy and CA-certificate settings and its own login/config variables such as
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `CURSOR_API_KEY`): `GITHUB_TOKEN`, `ANTHROPIC_*`,
+  `ELEVENLABS_API_KEY` and everything else of your shell stay out, so it always uses its own login.
 - **Slower and uncached.** The API provider reuses the cached ~23k-token prefix; a CLI provider
   sends the whole prompt every time (whatever caching the CLI does on its own is outside
   course_kit's control) and adds a few seconds of CLI start-up. Costs show as `subscription`.

@@ -1,8 +1,11 @@
 // Shared logic of the stand-ins for the Claude Code CLI (`fake-claude.mjs`) and the Cursor agent
 // CLI (`fake-cursor-agent.mjs`). They print the same stream-json shapes as the real CLIs and make no
-// network calls. Environment:
+// network calls. Settings (the real CLI gets an allowlisted environment, so they cannot travel as
+// variables): a `fake-cli.json` next to the executable (the CLI is found through a symlink in a
+// directory of its own), written by the tests, with these keys:
 //   FAKE_CLI_LOG       append one JSON line per call (argv, stdin, cwd, cwd entries, system prompt
-//                      file, provider-key variable names seen, CLAUDE_CODE_MAX_OUTPUT_TOKENS)
+//                      file, provider-key variable names seen, CLAUDE_CODE_MAX_OUTPUT_TOKENS and its
+//                      whole environment)
 //   FAKE_CLI_MODE      stream (default) | whole | no-partial | not-logged-in | fail | hang | flood
 //                      | stray (answers, but leaves a background process behind, like
 //                      cursor-agent's worker-server)
@@ -11,6 +14,17 @@
 //   FAKE_CLI_PIDFILE   hang and stray modes: write the pid of a grandchild process here
 import { spawn } from 'node:child_process'
 import { appendFileSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+
+const SETTINGS = (() => {
+  try {
+    return JSON.parse(
+      readFileSync(path.join(path.dirname(process.argv[1]), 'fake-cli.json'), 'utf8'),
+    )
+  } catch {
+    return {}
+  }
+})()
 
 const DEFAULT_ANSWER = 'From the lesson: see slide 2.\n[[general]]\nIn general, X is common.\n'
 
@@ -27,7 +41,14 @@ const argValue = (args, name) => {
 }
 
 function status(kind) {
-  const loggedIn = process.env.FAKE_CLI_LOGGED_OUT !== '1'
+  // The login-status command's environment goes to a log of its own (`<FAKE_CLI_LOG>.status`).
+  if (SETTINGS.FAKE_CLI_LOG) {
+    appendFileSync(
+      `${SETTINGS.FAKE_CLI_LOG}.status`,
+      JSON.stringify({ kind, env: process.env }) + '\n',
+    )
+  }
+  const loggedIn = SETTINGS.FAKE_CLI_LOGGED_OUT !== '1'
   if (kind === 'claude') {
     line({ loggedIn, authMethod: 'claude.ai', email: 'learner@example.invalid', orgId: 'org-x' })
     process.exit(loggedIn ? 0 : 1)
@@ -41,7 +62,7 @@ function status(kind) {
 }
 
 function log(kind, args, stdin) {
-  const file = process.env.FAKE_CLI_LOG
+  const file = SETTINGS.FAKE_CLI_LOG
   if (!file) return
   const systemPath = argValue(args, '--system-prompt-file')
   let system = null
@@ -63,6 +84,7 @@ function log(kind, args, stdin) {
       system,
       keyVars: Object.keys(process.env).filter((k) => /^(ANTHROPIC|ELEVENLABS)_/.test(k)),
       maxTokens: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? null,
+      env: process.env,
       pid: process.pid,
     }) + '\n',
   )
@@ -87,8 +109,8 @@ export async function run(kind) {
   }
   const stdin = readFileSync(0, 'utf8')
   log(kind, args, stdin)
-  const mode = process.env.FAKE_CLI_MODE ?? 'stream'
-  const answer = process.env.FAKE_CLI_ANSWER ?? DEFAULT_ANSWER
+  const mode = SETTINGS.FAKE_CLI_MODE ?? 'stream'
+  const answer = SETTINGS.FAKE_CLI_ANSWER ?? DEFAULT_ANSWER
   const model = argValue(args, '--model') ?? 'default'
 
   if (mode === 'stray') {
@@ -96,13 +118,13 @@ export async function run(kind) {
       stdio: 'ignore',
     })
     child.unref()
-    if (process.env.FAKE_CLI_PIDFILE) writeFileSync(process.env.FAKE_CLI_PIDFILE, String(child.pid))
+    if (SETTINGS.FAKE_CLI_PIDFILE) writeFileSync(SETTINGS.FAKE_CLI_PIDFILE, String(child.pid))
   }
   if (mode === 'hang') {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
       stdio: 'ignore',
     })
-    if (process.env.FAKE_CLI_PIDFILE) writeFileSync(process.env.FAKE_CLI_PIDFILE, String(child.pid))
+    if (SETTINGS.FAKE_CLI_PIDFILE) writeFileSync(SETTINGS.FAKE_CLI_PIDFILE, String(child.pid))
     setInterval(() => {}, 1000)
     return
   }
