@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -9,9 +9,10 @@ import { makeTempDir } from './helpers/tmp.js'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const distCli = path.join(repoRoot, 'dist', 'cli.js')
 
-function runCli(args: string[], cwd: string): string {
+function runCli(args: string[], cwd: string, env?: NodeJS.ProcessEnv): string {
   return execFileSync(process.execPath, [distCli, ...args], {
     cwd,
+    env,
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -45,6 +46,44 @@ describe('built CLI (dist/cli.js)', () => {
     expect(existsSync(path.join(ws, 'slides.md'))).toBe(true)
     expect(existsSync(path.join(ws, '.gitignore'))).toBe(true)
     expect(existsSync(path.join(ws, 'package.json'))).toBe(true)
+  })
+
+  it('prints each option default once in `init --help`', () => {
+    const help = runCli(['init', '--help'], repoRoot)
+    expect(help).toContain('--lang <codes>')
+    expect(help).toContain('./<repo>-course')
+    for (const line of help.split('\n')) {
+      expect(line.match(/\(default:/g)?.length ?? 0, line).toBeLessThanOrEqual(1)
+    }
+    expect(help).toContain('(default: "pl,en")')
+    expect(help).not.toContain('(default: pl,en)')
+    expect(help).not.toMatch(/--submodule.*\(default: false\)/s)
+  })
+
+  it('refuses git older than 2.38, which ignores safe.bareRepository', () => {
+    const root = makeTempDir('cli-old-git')
+    const target = path.join(root, 'my-repo')
+    initRepoWithCommit(target)
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.34.1"; exit 0; fi\n' +
+        'PATH="${PATH#*:}" exec git "$@"\n',
+      { mode: 0o755 },
+    )
+    let stderr = ''
+    try {
+      runCli(['init', target, '--out', './ws'], root, {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      })
+    } catch (err) {
+      stderr = String((err as { stderr?: string }).stderr)
+    }
+    expect(stderr).toContain('course init failed')
+    expect(stderr).toContain('needs git >= 2.38 (found git version 2.34.1)')
+    expect(existsSync(path.join(root, 'ws'))).toBe(false)
   })
 
   it('exits non-zero with a clear message on bad input', () => {

@@ -49,6 +49,18 @@ Always run lint and tests before pushing.
 - Generated audio. Context packs are gitignored in workspaces; force-add one only after reviewing it (secrets are
   denylisted and redacted, but that is a safety net)
 
+## Child processes and git
+
+- Every child process gets `childEnv()` from `src/lib/child-env.ts` (an allowlist, plus `GIT_TERMINAL_PROMPT=0`),
+  never `process.env`: an exported API key must not reach git or anything it runs. Extend the allowlist only
+  for names a tool needs to run.
+- Git calls on a target repository go through `gitRead` in `src/lib/git.ts`: `GIT_HARDENING_ARGS`
+  (`safe.bareRepository=explicit`, no fsmonitor, no signature checks), `--no-optional-locks`, a timeout, and a
+  once-per-process check for git >= 2.38 (older git ignores `safe.bareRepository`). Reuse these constants
+  for any new git call on a target.
+- `--submodule` needs a network `origin` on the target (a relative `.gitmodules` URL resolves against the
+  course's own remote); never fall back to a relative path.
+
 ## Generated course workspaces
 
 Templates live in `templates/workspace/`. Lessons use `lessons/<id>/lesson.json` plus per-language `slides.md`.

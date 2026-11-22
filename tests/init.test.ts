@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -39,6 +40,8 @@ function filesContaining(dir: string, needle: string): string[] {
   return hits
 }
 
+const ORIGIN = 'https://git.example/acme/app.git'
+
 function frontmatter(file: string): Record<string, unknown> {
   const text = readFileSync(file, 'utf8')
   const m = text.match(/^---\n([\s\S]*?)\n---/)
@@ -50,6 +53,11 @@ async function initWorkspace(opts: { languages?: string[]; submodule?: boolean }
   const root = makeTempDir('init')
   const repoDir = path.join(root, 'target')
   const pinned = initRepoWithCommit(repoDir, opts.submodule ? 'app.txt' : 'README.md')
+  if (opts.submodule) {
+    // --submodule needs a network origin; a tracking ref marks the pinned commit as pushed.
+    git(repoDir, ['remote', 'add', 'origin', ORIGIN])
+    git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
+  }
   const outDir = path.join(root, 'out-course')
   const { course, notices } = await runInit({
     targetRepo: repoDir,
@@ -79,6 +87,8 @@ describe('course init', () => {
     expect(notice).toMatch(/^Copyright \(c\) <year> <course author>$/m)
     expect(notice).toContain('https://github.com/Kasperone/course_kit/blob/main/LICENSE')
     expect(existsSync(path.join(outDir, 'LICENSE'))).toBe(false)
+    // The notice is the author's own, not "course workspaces created with course_kit" in general.
+    expect(notice).toContain('in this workspace')
     expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'lesson.json'))).toBe(true)
     expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'pl', 'slides.md'))).toBe(true)
     expect(existsSync(path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md'))).toBe(true)
@@ -133,8 +143,44 @@ describe('course init', () => {
     } catch (err) {
       stderr = String((err as { stderr?: string }).stderr)
     }
-    expect(stderr).toContain('PlantUML blocks are not allowed')
+    expect(stderr).toMatch(/PlantUML blocks .* are not allowed/)
     expect(stderr).toContain('lessons')
+  })
+
+  it('the PlantUML guard blocks <PlantUml> components but not plain fences named like it', async () => {
+    const { outDir } = await initWorkspace()
+    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const deck = path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md')
+    const run = () => {
+      try {
+        execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
+        return null
+      } catch (err) {
+        return String((err as { stderr?: string }).stderr)
+      }
+    }
+    // A plain fence whose first line merely starts with "plantuml" is ordinary code.
+    writeFileSync(deck, '# x\n\n```\nplantuml is a tool\n```\n', 'utf8')
+    expect(run()).toBeNull()
+    // Slidev's component uses its own `server` prop and ignores plantUmlServer.
+    writeFileSync(deck, '# x\n\n<PlantUml server="https://evil.example" code="A -> B" />\n', 'utf8')
+    expect(run()).toContain('lessons')
+    // Generated context packs quote the target repo and are not decks.
+    rmSync(deck)
+    writeFileSync(
+      path.join(outDir, 'lessons', '01-placeholder', 'context-pack.md'),
+      '<PlantUml code="x"/>\n',
+      'utf8',
+    )
+    expect(run()).toBeNull()
+  })
+
+  it('pins Slidev and its theme to exact versions', async () => {
+    const { outDir } = await initWorkspace()
+    const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
+    for (const [name, version] of Object.entries(pkg.devDependencies)) {
+      expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
+    }
   })
 
   it('the PlantUML guard never follows symlinks (loops, links outside the workspace)', async () => {
@@ -364,7 +410,7 @@ describe('course init', () => {
       languages: ['en'],
       submodule: true,
     })
-    expect(readFileSync(path.join(outDir, '.gitmodules'), 'utf8')).toContain('url = ../target')
+    expect(readFileSync(path.join(outDir, '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
     expect(notices).toEqual([])
     expect(filesContaining(outDir, root)).toEqual([])
     const staged = git(outDir, ['ls-files', '-s', SUBMODULE_PATH])
@@ -385,7 +431,7 @@ describe('course init', () => {
     const root = makeTempDir('init-unpushed')
     const repoDir = path.join(root, 'target')
     const pinned = initRepoWithCommit(repoDir)
-    git(repoDir, ['remote', 'add', 'origin', 'https://git.example/acme/app.git'])
+    git(repoDir, ['remote', 'add', 'origin', ORIGIN])
     const init = (out: string) =>
       runInit({
         targetRepo: repoDir,
@@ -395,16 +441,118 @@ describe('course init', () => {
       })
 
     const unpushed = await init('ws1')
-    expect(readFileSync(path.join(root, 'ws1', '.gitmodules'), 'utf8')).toContain(
-      'url = https://git.example/acme/app.git',
-    )
-    expect(unpushed.notices).toEqual([
-      expect.stringContaining(`${pinned} is on no remote-tracking branch`),
-    ])
+    expect(readFileSync(path.join(root, 'ws1', '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
+    expect(unpushed.notices).toEqual([expect.stringContaining(`${pinned} is on no \`origin\``)])
 
-    // Once a remote-tracking branch contains it (as after a push), there is nothing to warn about.
+    // A commit that only another remote has is still unpushed: .gitmodules records origin.
+    git(repoDir, ['update-ref', 'refs/remotes/upstream/main', pinned])
+    expect((await init('ws2')).notices).toEqual([expect.stringContaining('is on no `origin`')])
+
+    // Once an origin tracking branch contains it (as after a push), there is nothing to warn about.
     git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
-    expect((await init('ws2')).notices).toEqual([])
+    expect((await init('ws3')).notices).toEqual([])
+  })
+
+  it('--submodule requires a network origin: a relative .gitmodules URL would break clones', async () => {
+    const root = makeTempDir('init-submodule-no-origin')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const init = (out: string) =>
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: true,
+      })
+
+    // No origin at all, and a local-path origin: neither can be recorded without a machine path.
+    await expect(init('ws-none')).rejects.toThrow(/network `origin` remote/)
+    git(repoDir, ['remote', 'add', 'origin', path.join(root, 'elsewhere.git')])
+    await expect(init('ws-local')).rejects.toThrow(/pinned-path mode/)
+
+    // A new output directory is removed again; a pre-existing empty one is left empty.
+    expect(existsSync(path.join(root, 'ws-none'))).toBe(false)
+    expect(existsSync(path.join(root, 'ws-local'))).toBe(false)
+    const existing = path.join(root, 'existing-out')
+    mkdirSync(existing)
+    await expect(init('existing-out')).rejects.toThrow(/network `origin` remote/)
+    expect(readdirSync(existing)).toEqual([])
+  })
+
+  it('refuses an output directory inside the target repository', async () => {
+    const root = makeTempDir('init-out-inside')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const base = { targetRepo: repoDir, languages: ['en'], submodule: false }
+
+    // `course init .` from inside the repo: the default output is <cwd>/<name>-course.
+    await expect(runInit({ ...base, cwd: repoDir })).rejects.toThrow(
+      /inside the target repository.*--out \.\.\/target-course/s,
+    )
+    await expect(runInit({ ...base, outDir: path.join(repoDir, 'nested', 'ws') })).rejects.toThrow(
+      /inside the target repository/,
+    )
+    // ... also when reached through a symlink, and for the repo root itself.
+    const link = path.join(root, 'link-to-target')
+    symlinkSync(repoDir, link)
+    await expect(runInit({ ...base, outDir: path.join(link, 'ws') })).rejects.toThrow(
+      /inside the target repository/,
+    )
+    await expect(runInit({ ...base, outDir: repoDir })).rejects.toThrow(/inside the target/)
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('')
+
+    // A sibling whose name merely starts like the target is fine.
+    await runInit({ ...base, outDir: path.join(root, 'target-course') })
+  })
+
+  it('notices uncommitted changes in the target', async () => {
+    const root = makeTempDir('init-dirty')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    const init = (out: string) =>
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: false,
+      })
+
+    expect((await init('clean')).notices).toEqual([])
+
+    writeFileSync(path.join(repoDir, 'README.md'), '# edited\n')
+    writeFileSync(path.join(repoDir, 'new.txt'), 'untracked\n')
+    const { notices, course } = await init('dirty')
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(notices).toEqual([
+      expect.stringMatching(/2 uncommitted change\(s\).*README\.md, new\.txt/),
+    ])
+    // Reading the status must not touch the target.
+    expect(git(repoDir, ['status', '--porcelain']).split('\n').filter(Boolean)).toHaveLength(2)
+  })
+
+  it('never runs programs configured in the target repository (fsmonitor)', async () => {
+    const root = makeTempDir('init-fsmonitor')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const marker = path.join(root, 'fsmonitor-ran')
+    const hook = path.join(root, 'hook.sh')
+    writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nprintf '\\0'\n`, {
+      mode: 0o755,
+    })
+    git(repoDir, ['config', 'core.fsmonitor', hook])
+
+    // Control: without the pinned override, `git status` does run the configured program.
+    git(repoDir, ['status', '--porcelain'])
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker)
+
+    await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(existsSync(marker)).toBe(false)
   })
 })
 
