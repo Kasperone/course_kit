@@ -97,7 +97,8 @@ course narrate 01-architecture --lang all            # --dry-run first to see st
   were trained on CC0 / public-domain data, so the generated audio may be redistributed (see
   `audio/ATTRIBUTION.md`).
 - `PIPER_BIN` and `COURSE_KIT_VOICES_DIR` override the binary and voice directory. MP3 presets need
-  `ffmpeg` on `PATH` (or `FFMPEG_BIN`); without it, clips are written as WAV with a warning.
+  `ffmpeg` on `PATH` (or `FFMPEG_BIN`); without it, clips are written as WAV with a warning. Piper and ffmpeg run without your API keys in their
+  environment (only `PATH`, `HOME`, locale, temp dir and `PIPER_*`/`ESPEAK_*`/library paths pass).
 
 **Audio quality.** `--audio-quality <preset>`, or `"audioQuality": "<preset>"` in `course.json` for the
 whole course (the flag wins; default `standard`). The preset is part of the cache key, so switching

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -15,53 +14,12 @@ import {
   loadInstalledVoice,
   PIPER_VOICES,
   voicesDir,
-  type PiperVoiceInfo,
 } from '../src/lib/narration/voices.js'
+import { fakeVoice } from './helpers/fake-voice.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const FAKE_PIPER = path.join(__dirname, 'helpers', 'fake-piper.mjs')
-const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex')
-
-/** A registry entry whose files are served by a fake fetch. */
-function fakeVoice(name = 'pl_PL-test-medium') {
-  const model = Buffer.from('fake onnx model')
-  const config = Buffer.from(
-    JSON.stringify({
-      audio: { sample_rate: 16000 },
-      inference: { noise_scale: 0.5, length_scale: 1, noise_w: 0.3 },
-    }),
-  )
-  const card = Buffer.from('# Model card\n* License: CC0\n')
-  const info: PiperVoiceInfo = {
-    name,
-    lang: name.slice(0, 2),
-    repoPath: `x/${name}`,
-    files: {
-      model: { name: `${name}.onnx`, sha256: sha(model) },
-      config: { name: `${name}.onnx.json`, sha256: sha(config) },
-      card: { name: 'MODEL_CARD', sha256: sha(card) },
-    },
-    dataset: 'test',
-    datasetLicense: 'CC0',
-    training: 'test',
-  }
-  const bodies: Record<string, Buffer> = {
-    [info.files.model.name]: model,
-    [info.files.config.name]: config,
-    MODEL_CARD: card,
-  }
-  const urls: string[] = []
-  const fetch = (url: string) => {
-    urls.push(url)
-    const body = bodies[url.split('/').pop()!]
-    return Promise.resolve(
-      body ? new Response(new Uint8Array(body)) : new Response('missing', { status: 404 }),
-    )
-  }
-  return { info, fetch, urls, bodies }
-}
-
 describe('Piper voices', () => {
   it('lists exactly the two approved voices with permissive data licences', () => {
     expect(PIPER_VOICES.map((v) => [v.name, v.datasetLicense])).toEqual([
@@ -171,14 +129,14 @@ describe('Piper provider (fake piper binary)', () => {
     })
 
     const text = '-n --help "quoted" text'
-    // The piper child inherits the real environment (PATH etc.), not the resolution env.
+    // The piper child gets the allowlisted real environment (PATH, PIPER_* ...), not the resolution env.
     const log = path.join(makeTempDir('piperlog'), 'calls.log')
-    process.env.FAKE_PIPER_LOG = log
+    process.env.PIPER_FAKE_LOG = log
     let wav: Buffer
     try {
       wav = await p.synthesize(text)
     } finally {
-      delete process.env.FAKE_PIPER_LOG
+      delete process.env.PIPER_FAKE_LOG
     }
     expect(wavDuration(wav)).toBeCloseTo((text.length * 100) / 16000, 3)
     const call = JSON.parse(readFileSync(log, 'utf8').trim().split('\n').pop()!) as {
@@ -207,13 +165,13 @@ describe('Piper provider (fake piper binary)', () => {
       voice: 'pl_PL-test-medium',
       env: { ...env, FFMPEG_BIN: '/nonexistent/ffmpeg' },
     })
-    process.env.FAKE_PIPER_FAIL = '1'
+    process.env.PIPER_FAKE_FAIL = '1'
     try {
       await expect(p.synthesize('x')).rejects.toThrow(
         /Piper exited with 3: fake piper: synthesis failed/,
       )
     } finally {
-      delete process.env.FAKE_PIPER_FAIL
+      delete process.env.PIPER_FAKE_FAIL
     }
     expect(() =>
       createPiperProvider({

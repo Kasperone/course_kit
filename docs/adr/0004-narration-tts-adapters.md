@@ -90,6 +90,11 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
   through `ffmpeg` (`FFMPEG_BIN` or `PATH`) over stdin/stdout, at the preset's bitrate and the
   voice's own sample rate and channels. `lossless` keeps the WAV. Without ffmpeg it writes WAV and
   warns. No temp files, no shell.
+- Piper and ffmpeg run with an allowlisted environment (`piperEnv()`/`ffmpegEnv()` in
+  `src/lib/narration/env.ts`, built on `childEnv()`): `PATH`, `HOME`, locale, temp dir and terminal
+  variables, plus `PIPER_*`, `ESPEAK_*`, `LD_LIBRARY_PATH`/`DYLD_*` and `OMP_*`/`ORT_*` for Piper.
+  Credential-looking names (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) never pass, so an
+  exported `ELEVENLABS_API_KEY` stays in this process (the ElevenLabs HTTP call) and reaches no child.
 - **GPL boundary.** Piper is GPL-3.0-or-later. course_kit (MIT) only executes it as a separate
   program and exchanges data over pipes. It never vendors, bundles, links or imports Piper, never
   installs it, and its npm package contains no Piper code. Users install Piper themselves.

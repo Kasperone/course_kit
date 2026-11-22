@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readWorkspaceSecret, redactSecrets } from '../env.js'
 import { ffmpegBin, hasFfmpeg, pcm16ToWav, wavToMp3, type AudioFormat } from './audio.js'
+import { piperEnv } from './env.js'
 import {
   AUDIO_QUALITY_PRESETS,
   DEFAULT_AUDIO_QUALITY,
@@ -74,7 +75,7 @@ export function createPiperProvider(options: PiperOptions): TtsProvider {
     )
   }
   const bin = piperBin(env)
-  const probe = spawnSync(bin, ['--help'], { stdio: 'ignore' })
+  const probe = spawnSync(bin, ['--help'], { stdio: 'ignore', env: piperEnv() })
   if (probe.error || probe.status !== 0) {
     throw new Error(
       `Piper is not available (${bin}). Install it in a venv (see README "Narration") or set PIPER_BIN.`,
@@ -135,6 +136,7 @@ export function createPiperProvider(options: PiperOptions): TtsProvider {
           input: text.replace(/\s+/g, ' ').trim() + '\n',
           cwd: voice.dir,
           maxBuffer: 512 * 1024 * 1024,
+          env: piperEnv(),
         },
       )
       if (r.error)
