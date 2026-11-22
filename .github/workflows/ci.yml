@@ -15,6 +15,7 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +70,7 @@ jobs:
     # Real Slidev build of the committed example workspace (examples/faktura): render-time PlantUML
     # check, the faktura lesson build and the Q&A chat (mock API). No PDF export, no Playwright.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

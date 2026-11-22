@@ -8,7 +8,7 @@
 //   player reaches as ../narration/ relative to the deck base (/<lesson>/<lang>/).
 //
 // No external requests: the player only fetches same-origin, relative URLs.
-import { createReadStream, existsSync, lstatSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 
 const LANG_RE = /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/
@@ -51,6 +51,38 @@ function courseLanguages(ws: string, fallback: string): string[] {
   }
 }
 
+/**
+ * The file a dev-server request (`<lang>/<file>`, the part after the prefix) may serve, or null for
+ * a 404: a malformed escape, an unknown language, a name `course narrate` never writes, a missing
+ * file, a symlink, or anything whose real path leaves `<ws>/audio/local` (also through a symlinked
+ * directory such as audio/local/<lang>/<lesson>).
+ */
+export function resolveDevClip(
+  where: { ws: string; lesson: string },
+  langs: string[],
+  rawUrl: string,
+): string | null {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(rawUrl.split('?')[0]!)
+  } catch {
+    return null // malformed %-escape: a 404, not a 500
+  }
+  const [lang, file, ...rest] = decoded.replace(/^\/+/, '').split('/')
+  if (rest.length > 0 || !lang || !file || !langs.includes(lang) || !FILE_RE.test(file)) {
+    return null
+  }
+  const abs = path.join(where.ws, 'audio', 'local', lang, where.lesson, file)
+  try {
+    const st = lstatSync(abs)
+    if (!st.isFile() || st.isSymbolicLink()) return null
+    const root = realpathSync(path.join(where.ws, 'audio', 'local'))
+    return realpathSync(abs).startsWith(root + path.sep) ? abs : null
+  } catch {
+    return null
+  }
+}
+
 function narrationPlugin(options: Options) {
   const where = lessonOf(path.resolve(options.userRoot))
   const narration: Narration = where && {
@@ -83,33 +115,13 @@ function narrationPlugin(options: Options) {
       if (!where || !narration) return
       server.middlewares.use(DEV_PREFIX, (req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') return next()
-        const [lang, file, ...rest] = decodeURIComponent((req.url ?? '').split('?')[0]!)
-          .replace(/^\/+/, '')
-          .split('/')
-        if (
-          rest.length > 0 ||
-          !lang ||
-          !file ||
-          !narration.langs.includes(lang) ||
-          !FILE_RE.test(file)
-        ) {
-          res.statusCode = 404
-          return res.end('Not found')
-        }
-        const abs = path.join(where.ws, 'audio', 'local', lang, where.lesson, file)
-        let ok = false
-        try {
-          const st = lstatSync(abs)
-          ok = st.isFile() && !st.isSymbolicLink()
-        } catch {
-          ok = false
-        }
-        if (!ok) {
+        const abs = resolveDevClip(where, narration.langs, req.url ?? '')
+        if (!abs) {
           res.statusCode = 404
           return res.end('Not found')
         }
         res.statusCode = 200
-        res.setHeader('Content-Type', MIME[file.split('.').pop()!] ?? 'application/octet-stream')
+        res.setHeader('Content-Type', MIME[abs.split('.').pop()!] ?? 'application/octet-stream')
         res.setHeader('Cache-Control', 'no-cache')
         if (req.method === 'HEAD') return res.end()
         createReadStream(abs).pipe(res)

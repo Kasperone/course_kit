@@ -78,7 +78,11 @@ program
     'Additional globs matched against the target repo (quote them; put <lesson-id> first)',
   )
   .option('--out <file>', 'Output Markdown path (default: lessons/<id>/context-pack.md)')
-  .option('--json', 'Also write lessons/<id>/context-pack.json metadata', false)
+  .option(
+    '--json',
+    'Also write the JSON metadata next to the pack (lessons/<id>/context-pack.json, or <out>.json)',
+    false,
+  )
   .action(async (lessonId: string, opts: { files?: string[]; out?: string; json?: boolean }) => {
     try {
       const meta = await runContext({

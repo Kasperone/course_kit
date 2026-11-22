@@ -6,7 +6,7 @@ import path from 'node:path'
  * slidev-calls.log in its cwd and, for `build`, writes <out>/index.html containing the deck source,
  * so tests can see what reached "Slidev" without installing it. It also logs to slidev-env.log
  * (one JSON object per call) which provider keys it can see, its whole environment and, when `course dev` passes COURSE_CHAT_PORT, the HTTP status
- * of the chat backend's status route while it runs.
+ * of the chat backend's status route while it runs. A `slidev-hang` file in the workspace makes it hang.
  */
 export function installFakeSlidev(workspace: string): string {
   const pkgDir = path.join(workspace, 'node_modules', '@slidev', 'cli')
@@ -17,7 +17,7 @@ export function installFakeSlidev(workspace: string): string {
   )
   writeFileSync(
     path.join(pkgDir, 'bin', 'slidev.mjs'),
-    `import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+    `import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 const args = process.argv.slice(2)
 appendFileSync(path.join(process.cwd(), 'slidev-calls.log'), JSON.stringify(args) + '\\n')
@@ -32,7 +32,9 @@ if (port && args[0] !== 'build') {
   status = res.status
 }
 appendFileSync(path.join(process.cwd(), 'slidev-env.log'), JSON.stringify({ port: port ?? null, secrets, status, env: process.env }) + '\\n')
-if (args[0] === 'build') {
+// A file named slidev-hang in the workspace makes the stand-in hang (build timeout test).
+if (existsSync(path.join(process.cwd(), 'slidev-hang'))) setInterval(() => {}, 1000)
+if (args[0] === 'build' && !existsSync(path.join(process.cwd(), 'slidev-hang'))) {
   const out = args[args.indexOf('--out') + 1]
   mkdirSync(out, { recursive: true })
   writeFileSync(path.join(out, 'index.html'), '<html>' + readFileSync(args[1], 'utf8') + '</html>')

@@ -68,7 +68,7 @@ Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0
 `course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
 PlantUML, if a file references a web-font CDN, if a slide loads a remote resource (images, embeds, scripts,
 styles, `<Tweet>`/`<Youtube>`, `url:` iframe layouts, reference-style images; inline plain links are fine), or if a
-slide `src:` import leaves the checked files. `course dev` checks when it starts; `course build` is the gate for
+slide `src:` import or `<<<` snippet leaves the checked files (or reads a context pack or a secret-looking file such as `.env`). `course dev` checks when it starts; `course build` is the gate for
 later edits. Slidev runs without your API keys in its environment. The
 build fails if its output references plantuml.com, a font CDN or the jsDelivr favicon. `course build` does not
 need the target repo.
@@ -98,7 +98,7 @@ course narrate 01-architecture --lang all            # --dry-run first to see st
   `audio/ATTRIBUTION.md`).
 - `PIPER_BIN` and `COURSE_KIT_VOICES_DIR` override the binary and voice directory. MP3 presets need
   `ffmpeg` on `PATH` (or `FFMPEG_BIN`); without it, clips are written as WAV with a warning. Piper and ffmpeg run without your API keys in their
-  environment (only `PATH`, `HOME`, locale, temp dir and `PIPER_*`/`ESPEAK_*`/library paths pass).
+  environment (they get `PATH`, `HOME`, user name, locale, `XDG_*`, temp dir, terminal variables and, for Piper, `PIPER_*`/`ESPEAK_*`/library paths; no proxy, ssh or git variables) and are stopped if they hang.
 
 **Audio quality.** `--audio-quality <preset>`, or `"audioQuality": "<preset>"` in `course.json` for the
 whole course (the flag wins; default `standard`). The preset is part of the cache key, so switching

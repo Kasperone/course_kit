@@ -8,6 +8,7 @@ import { describeChat } from '../lib/chat/providers.js'
 import { startChatServer, type ChatServer } from '../lib/chat/server.js'
 import { childEnv } from '../lib/child-env.js'
 import { readWorkspaceSecret, SECRET_ENV_NAMES } from '../lib/env.js'
+import { escapeControls } from '../lib/context-pack/markdown.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
 import { MANIFEST_FILE, parseManifest } from '../lib/narration/manifest.js'
 import {
@@ -119,34 +120,36 @@ export function slidevBin(courseDir: string): string {
  */
 export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
   const errors: string[] = []
+  // File names come from the workspace, which can be a clone of someone else's: one line per error.
+  const list = (files: string[]) => files.map(escapeControls).join(', ')
   const plantUml = findPlantUmlFiles(courseDir)
   if (plantUml.length > 0) {
     errors.push(
-      `PlantUML is not allowed (Slidev would send the diagram source to a PlantUML server); use Mermaid. Offending files: ${plantUml.join(', ')}`,
+      `PlantUML is not allowed (Slidev would send the diagram source to a PlantUML server); use Mermaid. Offending files: ${list(plantUml)}`,
     )
   }
   const fonts = findWebFontFiles(courseDir)
   if (fonts.length > 0) {
     errors.push(
-      `Web fonts from a CDN are not allowed (decks use system fonts and stay offline). Offending files: ${fonts.join(', ')}`,
+      `Web fonts from a CDN are not allowed (decks use system fonts and stay offline). Offending files: ${list(fonts)}`,
     )
   }
   const external = findExternalUrlFiles(courseDir)
   if (external.length > 0) {
     errors.push(
-      `Deck code (Vue/TS/JS) must not reference external URLs (decks stay offline; only localhost is allowed). Offending files: ${external.join(', ')}`,
+      `Deck code (Vue/TS/JS) must not reference external URLs (decks stay offline; only localhost is allowed). Offending files: ${list(external)}`,
     )
   }
   const remote = findRemoteAssetFiles(courseDir)
   if (remote.length > 0) {
     errors.push(
-      `Remote images, embeds, scripts and styles are not allowed (decks make no requests beyond the local server; plain links are fine). Offending files: ${remote.join(', ')}`,
+      `Remote images, embeds, scripts and styles are not allowed (decks make no requests beyond the local server; plain links are fine). Offending files: ${list(remote)}`,
     )
   }
   const imports = findOutsideImports(courseDir)
   if (imports.length > 0) {
     errors.push(
-      `Slide imports (src:) must stay inside the workspace's scanned files (no absolute paths, symlinks, node_modules/, dist/, audio/ or target-repo/): ${imports.join(', ')}`,
+      `Slide imports (src: and <<< snippets) must stay inside the workspace's scanned files: no absolute paths, symlinks, node_modules/, dist/, audio/ or target-repo/, no context packs or secret-looking files (.env*, keys), no PlantUML snippets: ${list(imports)}`,
     )
   }
   for (const deck of decks) {
@@ -168,8 +171,27 @@ export type SlidevRunner = (bin: string, args: string[], cwd: string) => void
  */
 const slidevEnv = () => childEnv({ extra: ['NODE_*', 'VITE_*', 'SLIDEV_*', 'DEBUG', 'BROWSER'] })
 
-const defaultRunner: SlidevRunner = (bin, args, cwd) => {
-  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit', env: slidevEnv() })
+/** A stuck Vite build must not hang `course build`: a real deck builds in seconds to a minute. */
+export const SLIDEV_BUILD_TIMEOUT_MS = 10 * 60_000
+
+function timedRunner(timeoutMs: number): SlidevRunner {
+  return (bin, args, cwd) => {
+    try {
+      execFileSync(process.execPath, [bin, ...args], {
+        cwd,
+        stdio: 'inherit',
+        env: slidevEnv(),
+        timeout: timeoutMs,
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+        throw new Error(
+          `Slidev did not finish within ${Math.round(timeoutMs / 1000)} s and was stopped`,
+        )
+      }
+      throw err
+    }
+  }
 }
 
 /** Built files that contain one of the workspace's API keys (compared in memory, never printed). */
@@ -199,6 +221,8 @@ export type BuildOptions = DeckFilter & {
   runner?: SlidevRunner
   /** Copy narration clips next to the decks (default true). */
   narration?: boolean
+  /** Build timeout per deck (default: SLIDEV_BUILD_TIMEOUT_MS). */
+  timeoutMs?: number
 }
 
 export type NarrationCopy = { lessonId: string; lang: string; clips: number; dir: string }
@@ -312,7 +336,7 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   const decks = listDecks(courseDir, course, options)
   assertDeckPolicy(courseDir, decks)
   const bin = slidevBin(courseDir)
-  const runner = options.runner ?? defaultRunner
+  const runner = options.runner ?? timedRunner(options.timeoutMs ?? SLIDEV_BUILD_TIMEOUT_MS)
   const distDir = path.join(courseDir, BUILD_DIR)
 
   for (const deck of decks) {
@@ -333,7 +357,7 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   if (leaks.length > 0) {
     throw new Error(
       `Built output references external servers: ${leaks
-        .map((l) => `${path.relative(courseDir, l.file)} (${l.what})`)
+        .map((l) => `${escapeControls(path.relative(courseDir, l.file))} (${l.what})`)
         .join(', ')}`,
     )
   }
