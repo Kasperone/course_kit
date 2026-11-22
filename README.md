@@ -17,15 +17,15 @@ course init /path/to/your/repo --out ./my-course --lang pl,en
 cd my-course && npm install && npm run dev
 ```
 
-See `course init --help`. Optional `--submodule` vendors the target repo under `target-repo/`.
+See `course init --help`. Optional `--submodule` vendors the target repo under `target-repo/` (the target needs a network `origin`, which `.gitmodules` records). The workspace must live outside the target repo; the default `--out` is `./<repo>-course` in the current directory.
 
 ## Licensing
 
-| Artifact                                      | License                                                                                                          |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                                                   |
-| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT`; fill in year and author |
-| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit                           |
+| Artifact                                      | License                                                                                                                                               |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                                                                                        |
+| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](templates/workspace/LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT`; the course author fills in year and name |
+| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit                                                                |
 
 ## Docs
 

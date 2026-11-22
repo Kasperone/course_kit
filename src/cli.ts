@@ -12,12 +12,14 @@ program
   .command('init')
   .description('Create a new course workspace from a target git repository')
   .argument('<path-to-target-repo>', 'Path to the repository the course explains')
-  .option('--out <dir>', 'Output directory for the course workspace')
-  .option('--lang <codes>', 'Comma-separated lesson languages (default: pl,en)', 'pl,en')
+  .option(
+    '--out <dir>',
+    'Output directory for the course workspace (default: ./<repo>-course in the current directory)',
+  )
+  .option('--lang <codes>', 'Comma-separated lesson languages', 'pl,en')
   .option(
     '--submodule',
-    'Also add the target repo as a git submodule at target-repo/ (default: pinned path only)',
-    false,
+    'Also add the target repo as a git submodule at target-repo/ (the target needs a network origin)',
   )
   .action(async (target: string, opts: { out?: string; lang?: string; submodule?: boolean }) => {
     try {

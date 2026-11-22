@@ -27,24 +27,30 @@ published CLI lean while pushing Slidev weight into the per-course `package.json
 
 Two modes:
 
-| Mode                      | Flag          | Behaviour                                                                                                                                                            |
-| ------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Pinned path** (default) | _(none)_      | `course.json` stores `targetRepo` as a path **relative to the workspace** and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                   |
-| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`, then rewrites the `.gitmodules` URL to a portable one. |
+| Mode                      | Flag          | Behaviour                                                                                                                                                                           |
+| ------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pinned path** (default) | _(none)_      | `course.json` stores `targetRepo` as a path **relative to the workspace** and `pinnedCommit` from `git rev-parse HEAD` at init time. No submodule.                                  |
+| **Submodule**             | `--submodule` | Inits a git repo in the workspace, runs `git submodule add <target> target-repo/`, checks out `pinnedCommit`, then rewrites the `.gitmodules` URL to the target's network `origin`. |
 
 No committed file contains a machine-specific absolute path: `course.json` also records
 `targetRemote` (the target's network `origin` URL without password, query string or fragment, and
 without the user name for http(s); ssh keeps its `git@` login, or `null`), and
-`.gitmodules` uses `targetRemote` when available, otherwise the relative path. When every relative
-path would still reveal the local layout (only `/` in common, or a target inside `$HOME` reached
+`.gitmodules` uses `targetRemote`. `--submodule` therefore **requires** a network `origin` on the
+target and fails otherwise: a relative `.gitmodules` URL is resolved by git against the _course's_
+`origin`, not the workspace directory, so it breaks every collaborator's clone (or fetches from an
+unrelated host) unless the target happens to be hosted next to the course under the same name.
+When every relative path would still reveal the local layout (only `/` in common, or a target inside `$HOME` reached
 from outside it, e.g. `../../home/<user>/repo`), `targetRepo` is `null` and the absolute path is
 written to the gitignored `course.local.json` instead, and `course init` says so. The relative path
 is computed between physical paths (`realpath` of the workspace, git's top level of the target) and
 resolved against the workspace's physical directory, and a symlinked `$HOME` counts under both its
 names, so symlinks can neither leak `/home/<user>` nor make the path point elsewhere. Resolution
 order: `COURSE_TARGET_REPO`, then `course.local.json`, then `course.json`. With `--submodule` and a
-network URL, `course init` warns if no remote-tracking branch contains the pinned commit (others
-could not clone it).
+network URL, `course init` warns if no `origin` remote-tracking branch contains the pinned commit
+(others could not clone it), and it warns when the target has uncommitted changes (the course is
+pinned to HEAD). The workspace must be a separate directory: `course init` refuses an `--out`
+inside the target repository (the default is `./<repo>-course` in the current directory, so
+`course init .` from inside the repo needs `--out ../<repo>-course`).
 
 Default is **pinned path only**: cheapest, no nested git setup, sufficient for local courses where
 the target repo path is stable. Submodule is optional for teams that want the target tree vendored
@@ -83,4 +89,6 @@ The workspace pins `@slidev/cli` to `^51.8.2`, the version these defaults were c
 
 - Contributors need Node 20+; CI uses the same.
 - `course init --submodule` requires git; for **local** target paths, Git 2.38+ needs `protocol.file.allow=always` — the CLI passes that flag automatically.
+- course_kit needs git >= 2.38 and checks `git --version` before its first call: every read of a target repository pins `safe.bareRepository=explicit`, `core.fsmonitor=false` and `log.showSignature=false` on the command line (`GIT_HARDENING_ARGS`), and older git silently ignores the first.
+- Child processes get an allowlisted environment (`src/lib/child-env.ts`, `childEnv()`): `PATH`, `HOME`, locale, temp dir, terminal, proxy and ssh-agent variables plus `GIT_TERMINAL_PROMPT=0`. An exported API key never reaches git or anything git runs (hooks, credential helpers).
 - Future steps can add plugins without changing this ADR's core stack choice.
