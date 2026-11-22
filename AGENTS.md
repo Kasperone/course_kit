@@ -70,6 +70,8 @@ course voices list
   ElevenLabs output formats.
 - `tests/tts.test.ts` — Piper via `tests/helpers/fake-piper.mjs` (stdin text, WAV/MP3), voice install with sha256
   checks, ElevenLabs with mocked HTTP (key never in output, files or errors).
+- `tests/narration-env.test.ts` — Piper and ffmpeg (recording fakes) run with the allowlisted environment: no
+  `*_API_KEY`/`*_TOKEN`/`*_SECRET`, but `PIPER_*`/`ESPEAK_*` and `PATH` arrive.
 - `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: PlantUML, fonts, favicon, the dev
   server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job
   runs it).
@@ -139,7 +141,8 @@ Always run lint and tests before pushing.
 
 - Every child process gets `childEnv()` from `src/lib/child-env.ts` (an allowlist, plus `GIT_TERMINAL_PROMPT=0`),
   never `process.env`: an exported API key must not reach git or anything it runs. Extend the allowlist only
-  for names a tool needs to run.
+  for names a tool needs to run. Piper and ffmpeg use `piperEnv()`/`ffmpegEnv()` (`src/lib/narration/env.ts`); a
+  new spawn site gets `childEnv()` (or a wrapper like those) and a test that records the child's environment.
 - Git calls on a target repository go through `gitRead` in `src/lib/git.ts`: `GIT_HARDENING_ARGS`
   (`safe.bareRepository=explicit`, no fsmonitor, no signature checks), `--no-optional-locks`, a timeout, and a
   once-per-process check for git >= 2.38 (older git ignores `safe.bareRepository`). Reuse these constants

@@ -6,12 +6,23 @@
 import { appendFileSync, readFileSync } from 'node:fs'
 
 const args = process.argv.slice(2)
-if (args.includes('--help')) process.exit(0)
-const text = readFileSync(0, 'utf8')
-if (process.env.FAKE_PIPER_LOG) {
-  appendFileSync(process.env.FAKE_PIPER_LOG, JSON.stringify({ args, text }) + '\n')
+if (args.includes('--help')) {
+  if (process.env.PIPER_FAKE_LOG) {
+    appendFileSync(
+      process.env.PIPER_FAKE_LOG,
+      JSON.stringify({ args, text: null, env: process.env }) + '\n',
+    )
+  }
+  process.exit(0)
 }
-if (process.env.FAKE_PIPER_FAIL === '1') {
+const text = readFileSync(0, 'utf8')
+if (process.env.PIPER_FAKE_LOG) {
+  appendFileSync(
+    process.env.PIPER_FAKE_LOG,
+    JSON.stringify({ args, text, env: process.env }) + '\n',
+  )
+}
+if (process.env.PIPER_FAKE_FAIL === '1') {
   process.stderr.write('fake piper: synthesis failed\n')
   process.exit(3)
 }
