@@ -6,7 +6,8 @@ import { resolveChatConfig } from '../lib/chat/config.js'
 import type { AnswerProvider } from '../lib/chat/provider.js'
 import { describeChat } from '../lib/chat/providers.js'
 import { startChatServer, type ChatServer } from '../lib/chat/server.js'
-import { readWorkspaceSecret, SECRET_ENV_NAMES, withoutSecrets } from '../lib/env.js'
+import { childEnv } from '../lib/child-env.js'
+import { readWorkspaceSecret, SECRET_ENV_NAMES } from '../lib/env.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
 import { MANIFEST_FILE, parseManifest } from '../lib/narration/manifest.js'
 import {
@@ -160,9 +161,15 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
 
 export type SlidevRunner = (bin: string, args: string[], cwd: string) => void
 
+/**
+ * Slidev, its theme and addons, and the workspace code it loads (`vite.config.*`, `setup/*`) run
+ * with an allowlisted environment: an API key exported in the shell never reaches them. Node and
+ * Vite settings (`NODE_*`, `VITE_*`, `SLIDEV_*`) and `DEBUG`/`BROWSER` still pass.
+ */
+const slidevEnv = () => childEnv({ extra: ['NODE_*', 'VITE_*', 'SLIDEV_*', 'DEBUG', 'BROWSER'] })
+
 const defaultRunner: SlidevRunner = (bin, args, cwd) => {
-  // Slidev (and Vite) never see provider keys.
-  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit', env: withoutSecrets() })
+  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit', env: slidevEnv() })
 }
 
 /** Built files that contain one of the workspace's API keys (compared in memory, never printed). */
@@ -426,7 +433,7 @@ export function runDev(options: DevOptions): Promise<number> {
       log(`Q&A backend on ${server.url} · ${describeChat(summary!).replace(/^Q&A chat: /, '')}`)
     }
     const env = {
-      ...withoutSecrets(),
+      ...slidevEnv(),
       ...(server ? { [CHAT_PORT_ENV]: String(server.port) } : {}),
     }
     try {

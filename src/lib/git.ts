@@ -1,21 +1,95 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { withoutSecrets } from './env.js'
-
-// Every git process here gets the environment without provider keys (withoutSecrets): git, its
-// hooks and its helpers never need them.
+import { childEnv } from './child-env.js'
 
 /** Full SHA-1 (40 hex) or SHA-256 (64 hex) object name. */
 export const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 
-function gitOut(args: string[], cwd?: string): string {
-  return execFileSync('git', args, {
+/**
+ * Config that can make git run programs is pinned on the command line, which overrides repository
+ * config: implicit bare repositories are refused (a planted bare repo next to or inside a workspace
+ * could otherwise be picked up as the target and run its `core.fsmonitor`/`gpg.program`), signatures
+ * are never verified, and no fsmonitor hook runs. Every git call on a target repository uses these.
+ */
+export const GIT_HARDENING_ARGS = [
+  '-c',
+  'safe.bareRepository=explicit',
+  '-c',
+  'log.showSignature=false',
+  '-c',
+  'core.fsmonitor=false',
+]
+
+/** A hung git (e.g. a lock on NFS) must not hang the CLI. */
+export const GIT_TIMEOUT_MS = 120_000
+
+/** `safe.bareRepository` exists since git 2.38; older git silently ignores the unknown key. */
+export const MIN_GIT_VERSION = [2, 38] as const
+
+export function parseGitVersion(output: string): [number, number] | null {
+  const m = output.match(/git version (\d+)\.(\d+)/)
+  return m ? [Number(m[1]), Number(m[2])] : null
+}
+
+export function assertGitVersion(output: string): void {
+  const v = parseGitVersion(output)
+  const [major, minor] = MIN_GIT_VERSION
+  if (v && (v[0] > major || (v[0] === major && v[1] >= minor))) return
+  throw new Error(
+    `course_kit needs git >= ${major}.${minor} (found ${output.trim() || 'no version'}): older ` +
+      'versions ignore the safe.bareRepository protection it relies on. Please upgrade git.',
+  )
+}
+
+let gitVersionChecked = false
+
+export function requireModernGit(): void {
+  if (gitVersionChecked) return
+  assertGitVersion(
+    execFileSync('git', ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: childEnv(),
+      timeout: GIT_TIMEOUT_MS,
+    }),
+  )
+  gitVersionChecked = true
+}
+
+/** Read-only git call on a target repository: hardened, no index refresh, never prompts. */
+function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}): string {
+  requireModernGit()
+  const out = execFileSync(
+    'git',
+    [
+      '--no-optional-locks',
+      '-c',
+      'core.quotePath=false',
+      ...GIT_HARDENING_ARGS,
+      '-C',
+      repoPath,
+      ...args,
+    ],
+    {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: childEnv(),
+      timeout: GIT_TIMEOUT_MS,
+    },
+  )
+  return opts.trim === false ? out : out.trim()
+}
+
+/** Git call that writes inside the workspace we are creating (`cwd`). */
+function gitWrite(cwd: string, args: string[]): void {
+  requireModernGit()
+  execFileSync('git', args, {
     cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: withoutSecrets(),
-  }).trim()
+    stdio: 'pipe',
+    env: childEnv(),
+    timeout: GIT_TIMEOUT_MS,
+  })
 }
 
 function gitErrorDetail(err: unknown): string {
@@ -31,7 +105,7 @@ export function resolveTargetRepo(repoPath: string): string {
     throw new Error(`Target path does not exist: ${resolved}`)
   }
   try {
-    return path.resolve(gitOut(['-C', resolved, 'rev-parse', '--show-toplevel']))
+    return path.resolve(gitRead(resolved, ['rev-parse', '--show-toplevel']))
   } catch (err) {
     throw new Error(`Target is not a git repository: ${resolved} (${gitErrorDetail(err)})`)
   }
@@ -40,7 +114,7 @@ export function resolveTargetRepo(repoPath: string): string {
 export function readHeadCommit(repoPath: string): string {
   let hash: string
   try {
-    hash = gitOut(['-C', repoPath, 'rev-parse', '--verify', 'HEAD^{commit}'])
+    hash = gitRead(repoPath, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'])
   } catch (err) {
     throw new Error(`Could not read HEAD commit from ${repoPath}: ${gitErrorDetail(err)}`)
   }
@@ -56,23 +130,36 @@ const REV_RE = /^[\w./@^~{}+-]{1,200}$/
 /**
  * Resolve a user-supplied revision (default HEAD) to a full commit SHA. The revision must exist
  * as a commit in `repoPath`; it is passed after `--end-of-options`, so it can never be an option.
+ *
+ * `preferOrigin` is for a submodule checkout, whose local branches are frozen at clone time while
+ * `origin/*` moves with every fetch: `main` then means `refs/remotes/origin/main` if that exists,
+ * and only otherwise the name as given (tags, SHAs, `origin/feature-x`).
  */
-export function resolveCommit(repoPath: string, rev = 'HEAD'): string {
+export function resolveCommit(
+  repoPath: string,
+  rev = 'HEAD',
+  opts: { preferOrigin?: boolean } = {},
+): string {
   if (!REV_RE.test(rev) || rev.startsWith('-') || rev.includes('..')) {
     throw new Error(`Invalid revision ${JSON.stringify(rev)}`)
   }
-  let hash: string
-  try {
-    hash = gitOut([
-      '-C',
-      repoPath,
-      'rev-parse',
-      '--verify',
-      '--quiet',
-      '--end-of-options',
-      `${rev}^{commit}`,
-    ])
-  } catch {
+  const candidates = opts.preferOrigin ? [`refs/remotes/origin/${rev}`, rev] : [rev]
+  let hash: string | null = null
+  for (const candidate of candidates) {
+    try {
+      hash = gitRead(repoPath, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        '--end-of-options',
+        `${candidate}^{commit}`,
+      ])
+      break
+    } catch {
+      // try the next spelling
+    }
+  }
+  if (hash === null) {
     throw new Error(`Commit ${JSON.stringify(rev)} not found in ${repoPath}`)
   }
   if (!FULL_SHA_RE.test(hash)) {
@@ -89,20 +176,7 @@ export function resolveCommit(repoPath: string, rev = 'HEAD'): string {
 export function uncommittedChanges(repoPath: string): string[] {
   let out: string
   try {
-    out = execFileSync(
-      'git',
-      [
-        '--no-optional-locks',
-        '-c',
-        'core.quotePath=false',
-        '-C',
-        repoPath,
-        'status',
-        '--porcelain=v1',
-        '-z',
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: withoutSecrets() },
-    )
+    out = gitRead(repoPath, ['status', '--porcelain=v1', '-z'], { trim: false })
   } catch {
     return []
   }
@@ -140,7 +214,7 @@ export function uncommittedWarning(repoPath: string, commit: string): string | n
 export function readShareableRemote(repoPath: string): string | null {
   let url: string
   try {
-    url = gitOut(['-C', repoPath, 'remote', 'get-url', 'origin'])
+    url = gitRead(repoPath, ['remote', 'get-url', 'origin'])
   } catch {
     return null
   }
@@ -161,18 +235,21 @@ export function readShareableRemote(repoPath: string): string | null {
   return null
 }
 
-/** True if a remote-tracking branch of `repoPath` contains `commit` (i.e. it was pushed). */
+/**
+ * True if a remote-tracking branch of `origin` contains `commit` (i.e. it was pushed there):
+ * `.gitmodules` records `origin`, so a commit that is only on another remote does not count.
+ */
 export function isCommitOnRemoteBranch(repoPath: string, commit: string): boolean {
   if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
   try {
-    return gitOut(['-C', repoPath, 'branch', '-r', '--contains', commit]) !== ''
+    return gitRead(repoPath, ['branch', '-r', '--contains', commit, '--list', 'origin/*']) !== ''
   } catch {
     return false
   }
 }
 
 export function initGitRepo(dir: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'pipe', env: withoutSecrets() })
+  gitWrite(dir, ['init', '-q'])
 }
 
 export function addSubmodule(
@@ -184,24 +261,26 @@ export function addSubmodule(
   const absTarget = path.resolve(targetRepo)
   // Local paths use the file:// transport; Git 2.38+ blocks it for submodules unless explicitly
   // allowed. The override is scoped to this one command and to the user-chosen local path.
-  execFileSync(
-    'git',
-    ['-c', 'protocol.file.allow=always', 'submodule', 'add', '--', absTarget, submodulePath],
-    { cwd: courseDir, stdio: 'pipe', env: withoutSecrets() },
-  )
-  // `submodule add` records the absolute local path in .gitmodules. Replace it with a portable URL
-  // (network remote or relative path) so no /home/<user>/... path is committed. The local
-  // .git/config keeps the absolute URL, so this clone continues to work.
-  execFileSync(
-    'git',
-    ['config', '-f', '.gitmodules', `submodule.${submodulePath}.url`, committedUrl],
-    { cwd: courseDir, stdio: 'pipe', env: withoutSecrets() },
-  )
-  execFileSync('git', ['add', '--', '.gitmodules'], {
-    cwd: courseDir,
-    stdio: 'pipe',
-    env: withoutSecrets(),
-  })
+  gitWrite(courseDir, [
+    '-c',
+    'protocol.file.allow=always',
+    'submodule',
+    'add',
+    '--',
+    absTarget,
+    submodulePath,
+  ])
+  // `submodule add` records the absolute local path in .gitmodules. Replace it with the target's
+  // network remote so no /home/<user>/... path is committed. The local .git/config keeps the
+  // absolute URL, so this clone continues to work.
+  gitWrite(courseDir, [
+    'config',
+    '-f',
+    '.gitmodules',
+    `submodule.${submodulePath}.url`,
+    committedUrl,
+  ])
+  gitWrite(courseDir, ['add', '--', '.gitmodules'])
 }
 
 /** A fetch over the network can be slow, but must not hang `course pin` forever. */
@@ -218,10 +297,11 @@ export function fetchSubmoduleOrigin(subDir: string): string {
     ['fetch', '--quiet', 'origin', 'HEAD'],
   ]) {
     try {
-      execFileSync('git', ['-C', subDir, ...args], {
+      requireModernGit()
+      execFileSync('git', [...GIT_HARDENING_ARGS, '-C', subDir, ...args], {
         stdio: 'pipe',
         timeout: FETCH_TIMEOUT_MS,
-        env: withoutSecrets(),
+        env: childEnv(),
       })
     } catch (err) {
       throw new Error(`Could not fetch origin in ${subDir}: ${gitErrorDetail(err)}`)
@@ -235,15 +315,7 @@ export function checkoutSubmoduleCommit(
   submodulePath: string,
   commit: string,
 ): void {
-  const subDir = path.join(courseDir, submodulePath)
-  execFileSync('git', ['checkout', '-q', '--detach', commit], {
-    cwd: subDir,
-    stdio: 'pipe',
-    env: withoutSecrets(),
-  })
-  execFileSync('git', ['add', '--', submodulePath], {
-    cwd: courseDir,
-    stdio: 'pipe',
-    env: withoutSecrets(),
-  })
+  if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
+  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit])
+  gitWrite(courseDir, ['add', '--', submodulePath])
 }

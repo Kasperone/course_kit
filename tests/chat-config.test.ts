@@ -11,7 +11,8 @@ import {
   parseChatSettings,
   resolveChatConfig,
 } from '../src/lib/chat/config.js'
-import { readWorkspaceSecret, redactSecrets, withoutSecrets } from '../src/lib/env.js'
+import { childEnv } from '../src/lib/child-env.js'
+import { readWorkspaceSecret, redactSecrets } from '../src/lib/env.js'
 import { parseCourseJson } from '../src/lib/workspace.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { commitAll, writeFiles } from './helpers/git.js'
@@ -210,7 +211,14 @@ describe('workspace secrets', () => {
     expect(redactSecrets('key sk-1 and sk-1 again', ['sk-1', null])).toBe(
       'key ‹redacted› and ‹redacted› again',
     )
-    const env = withoutSecrets({ PATH: '/bin', ANTHROPIC_API_KEY: 'a', ELEVENLABS_API_KEY: 'b' })
-    expect(env).toEqual({ PATH: '/bin' })
+    const env = childEnv({
+      env: {
+        PATH: '/bin',
+        ANTHROPIC_API_KEY: 'a',
+        ANTHROPIC_AUTH_TOKEN: 'c',
+        ELEVENLABS_API_KEY: 'b',
+      },
+    })
+    expect(env).toEqual({ PATH: '/bin', GIT_TERMINAL_PROMPT: '0' })
   })
 })

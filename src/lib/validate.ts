@@ -39,7 +39,8 @@ export function validateLessonId(id: string): string {
 /** Throw unless `target` is `base` itself or lies inside it (after resolving `..`). */
 export function assertInside(base: string, target: string, what: string): void {
   const rel = path.relative(path.resolve(base), path.resolve(target))
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  // `..notes` is a directory name, not a parent reference: only a `..` segment escapes.
+  if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
     throw new Error(`${what} escapes ${base}: ${target}`)
   }
 }

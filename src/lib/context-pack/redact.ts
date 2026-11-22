@@ -18,6 +18,8 @@ const TOKEN_PATTERNS: Array<[kind: string, re: RegExp]> = [
   ['google-api-key', /\bAIza[0-9A-Za-z_-]{35}\b/g],
   ['stripe-key', /\b(?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,}\b/g],
   ['api-key', /\bsk-(?:ant-|proj-|live-)?[A-Za-z0-9_-]{10,}\b/g],
+  // ElevenLabs-style keys: sk_ followed by a long hex or alphanumeric body.
+  ['api-key', /\bsk_[A-Za-z0-9]{32,}\b/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
 ]
 
@@ -32,6 +34,15 @@ const LITERAL_ASSIGNMENT = new RegExp(
   `\\b(${SECRET_NAME})(["']?\\s*[:=]\\s*)(["'\`])([^"'\`\\s]{4,})\\3`,
   'gi',
 )
+
+/**
+ * `NAME=value` with an upper-snake name that looks secret and an unquoted value, in any file:
+ * `export DB_PASSWORD=...` in a README or shell script, `ENV API_TOKEN=...` in a Dockerfile, a
+ * `- POSTGRES_PASSWORD=...` compose line. Values starting with `$` (`$VAR`, `${VAR}`, `$(cmd)`) are
+ * references, not secrets, and are left alone.
+ */
+const ENV_ASSIGNMENT =
+  /\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Z0-9_]*)=([^\s"'`$][^\s"'`]{7,})/g
 
 /** `key: value` / `key=value` lines in config files where the key looks secret. */
 const CONFIG_LINE = new RegExp(
@@ -95,6 +106,11 @@ export function redactSecrets(text: string, filePath: string): RedactionResult {
       if (String(value).startsWith(REDACTED)) return m
       redactions.push({ line: lineNo, kind: 'secret-assignment' })
       return `${name}${sep}${q}${REDACTED}${q}`
+    })
+    out = out.replace(ENV_ASSIGNMENT, (m, name: string, value: string) => {
+      if (value.startsWith(REDACTED)) return m
+      redactions.push({ line: lineNo, kind: 'secret-assignment' })
+      return `${name}=${REDACTED}`
     })
     if (isConfig) {
       const m = out.match(CONFIG_LINE)

@@ -7,7 +7,7 @@ import path from 'node:path'
  * are never printed, logged, written to a file or sent to the browser.
  */
 
-/** Environment variables that hold provider keys. Never passed on to child processes we start. */
+/** Environment variables that hold provider keys. Child processes get childEnv() (src/lib/child-env.ts), which never passes them on. */
 export const SECRET_ENV_NAMES = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
@@ -41,12 +41,5 @@ export function readWorkspaceSecret(
 export function redactSecrets(text: string, secrets: Array<string | null | undefined>): string {
   let out = text
   for (const s of secrets) if (s) out = out.split(s).join('‹redacted›')
-  return out
-}
-
-/** A copy of `env` without provider keys (for child processes such as Slidev). */
-export function withoutSecrets(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out = { ...env }
-  for (const name of SECRET_ENV_NAMES) delete out[name]
   return out
 }
