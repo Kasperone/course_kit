@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import type { CourseJson } from './init.js'
+import { childEnv } from '../lib/child-env.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
 import { MANIFEST_FILE, parseManifest } from '../lib/narration/manifest.js'
 import {
@@ -155,8 +156,15 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
 
 export type SlidevRunner = (bin: string, args: string[], cwd: string) => void
 
+/**
+ * Slidev, its theme and addons, and the workspace code it loads (`vite.config.*`, `setup/*`) run
+ * with an allowlisted environment: an API key exported in the shell never reaches them. Node and
+ * Vite settings (`NODE_*`, `VITE_*`, `SLIDEV_*`) and `DEBUG`/`BROWSER` still pass.
+ */
+const slidevEnv = () => childEnv({ extra: ['NODE_*', 'VITE_*', 'SLIDEV_*', 'DEBUG', 'BROWSER'] })
+
 const defaultRunner: SlidevRunner = (bin, args, cwd) => {
-  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit' })
+  execFileSync(process.execPath, [bin, ...args], { cwd, stdio: 'inherit', env: slidevEnv() })
 }
 
 export type BuildOptions = DeckFilter & {
@@ -339,7 +347,11 @@ export function runDev(options: DevOptions): Promise<number> {
     args.push('--port', String(options.port))
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bin, ...args], { cwd: courseDir, stdio: 'inherit' })
+    const child = spawn(process.execPath, [bin, ...args], {
+      cwd: courseDir,
+      stdio: 'inherit',
+      env: slidevEnv(),
+    })
     child.on('error', reject)
     child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)))
   })

@@ -23,7 +23,13 @@ source leaves the machine" guarantee as ADR 0001, and a first real lesson (faktu
   (localhost only; default language is the first in `course.json`).
 - Both run the **workspace's own** Slidev (`node_modules/@slidev/cli`, `bin` from its
   `package.json`) with `process.execPath`: no shell, no global install, no `.cmd` shims. Slidev
-  stays a workspace dependency, never a course_kit dependency.
+  stays a workspace dependency, never a course_kit dependency. Slidev, its theme and addons and
+  the workspace code it loads (`vite.config.*`, `setup/*`) get an allowlisted environment
+  (`childEnv()` plus `NODE_*`, `VITE_*`, `SLIDEV_*`, `DEBUG`, `BROWSER`), so an exported API key
+  never reaches them.
+- `course dev` checks the deck policy **when the server starts**. Slidev hot-reloads edits, so a
+  remote image or embed added during a session renders until the next `course build` (or restart)
+  refuses it; the guard is not a live watcher.
 - Neither needs the target repo, so a cloned workspace (or CI) builds without it.
 - The workspace `npm run dev` / `npm run build` scripts still serve and build the root
   `slides.md`.
@@ -53,8 +59,10 @@ and on `cdn.jsdelivr.net` in an HTML file (the default favicon).
 Workspace Markdown/Vue/CSS/HTML must not load remote resources while a slide renders: Markdown
 images, `src`/`href`/`poster`/… on loading tags (`img`, `iframe`, `script`, `link`, `video`, `audio`,
 `source`, …, also Vue `:src`), CSS `url()`/`@import`, `<Tweet>`/`<Youtube>`, and `image:`/
-`background:` frontmatter pointing at another host (loopback is allowed). Plain links are fine: they
-make no request until clicked. Context packs are skipped (they quote the target as data). Slide
+`background:`/`url:` frontmatter (`url:` feeds Slidev's `iframe` layouts) pointing at another host
+(loopback is allowed), reference-style link definitions (`[label]: https://…`, which also flags
+reference-style plain links) and Mermaid image nodes (`A@{ img: "https://…" }`). Inline plain links
+are fine: they make no request until clicked. Context packs are skipped (they quote the target as data). Slide
 imports (`src: ./other.md`) must stay inside the scanned files: no absolute paths, paths outside the
 workspace, skipped directories (`node_modules/`, `dist/`, `audio/`, `target-repo/`) or symlinks, so
 everything Slidev renders has passed the checks above. This is pattern matching, not a sandbox: a
@@ -67,6 +75,14 @@ Quirk: Slidev 52's dev-server banner still lists `export slides > …/export/` e
 `browserExporter: false`. The banner tests the JSON-stringified flag (`"false"`, which is truthy),
 while the client receives the real `false` through Vite's defines. Opening `/export/` shows the
 normal slideshow.
+
+### `course pin`
+
+Git calls on the target (`rev-parse`, `status`, `cat-file`, the submodule `fetch`) pin the same
+hardening config as context packs (`GIT_HARDENING_ARGS`: no implicit bare repos, no fsmonitor, no
+signature checks), run with an allowlisted environment and a timeout. In submodule mode a branch
+name resolves to `refs/remotes/origin/<name>` first (the checkout's local branches are frozen at
+clone time and never move on `fetch`), then to the name as given (tags, SHAs, `origin/<name>`).
 
 ### Slidev version
 

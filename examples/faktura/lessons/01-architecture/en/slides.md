@@ -394,6 +394,8 @@ production build.
 
 </v-clicks>
 
+<div class="abs-bl m-6 text-xs opacity-60">Sources: summary of slides 2–11 (see their footers)</div>
+
 <!--
 Let's sum up.
 

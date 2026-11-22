@@ -130,8 +130,11 @@ export function offlineHeadmatterProblems(deckText: string): string[] {
   return problems
 }
 
-/** A fenced PlantUML block (``` or ~~~, up to 3 spaces of indent). */
-export const PLANTUML_FENCE_RE = /^ {0,3}(`{3,}|~{3,})\s*plantuml\b/im
+/**
+ * A fenced PlantUML block (``` or ~~~, up to 3 spaces of indent). `[ \t]*`, not `\s*`: a plain
+ * fence whose first line starts with "plantuml" is ordinary code, not an info string.
+ */
+export const PLANTUML_FENCE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 /** Slidev's built-in component used directly: `<PlantUml …>` or `<plant-uml …>`. */
 export const PLANTUML_COMPONENT_RE = /<\s*plant-?uml\b/i
 /** Web-font CDNs Slidev can load from (Google Fonts, coollabs). */
@@ -143,7 +146,9 @@ const REMOTE_URL = String.raw`(?:https?:)?//(?!(?:localhost|127\.0\.0\.1|\[::1\]
 /**
  * Markup that makes the browser fetch a remote resource while a slide renders: Markdown images,
  * `src`/`href`/`poster`/... on loading tags (also Vue `:src`), CSS `url()` and `@import`, Slidev's
- * `<Tweet>`/`<Youtube>`, and slide `image:`/`background:` frontmatter. Plain links are fine.
+ * `<Tweet>`/`<Youtube>`, slide `image:`/`background:`/`url:` frontmatter (`url:` feeds the iframe
+ * layouts), reference-style link definitions (`[label]: https://…`, which also flags reference-style
+ * plain links) and Mermaid image nodes (`A@{ img: "https://…" }`). Inline plain links are fine.
  */
 export const REMOTE_ASSET_RE = new RegExp(
   [
@@ -153,7 +158,9 @@ export const REMOTE_ASSET_RE = new RegExp(
     String.raw`url\(\s*["']?\s*` + REMOTE_URL,
     String.raw`@import\s+["']\s*` + REMOTE_URL,
     String.raw`<\s*(?:tweet|youtube)\b`,
-    String.raw`^\s*(?:background|image)\s*:\s*["']?\s*` + REMOTE_URL,
+    String.raw`^\s*(?:background|image|url)\s*:\s*["']?\s*` + REMOTE_URL,
+    String.raw`^ {0,3}\[[^\]]+\]:\s*<?` + REMOTE_URL,
+    String.raw`\bimg\s*:\s*["']\s*` + REMOTE_URL,
   ].join('|'),
   'im',
 )

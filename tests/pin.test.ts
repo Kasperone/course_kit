@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runInit } from '../src/commands/init.js'
@@ -99,6 +99,74 @@ describe('course pin', () => {
     expect(result.pinned).toBe(next)
     expect(result.changed).toBe(true)
     expect(git(path.join(fx.workspace, 'target-repo'), ['rev-parse', 'HEAD']).trim()).toBe(next)
+  })
+
+  it('submodule mode: a branch name means the fetched origin branch, not the stale local one', async () => {
+    const fx = await makeWorkspace(undefined, { submodule: true })
+    const branch = git(fx.repoDir, ['branch', '--show-current']).trim()
+    const sub = path.join(fx.workspace, 'target-repo')
+    writeFiles(fx.repoDir, { 'NEW.md': 'new\n' })
+    const next = commitAll(fx.repoDir, 'next')
+    // A branch that exists only upstream (here: the target), created after the submodule clone.
+    git(fx.repoDir, ['branch', 'feature-x'])
+
+    const result = runPin({ cwd: fx.workspace, commit: branch })
+    // The submodule's own local branch never moved: it is exactly what used to be pinned.
+    expect(git(sub, ['rev-parse', `refs/heads/${branch}`]).trim()).toBe(fx.pinned)
+    expect(result).toMatchObject({ previous: fx.pinned, pinned: next, changed: true })
+    expect(git(sub, ['rev-parse', 'HEAD']).trim()).toBe(next)
+
+    // An upstream-only branch resolves too (it has no local branch at all), and `origin/<name>`
+    // and tags keep working.
+    git(fx.repoDir, ['checkout', '-q', '-b', 'feature-y'])
+    writeFiles(fx.repoDir, { 'Y.md': 'y\n' })
+    const y = commitAll(fx.repoDir, 'y')
+    git(fx.repoDir, ['tag', 'v2', next])
+    expect(runPin({ cwd: fx.workspace, commit: 'feature-x' }).pinned).toBe(next)
+    expect(runPin({ cwd: fx.workspace, commit: 'feature-y' }).pinned).toBe(y)
+    expect(runPin({ cwd: fx.workspace, commit: 'origin/feature-y' }).pinned).toBe(y)
+    expect(runPin({ cwd: fx.workspace, commit: 'v2' }).pinned).toBe(next)
+    expect(() => runPin({ cwd: fx.workspace, commit: 'no-such-branch' })).toThrow(/not found/)
+  })
+
+  it('runs every git call on the target with the pinned hardening config', async () => {
+    const bin = makeTempDir('pin-git-args')
+    const log = path.join(bin, 'args.log')
+    // Records each git call's arguments, one per line, then runs the real git (next on PATH).
+    writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nPATH="\${PATH#*:}" exec git "$@"\n`,
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+
+    for (const submodule of [false, true]) {
+      const fx = await makeWorkspace(undefined, { submodule })
+      writeFiles(fx.repoDir, { 'NEW.md': 'new\n' })
+      commitAll(fx.repoDir, 'next')
+      writeFiles(fx.repoDir, { 'dirty.txt': 'x\n' })
+      const saved = process.env.PATH
+      process.env.PATH = `${bin}${path.delimiter}${saved}`
+      try {
+        runPin({ cwd: fx.workspace })
+        runPin({ cwd: fx.workspace, commit: 'HEAD' })
+      } finally {
+        process.env.PATH = saved
+      }
+    }
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    const reads = calls.filter((c) => /\b(rev-parse|status|fetch|cat-file)\b/.test(c))
+    // rev-parse, status, cat-file (all runs) and fetch (submodule mode) were seen ...
+    for (const verb of ['rev-parse', 'status', 'cat-file', 'fetch']) {
+      expect(
+        reads.some((c) => c.includes(` ${verb} `)),
+        verb,
+      ).toBe(true)
+    }
+    // ... and none without the pinned config (git >= 2.38 `safe.bareRepository`, no fsmonitor).
+    for (const call of reads) {
+      expect(call, call).toContain('safe.bareRepository=explicit')
+      expect(call, call).toContain('core.fsmonitor=false')
+    }
   })
 
   it('leaves the submodule and its gitlink alone when course.json cannot be written', async () => {

@@ -397,6 +397,8 @@ produkcyjny build Vite.
 
 </v-clicks>
 
+<div class="abs-bl m-6 text-xs opacity-60">Źródła: podsumowanie slajdów 2–11 (zobacz ich stopki)</div>
+
 <!--
 Podsumujmy.
 

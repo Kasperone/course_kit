@@ -2,13 +2,20 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { childEnv } from '../lib/child-env.js'
 import { fence, inlineCode } from '../lib/context-pack/markdown.js'
 import { isTestPath } from '../lib/context-pack/tests-heuristic.js'
 import { FlowchartBuilder } from './mermaid.js'
 import type { AnalyzerContext, AnalyzerSection, RepoAnalyzer } from './types.js'
 
-/** Runs `jdeps -summary` on a local file; returns stdout or null if jdeps is unavailable/fails. */
-export type JdepsRunner = (file: string) => string | null
+/**
+ * Runs `jdeps -summary` on a local file; returns stdout or null if jdeps fails. `available` (when
+ * present) says whether jdeps can run at all, so no artifact is read or copied to disk without it.
+ */
+export type JdepsRunner = ((file: string) => string | null) & { available?: () => boolean }
+
+/** jdeps finds its JDK through PATH or JAVA_HOME; nothing else of the environment is needed. */
+const jdepsEnv = () => childEnv({ extra: ['JAVA_HOME'] })
 
 let jdepsProbe: boolean | undefined
 
@@ -18,7 +25,11 @@ const JDEPS_TIMEOUT_MS = 60_000
 function jdepsAvailable(): boolean {
   if (jdepsProbe === undefined) {
     try {
-      execFileSync('jdeps', ['-version'], { stdio: 'pipe', timeout: JDEPS_TIMEOUT_MS })
+      execFileSync('jdeps', ['-version'], {
+        stdio: 'pipe',
+        timeout: JDEPS_TIMEOUT_MS,
+        env: jdepsEnv(),
+      })
       jdepsProbe = true
     } catch {
       jdepsProbe = false
@@ -28,17 +39,18 @@ function jdepsAvailable(): boolean {
 }
 
 export const defaultJdepsRunner: JdepsRunner = (file) => {
-  if (!jdepsAvailable()) return null
   try {
     return execFileSync('jdeps', ['-summary', '-q', file], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: JDEPS_TIMEOUT_MS,
+      env: jdepsEnv(),
     })
   } catch {
     return null
   }
 }
+defaultJdepsRunner.available = jdepsAvailable
 
 /** Parse `jdeps -summary` lines such as `app.jar -> java.base`. */
 export function parseJdepsSummary(output: string): Array<[string, string]> {
@@ -172,14 +184,18 @@ export function ownPackageGraph(ctx: AnalyzerContext): OwnPackageGraph {
 
 function jdepsGraph(ctx: AnalyzerContext, runJdeps: JdepsRunner): FlowchartBuilder | null {
   if (ctx.artifacts.length === 0) return null
+  // Probe before reading: blobs of up to 5 x 20 MB are not copied to tmp without a JDK.
+  if (runJdeps.available && !runJdeps.available()) return null
   const graph = new FlowchartBuilder()
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'course-kit-jdeps-'))
   try {
     ctx.artifacts.forEach((artifact, i) => {
       const blob = artifact.read()
       if (!blob) return
-      // Index prefix keeps same-named artifacts from different directories apart.
-      const local = path.join(tmpDir, `${i}-${path.posix.basename(artifact.path)}`)
+      // The name comes from the index and a sanitised extension only: repository file names are
+      // never used (a `\` is a separator on Windows, and jdeps keys its output by this name).
+      const ext = path.posix.extname(artifact.path).toLowerCase()
+      const local = path.join(tmpDir, `${i}${/^\.[a-z0-9]{1,8}$/.test(ext) ? ext : ''}`)
       writeFileSync(local, blob)
       const out = runJdeps(local)
       if (!out) return

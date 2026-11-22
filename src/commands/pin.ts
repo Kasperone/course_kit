@@ -42,7 +42,7 @@ export function runPin(options: PinOptions = {}): PinResult {
   const inSubmodule = submodule !== null && path.resolve(targetRepoPath) === path.resolve(submodule)
   const remoteHead = inSubmodule ? fetchSubmoduleOrigin(targetRepoPath) : null
   const pinned = options.commit
-    ? resolveCommit(targetRepoPath, options.commit)
+    ? resolveCommit(targetRepoPath, options.commit, { preferOrigin: inSubmodule })
     : (remoteHead ?? resolveCommit(targetRepoPath, 'HEAD'))
   verifyCommit(targetRepoPath, pinned)
 

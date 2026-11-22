@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -9,14 +9,18 @@ import {
   ownPackageGraph,
   packageImportGraph,
   parseJdepsSummary,
+  type JdepsRunner,
 } from '../src/analyzers/java.js'
 import type { AnalyzerContext } from '../src/analyzers/types.js'
-import { runContext } from '../src/commands/context.js'
+import { jsonPathFor, runContext } from '../src/commands/context.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
 import { buildContextPack } from '../src/lib/context-pack/build.js'
+import { escapeControls } from '../src/lib/context-pack/markdown.js'
+import { terminalSafe } from '../src/lib/terminal.js'
 import { readLessonJson, writeLessonJson, type LessonJson } from '../src/lib/lesson.js'
 import { resolveWorkspace } from '../src/lib/workspace.js'
 import { makeWorkspace, writeJavaSampleRepo } from './helpers/fixture-repo.js'
+import { makeTempDir } from './helpers/tmp.js'
 import { commitAll, git, initRepo, writeFiles } from './helpers/git.js'
 
 const LESSON = '01-placeholder'
@@ -306,6 +310,100 @@ describe('course context', () => {
   })
 })
 
+describe('control characters', () => {
+  it.each([
+    ['\x1b]0;TITLE\x07', '\\x1b]0;TITLE\\x07'],
+    ['\x1b[31mred', '\\x1b[31mred'],
+    ['a\rb\nc\td', 'a\\rb\\nc\\td'],
+    ['\u009b31m\u009d0;x\u009c', '\\x9b31m\\x9d0;x\\x9c'],
+    ['a\u202eb\u2066c', 'a\\u202eb\\u2066c'],
+    ['plain ünïcode ✓', 'plain ünïcode ✓'],
+  ])('escapeControls(%j)', (input, expected) => {
+    expect(escapeControls(input)).toBe(expected)
+  })
+
+  it('terminalSafe keeps line breaks but escapes everything else', () => {
+    const out = terminalSafe('warning: a\x1b[2Jb\r\nsecond line\rspoof\nthird\x07')
+    expect(out).toBe('warning: a\\x1b[2Jb\nsecond line\\rspoof\nthird\\x07')
+  })
+})
+
+describe('--out', () => {
+  it('jsonPathFor swaps .md for .json and appends otherwise', () => {
+    expect(jsonPathFor('a/pack.md')).toBe('a/pack.json')
+    expect(jsonPathFor('a/PACK.MD')).toBe('a/PACK.json')
+    expect(jsonPathFor('a/pack.txt')).toBe('a/pack.txt.json')
+  })
+
+  it('creates missing parent directories, inside the workspace and outside it', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    const inside = path.join(fx.workspace, 'notes', 'deep', 'pack.md')
+    await runContext({ lessonId: LESSON, out: inside, json: true, cwd: fx.workspace })
+    expect(existsSync(inside)).toBe(true)
+    expect(existsSync(path.join(fx.workspace, 'notes', 'deep', 'pack.json'))).toBe(true)
+
+    const outside = path.join(fx.root, 'elsewhere', 'new', 'pack.md')
+    await runContext({ lessonId: LESSON, out: outside, json: true, cwd: fx.workspace })
+    expect(readFileSync(outside, 'utf8')).toContain('# Context pack')
+    expect(existsSync(path.join(fx.root, 'elsewhere', 'new', 'pack.json'))).toBe(true)
+  })
+
+  it('treats a workspace directory named like "..notes" as inside, so symlinks are refused', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    const outsideDir = path.join(fx.root, 'victim-dir')
+    mkdirSync(outsideDir)
+    // A plain `..notes` directory works like any other directory of the workspace ...
+    const plain = path.join(fx.workspace, '..plain', 'pack.md')
+    await runContext({ lessonId: LESSON, out: plain, cwd: fx.workspace })
+    expect(existsSync(plain)).toBe(true)
+    // ... and a symlinked one is refused instead of written through.
+    symlinkSync(outsideDir, path.join(fx.workspace, '..notes'))
+    await expect(
+      runContext({
+        lessonId: LESSON,
+        out: path.join(fx.workspace, '..notes', 'pack.md'),
+        cwd: fx.workspace,
+      }),
+    ).rejects.toThrow(/symlink/)
+    expect(existsSync(path.join(outsideDir, 'pack.md'))).toBe(false)
+  })
+})
+
+describe('git history failures', () => {
+  it('reports a failed git log in the warnings instead of "No log entries"', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    // `git log` fails (as it would on a timeout or a path list too long for the command line).
+    const bin = makeTempDir('git-log-fails')
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = log ]; then echo "fatal: simulated log failure" >&2; exit 128; fi\ndone\n' +
+        'PATH="${PATH#*:}" exec git "$@"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+    try {
+      const meta = await runContext({ lessonId: LESSON, cwd: fx.workspace })
+      expect(meta.warnings.join('\n')).toMatch(
+        /history .* could not be read \(fatal: simulated log failure\)/,
+      )
+    } finally {
+      process.env.PATH = savedPath
+    }
+    const md = readPack(fx.workspace)
+    expect(md).toContain('history is missing from this pack')
+    expect(md).not.toContain('_No log entries._')
+
+    // Control: a healthy git lists the commit.
+    const ok = await runContext({ lessonId: LESSON, cwd: fx.workspace })
+    expect(ok.warnings.join('\n')).not.toMatch(/could not be read/)
+    expect(readPack(fx.workspace)).toContain('java sample')
+  })
+})
+
 describe('Java analyzer', () => {
   it('hands committed jar/class blobs to jdeps', async () => {
     const fx = await makeWorkspace((dir) => {
@@ -343,6 +441,51 @@ describe('Java analyzer', () => {
     expect(md).toContain('["lib/a/tool.jar"]')
     expect(md).toContain('["lib/b/tool.jar"]')
     expect(md).toContain('["java.sql"]')
+  })
+
+  it('never uses repository file names for temp files and probes jdeps before reading', async () => {
+    const jar = Buffer.from([0x50, 0x4b, 0x03, 0x04])
+    const artifacts = [
+      'lib/x\\y.jar',
+      'lib/..\\..\\evil.JAR',
+      'lib/noext',
+      'lib/ünï.class',
+      'lib/semi;colon.jar',
+    ]
+    const seen: string[] = []
+    let reads = 0
+    const ctx = (): AnalyzerContext => ({
+      pinnedCommit: 'x',
+      selectedPaths: [],
+      readText: () => null,
+      artifacts: artifacts.map((p) => ({
+        path: p,
+        size: jar.length,
+        read: () => {
+          reads++
+          return jar
+        },
+      })),
+    })
+
+    const runner: JdepsRunner = (file) => {
+      expect(readFileSync(file)).toEqual(jar) // the temp file exists where the runner is told
+      seen.push(path.basename(file))
+      return `${path.basename(file)} -> java.base\n`
+    }
+    const section = await createJavaAnalyzer(runner).analyze(ctx())
+    expect(seen).toEqual(['0.jar', '1.jar', '2', '3.class', '4.jar'])
+    // The graph is keyed by the repository paths again, never by temp names.
+    expect(section!.markdown).toContain('["lib/noext"]')
+    expect(section!.markdown).toContain('["lib/ünï.class"]')
+    expect(section!.markdown).toContain('["lib/semi;colon.jar"]')
+    expect(section!.markdown).not.toContain('["0.jar"]')
+
+    // Without jdeps nothing is read from the object database or written to disk.
+    reads = 0
+    const missing: JdepsRunner = Object.assign(() => 'x -> y\n', { available: () => false })
+    await createJavaAnalyzer(missing).analyze(ctx())
+    expect(reads).toBe(0)
   })
 
   it('parses jdeps -summary output', () => {

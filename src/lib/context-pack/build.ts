@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { runAnalyzers } from '../../analyzers/registry.js'
 import type { RepoAnalyzer } from '../../analyzers/types.js'
@@ -297,7 +298,8 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   // Commit subjects and author names are repository text too: redact them, and render each line
   // as inline code so it cannot add Markdown structure to the pack.
   const LOG_SOURCE = '(git log)'
-  const rawLog = logTouchingPaths(repo, commit, selectedPaths, limits.maxLogEntries)
+  const gitLog = logTouchingPaths(repo, commit, selectedPaths, limits.maxLogEntries)
+  const rawLog = gitLog.entries
   const logResult = redactSecrets(rawLog.join('\n'), LOG_SOURCE)
   const logLines = rawLog.length ? logResult.text.split('\n') : []
   if (logResult.redactions.length > 0) {
@@ -331,6 +333,13 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     selection.unmatchedGlobs,
     redactions,
   )
+  if (gitLog.error) {
+    // Nothing is dropped silently: a failed `git log` (timeout, path list too long for argv) is not "no history".
+    warnings.push(
+      `The git history of the selected files could not be read (${gitLog.error}); the pack has no history section. ` +
+        `Select fewer files (maxSelectedFiles=${limits.maxSelectedFiles}) or narrow the globs.`,
+    )
+  }
   const header = [
     '# Context pack',
     '',
@@ -388,7 +397,11 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
     '',
     '## Recent history (selected paths)',
     '',
-    logLines.length ? logLines.map((l) => `- ${inlineCode(l)}`).join('\n') : '_No log entries._',
+    logLines.length
+      ? logLines.map((l) => `- ${inlineCode(l)}`).join('\n')
+      : gitLog.error
+        ? '_The git log could not be read (see warnings); history is missing from this pack._'
+        : '_No log entries._',
     '',
     '## Language-specific analysis',
     '',
@@ -437,11 +450,15 @@ export async function buildContextPack(opts: BuildContextPackOptions): Promise<C
   return meta
 }
 
+/** Inside the workspace every component is checked for symlinks; outside it is the user's own path. */
 function writeOutput(courseDir: string | undefined, file: string, data: string): void {
   const rel = courseDir ? path.relative(path.resolve(courseDir), path.resolve(file)) : '..'
-  if (courseDir && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+  const inside = rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+  if (courseDir && inside) {
     writeFileInside(courseDir, file, data)
   } else {
+    // Like inside the workspace, missing parent directories are created (`--out notes/pack.md`).
+    mkdirSync(path.dirname(path.resolve(file)), { recursive: true })
     writeFileNoFollow(file, data)
   }
 }

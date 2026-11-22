@@ -22,6 +22,8 @@ import {
   type TtsProvider,
 } from '../lib/narration/providers.js'
 import type { FetchLike } from '../lib/narration/voices.js'
+import { childEnv } from '../lib/child-env.js'
+import { GIT_TIMEOUT_MS } from '../lib/git.js'
 import { validateLanguage, validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspaceConfig } from '../lib/workspace.js'
 
@@ -39,6 +41,8 @@ function git(courseDir: string, args: string[]): { status: number; stdout: strin
     const stdout = execFileSync('git', ['--no-optional-locks', '-C', courseDir, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: childEnv(),
+      timeout: GIT_TIMEOUT_MS,
     })
     return { status: 0, stdout }
   } catch (err) {
