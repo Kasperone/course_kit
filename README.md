@@ -35,8 +35,10 @@ npx vite preview --outDir dist       # serve dist/ at http://localhost:4173
 ```
 
 See `course <command> --help`. `pin`, `build` and `dev` accept `-C <workspace>`. Optional
-`--submodule` on `init` vendors the target repo under `target-repo/`; `course pin` then fetches that
-checkout's `origin` (a bare `course pin` takes the remote's HEAD) and moves the checkout too.
+`--submodule` on `init` vendors the target repo under `target-repo/` (the target needs a network `origin`, which
+`.gitmodules` records) and `course pin` then fetches that checkout's `origin` (a bare `course pin` takes the
+remote's HEAD) and moves the checkout too. The workspace must live outside the target repo; the default `--out` is
+`./<repo>-course` in the current directory.
 
 Context packs always read the target repo at the **pinned commit** in `course.json` (see [ADR 0002](docs/adr/0002-context-pack-format.md)).
 Edit `lessons/<id>/lesson.json` to choose sources: `files` are exact paths, `globs` are globs (quote them on the
@@ -55,7 +57,9 @@ Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0
 
 `course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
 PlantUML, if a file references a web-font CDN, if a slide loads a remote resource (images, embeds, scripts,
-styles, `<Tweet>`/`<Youtube>`; plain links are fine), or if a slide `src:` import leaves the checked files. The
+styles, `<Tweet>`/`<Youtube>`, `url:` iframe layouts, reference-style images; inline plain links are fine), or if a
+slide `src:` import leaves the checked files. `course dev` checks when it starts; `course build` is the gate for
+later edits. Slidev runs without your API keys in its environment. The
 build fails if its output references plantuml.com, a font CDN or the jsDelivr favicon. `course build` does not
 need the target repo.
 
@@ -83,11 +87,11 @@ node ../../dist/cli.js context 01-architecture   # or: COURSE_TARGET_REPO=/path/
 
 ## Licensing
 
-| Artifact                                      | License                                                                                                          |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                                                   |
-| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT`; fill in year and author |
-| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit                           |
+| Artifact                                      | License                                                                                                                                               |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Software in this repo (CLI, tooling)          | [MIT](LICENSE)                                                                                                                                        |
+| Lesson text in course workspaces (`lessons/`) | [CC BY 4.0](templates/workspace/LICENSE-CONTENT) — each generated workspace ships its own `LICENSE-CONTENT`; the course author fills in year and name |
+| Generated audio                               | Not licensed for redistribution — keep under `audio/local/` (gitignored); never commit                                                                |
 
 ## Docs
 

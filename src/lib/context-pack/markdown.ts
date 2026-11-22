@@ -23,14 +23,25 @@ export function fence(content: string, info = ''): string {
 /**
  * Control characters as visible escapes. CommonMark ends a line at \n, \r\n and a lone \r, so any
  * of them in a file name could start a new block (e.g. a heading); the rest are escaped as well.
+ * The same text is printed to the terminal, where ESC (CSI/OSC sequences), the C1 controls (U+0080
+ * to U+009F, 8-bit CSI/OSC in some terminals) and bidirectional overrides could retitle the window,
+ * hide output or reorder a spoofed line, so all of them become visible escapes.
  */
 const NAMED_ESCAPES: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t' }
 
-function escapeControls(text: string): string {
+export function escapeControls(text: string): string {
   return text.replace(
     // eslint-disable-next-line no-control-regex -- matching control characters is the point
-    /[\x00-\x1f\x7f]/g,
-    (c) => NAMED_ESCAPES[c] ?? `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+    /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+    (c) => {
+      const code = c.charCodeAt(0)
+      return (
+        NAMED_ESCAPES[c] ??
+        (code <= 0xff
+          ? `\\x${code.toString(16).padStart(2, '0')}`
+          : `\\u${code.toString(16).padStart(4, '0')}`)
+      )
+    },
   )
 }
 

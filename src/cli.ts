@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
+import { terminalSafe } from './lib/terminal.js'
 import { runLessonNew } from './commands/lesson-new.js'
 import { runPin } from './commands/pin.js'
 import { runBuild, runDev } from './commands/slidev.js'
@@ -17,12 +18,14 @@ program
   .command('init')
   .description('Create a new course workspace from a target git repository')
   .argument('<path-to-target-repo>', 'Path to the repository the course explains')
-  .option('--out <dir>', 'Output directory for the course workspace')
-  .option('--lang <codes>', 'Comma-separated lesson languages (default: pl,en)', 'pl,en')
+  .option(
+    '--out <dir>',
+    'Output directory for the course workspace (default: ./<repo>-course in the current directory)',
+  )
+  .option('--lang <codes>', 'Comma-separated lesson languages', 'pl,en')
   .option(
     '--submodule',
-    'Also add the target repo as a git submodule at target-repo/ (default: pinned path only)',
-    false,
+    'Also add the target repo as a git submodule at target-repo/ (the target needs a network origin)',
   )
   .action(async (target: string, opts: { out?: string; lang?: string; submodule?: boolean }) => {
     try {
@@ -33,13 +36,13 @@ program
         submodule: opts.submodule,
       })
       const { outDir, course, warnings } = await runInit(options)
-      for (const warning of warnings) console.error(`warning: ${warning}`)
-      console.log(`Course workspace created at ${outDir}`)
+      for (const warning of warnings) console.error(terminalSafe(`warning: ${warning}`))
+      console.log(terminalSafe(`Course workspace created at ${outDir}`))
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course init failed: ${message}`)
+      console.error(terminalSafe(`course init failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -53,10 +56,10 @@ lesson
   .action((lessonId: string) => {
     try {
       const { lessonRoot } = runLessonNew({ lessonId })
-      console.log(`Lesson created at ${lessonRoot}`)
+      console.log(terminalSafe(`Lesson created at ${lessonRoot}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course lesson new failed: ${message}`)
+      console.error(terminalSafe(`course lesson new failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -79,7 +82,7 @@ program
         out: opts.out,
         json: Boolean(opts.json),
       })
-      for (const warning of meta.warnings) console.error(`warning: ${warning}`)
+      for (const warning of meta.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(`Wrote context pack for ${lessonId}`)
       console.log(
         `Files: ${meta.selectedFiles.length}, ~${meta.tokenEstimate} tokens, analyzers: ${
@@ -88,7 +91,7 @@ program
       )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course context failed: ${message}`)
+      console.error(terminalSafe(`course context failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -143,7 +146,7 @@ program
   .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
   .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
   .option('--lang <code>', 'Deck language (default: first language in course.json)')
-  .option('--port <n>', 'Dev server port', (v) => Number.parseInt(v, 10))
+  .option('--port <n>', 'Dev server port', (v) => (/^\d+$/.test(v) ? Number(v) : Number.NaN))
   .action(async (lessonId: string, opts: { cwd?: string; lang?: string; port?: number }) => {
     try {
       process.exitCode = await runDev({

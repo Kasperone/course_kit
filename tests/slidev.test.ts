@@ -29,6 +29,53 @@ const calls = (log: string): string[][] =>
 const deck = (ws: string, id: string, lang: string) =>
   path.join(ws, 'lessons', id, lang, 'slides.md')
 
+describe('Slidev child process environment', () => {
+  const keys = {
+    ELEVENLABS_API_KEY: 'fake-el-key',
+    ANTHROPIC_API_KEY: 'fake-an-key',
+    GITHUB_TOKEN: 'fake-gh-token',
+    VITE_API_KEY: 'fake-vite-key',
+    SOME_UNRELATED: 'x',
+  }
+  const allowed = { VITE_PUBLIC_FLAG: '1', SLIDEV_FLAG: '2', DEBUG: 'none' }
+
+  const envSeen = (ws: string): Array<Record<string, string>> =>
+    readFileSync(path.join(ws, 'slidev-env.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, string>)
+
+  async function withEnv<T>(fn: () => Promise<T> | T): Promise<T> {
+    Object.assign(process.env, keys, allowed)
+    try {
+      return await fn()
+    } finally {
+      for (const k of [...Object.keys(keys), ...Object.keys(allowed)]) delete process.env[k]
+    }
+  }
+
+  it('`course build` runs Slidev without API keys and unrelated variables', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    await withEnv(() => runBuild({ cwd: workspace }))
+    const [env] = envSeen(workspace)
+    expect(env!.PATH).toBeTruthy()
+    for (const name of Object.keys(keys)) expect(env, name).not.toHaveProperty(name)
+    expect(JSON.stringify(env)).not.toMatch(/fake-(el|an|gh|vite)-/)
+    // Variables Node, Vite and Slidev read still pass.
+    expect(env).toMatchObject(allowed)
+  })
+
+  it('`course dev` runs Slidev without API keys and unrelated variables', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    expect(await withEnv(() => runDev({ lesson: '01-placeholder', cwd: workspace }))).toBe(0)
+    const [env] = envSeen(workspace)
+    for (const name of Object.keys(keys)) expect(env, name).not.toHaveProperty(name)
+    expect(env!.PATH).toBeTruthy()
+  })
+})
+
 describe('course build', () => {
   it('runs Slidev once per deck with absolute paths, hash routing and a deck base', async () => {
     const { workspace } = await makeWorkspace()
@@ -335,12 +382,53 @@ const REMOTE_CASES: Array<[string, string, boolean]> = [
   ['Tweet', '<Tweet id="20" />\n', true],
   ['Youtube', '<Youtube id="abc" />\n', true],
   ['background frontmatter', '---\nlayout: cover\nbackground: https://e.com/x.jpg\n---\n', true],
+  ['iframe layout url', '---\nlayout: iframe\nurl: https://example.com/page\n---\n', true],
+  ['iframe-right layout url', '---\nlayout: iframe-right\nurl: //example.com/page\n---\n', true],
+  ['reference-style image', '![logo][l]\n\n[l]: https://example.com/logo.png\n', true],
+  ['reference definition in angle brackets', '![x][a]\n\n  [a]: <https://e.com/x.png>\n', true],
+  [
+    'Mermaid image node',
+    '```mermaid\nflowchart LR\n  A@{ img: "https://e.com/a.png", label: "A" }\n```\n',
+    true,
+  ],
+  ['local iframe layout url', '---\nlayout: iframe\nurl: http://localhost:3000/page\n---\n', false],
+  ['local reference image', '![logo][l]\n\n[l]: ./img/logo.png\n', false],
+  ['local Mermaid image node', '```mermaid\nflowchart LR\n  A@{ img: "/img/a.png" }\n```\n', false],
   ['plain link', '[GitHub](https://github.com/Kasperone/faktura)\n', false],
   ['bare URL in text', 'See https://example.com for details.\n', false],
   ['anchor tag', '<a href="https://example.com">x</a>\n', false],
   ['local image', '![a](./img/a.png) <img src="/images/a.png">\n', false],
   ['loopback image', '<img src="http://localhost:5173/a.png">\n', false],
 ]
+
+/** PlantUML markup (true) vs. text that merely looks like it (false). */
+const PLANTUML_CASES: Array<[string, string, boolean]> = [
+  ['plantuml fence', '```plantuml\nA -> B\n```\n', true],
+  ['tilde fence with a space', '~~~ plantuml\nA -> B\n~~~\n', true],
+  ['indented fence', '   ```plantuml\n', true],
+  [
+    'Slidev component with its own server',
+    '<PlantUml server="https://e.com" code="A -> B" />\n',
+    true,
+  ],
+  ['kebab-case component', '<plant-uml :code="x" />\n', true],
+  [
+    'plain fence starting with "plantuml" on the next line',
+    '```\nplantuml is a tool\n```\n',
+    false,
+  ],
+  ['blank info string, then text', '```\n\nplantuml\n```\n', false],
+  ['fence for another language', '```mermaid\nflowchart LR\n  A --> B\n```\n', false],
+]
+
+describe('PlantUML policy', () => {
+  it.each(PLANTUML_CASES)('%s -> flagged: %s', (_what, text, flagged) => {
+    const dir = makeTempDir('plantuml')
+    mkdirSync(path.join(dir, 'lessons'))
+    writeFileSync(path.join(dir, 'lessons', 'x.md'), text)
+    expect(findPlantUmlFiles(dir)).toEqual(flagged ? ['lessons/x.md'] : [])
+  })
+})
 
 describe('remote assets and slide imports', () => {
   it.each(REMOTE_CASES)('%s -> flagged: %s', (_what, text, flagged) => {
@@ -448,6 +536,12 @@ describe('check-deck.mjs agrees with the TypeScript policy', () => {
     const text = `${headmatter}\n\n# x\n`
     writeFileSync(path.join(workspace, 'slides.md'), text)
     expect(guardFails(workspace)).toBe(offlineHeadmatterProblems(text).length > 0)
+  })
+
+  it.each(PLANTUML_CASES)('PlantUML markup: %s', async (_what, body) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    writeFileSync(path.join(workspace, 'lessons', 'extra.md'), body)
+    expect(guardFails(workspace)).toBe(findPlantUmlFiles(workspace).length > 0)
   })
 
   it.each(REMOTE_CASES)('lesson markup: %s', async (_what, body) => {

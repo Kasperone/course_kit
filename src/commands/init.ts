@@ -201,6 +201,7 @@ export async function runInit(
   const dirty = uncommittedWarning(targetRepo, pinnedCommit)
   if (dirty) warnings.push(dirty)
   const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
+  assertOutsideTarget(outDir, targetRepo)
 
   if (existsSync(outDir) && requireNotEmpty(outDir)) {
     throw new Error(`Output directory already exists and is not empty: ${outDir}`)
@@ -244,18 +245,21 @@ export async function runInit(
     writeCourseJson(outDir, course)
 
     if (options.submodule) {
-      const submoduleUrl = targetRemote ?? targetRel
-      if (!submoduleUrl) {
+      // A relative `.gitmodules` URL is resolved by git against the course's own `origin`, not the
+      // workspace directory, so it breaks every collaborator's clone. Only a network URL is portable.
+      if (!targetRemote) {
         throw new Error(
-          '--submodule needs a target with a network origin remote, or a workspace next to the target (e.g. --out ../<name>-course)',
+          '--submodule needs the target to have a network `origin` remote (https://, ssh:// or ' +
+            'git@host:path), because collaborators clone the course and git fetches the submodule ' +
+            'from that URL. Add one (`git remote add origin <url>`) or use the default pinned-path mode.',
         )
       }
       initGitRepo(outDir)
-      addSubmodule(outDir, targetRepo, SUBMODULE_PATH, submoduleUrl)
+      addSubmodule(outDir, targetRepo, SUBMODULE_PATH, targetRemote)
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
-      if (submoduleUrl === targetRemote && !isCommitOnRemoteBranch(targetRepo, pinnedCommit)) {
+      if (!isCommitOnRemoteBranch(targetRepo, pinnedCommit)) {
         warnings.push(
-          `Pinned commit ${pinnedCommit} is on no remote-tracking branch of the target: push it, ` +
+          `Pinned commit ${pinnedCommit} is on no \`origin\` remote-tracking branch of the target: push it, ` +
             `or \`git submodule update\` will fail for anyone who clones this course.`,
         )
       }
@@ -273,6 +277,31 @@ export async function runInit(
     }
     throw err
   }
+}
+
+/** `p` resolved through symlinks as far as it exists (the rest, not yet created, is appended). */
+function physicalPath(p: string): string {
+  const missing: string[] = []
+  let dir = path.resolve(p)
+  for (;;) {
+    try {
+      return path.join(realpathSync(dir), ...missing)
+    } catch {
+      const parent = path.dirname(dir)
+      if (parent === dir) return path.resolve(p)
+      missing.unshift(path.basename(dir))
+      dir = parent
+    }
+  }
+}
+
+/** The workspace is separate from the target: inside it, it would show up in the target's status. */
+function assertOutsideTarget(outDir: string, targetRepo: string): void {
+  if (!isInside(physicalPath(outDir), targetRepo)) return
+  throw new Error(
+    `Output directory ${outDir} is inside the target repository ${targetRepo}; the course workspace ` +
+      `must be a separate directory. Use --out, e.g. --out ../${path.basename(targetRepo)}-course`,
+  )
 }
 
 function requireNotEmpty(dir: string): boolean {

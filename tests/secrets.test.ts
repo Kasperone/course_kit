@@ -12,6 +12,7 @@ import { commitAll, initRepo, writeFiles } from './helpers/git.js'
 const SK = ['sk', 'live', 'SECRET123'].join('-')
 const GHP = 'ghp_' + 'a'.repeat(36)
 const AWS = 'AKIA' + 'ABCDEFGHIJKLMNOP'
+const EL_KEY = ['sk', 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718'].join('_')
 const PEM_BEGIN = '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----'
 const PEM_END = '-----END OPENSSH ' + 'PRIVATE KEY-----'
 
@@ -19,7 +20,11 @@ const PEM_END = '-----END OPENSSH ' + 'PRIVATE KEY-----'
 function writeHostileRepo(dir: string): string {
   initRepo(dir)
   writeFiles(dir, {
-    'README.md': `# Target\n\nUse key ${GHP} for the demo.\n`,
+    'README.md': `# Target\n\nUse key ${GHP} for the demo.\n\n\`\`\`sh\nexport ELEVENLABS_API_KEY=${EL_KEY}\n\`\`\`\n`,
+    'scripts/deploy.sh':
+      '#!/bin/sh\nexport DB_PASSWORD=hunter2hunter2\ndocker run -e TOKEN=$TOKEN_FROM_CI app\n',
+    Dockerfile: 'FROM node:22\nENV API_TOKEN=abcd1234efgh5678\nENV PORT=8080\n',
+    'src/tts.ts': `import { ElevenLabs } from "./client"\nconst c = new ElevenLabs("${EL_KEY}")\n`,
     'src/.env': `API_KEY=${SK}\nDB_PASSWORD=hunter2\n`,
     '.env': 'ROOT_SECRET=topsecret\n',
     '.env.example': 'API_KEY=\nDB_PASSWORD=changeme\n',
@@ -125,6 +130,38 @@ describe('secret redaction', () => {
     expect(json.text).not.toContain('s3cr3t-value')
   })
 
+  it('redacts unquoted env-style assignments in any file and sk_ keys', () => {
+    const cases: Array<[file: string, line: string, secret: string]> = [
+      ['README.md', `export ELEVENLABS_API_KEY=${EL_KEY}`, EL_KEY],
+      ['scripts/deploy.sh', 'export DB_PASSWORD=hunter2hunter2', 'hunter2hunter2'],
+      ['Dockerfile', 'ENV API_TOKEN=abcd1234efgh5678', 'abcd1234efgh5678'],
+      ['src/tts.ts', `new ElevenLabs("${EL_KEY}")`, EL_KEY],
+      ['docs/setup.md', 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG', 'wJalrXUtnFEMI'],
+      ['Makefile', 'GITHUB_TOKEN=plain-token-value-1 make release', 'plain-token-value-1'],
+    ]
+    for (const [file, line, secret] of cases) {
+      const { text, redactions } = redactSecrets(line, file)
+      expect(text, file).not.toContain(secret)
+      expect(text, file).toContain(REDACTED)
+      expect(redactions, file).toHaveLength(1)
+    }
+    expect(redactSecrets(`export ELEVENLABS_API_KEY=${EL_KEY}`, 'README.md').text).toBe(
+      `export ELEVENLABS_API_KEY=${REDACTED}`,
+    )
+    // References, short values and names that are not secret-looking are left alone.
+    const keep = [
+      'export API_KEY=$API_KEY',
+      'export API_KEY=${API_KEY}',
+      'TOKEN=$(cat /run/secrets/token)',
+      'MAX_TOKENS=1000',
+      'ENV NODE_ENV=production',
+      'PASSWORD_MIN_LENGTH=12',
+      'PORT=8080',
+      `API_KEY=${REDACTED}`,
+    ]
+    for (const line of keep) expect(redactSecrets(line, 'README.md').text, line).toBe(line)
+  })
+
   it('redacts private key blocks but keeps line numbers', () => {
     const src = `a\n${PEM_BEGIN}\nAAAA\nBBBB\n${PEM_END}\nb`
     const { text } = redactSecrets(src, 'x.txt')
@@ -140,7 +177,7 @@ describe('context packs and secrets (review fixture)', () => {
     writeLessonJson(lessonRoot, {
       ...readLessonJson(lessonRoot),
       files: ['.env', 'src/id_ed25519'],
-      globs: ['README.md', 'src/**', '.env.example'],
+      globs: ['README.md', 'src/**', '.env.example', 'scripts/**', 'Dockerfile'],
     })
     const meta = await runContext({ lessonId: '01-placeholder', json: true, cwd: fx.workspace })
     const md = readFileSync(path.join(lessonRoot, 'context-pack.md'), 'utf8')
@@ -161,6 +198,8 @@ describe('context packs and secrets (review fixture)', () => {
       'b3BlbnNzaC1rZXktdjEAAAAA',
       'AAAAB3NzaC1yc2E',
       'test-token-value',
+      EL_KEY,
+      'abcd1234efgh5678',
     ]) {
       expect(md, secret).not.toContain(secret)
       expect(json, secret).not.toContain(secret)
@@ -188,8 +227,14 @@ describe('context packs and secrets (review fixture)', () => {
         'src/main/resources/application.yml',
         'src/config/settings.json',
         'src/test/java/com/example/ConfigTest.java',
+        'scripts/deploy.sh',
+        'Dockerfile',
+        'src/tts.ts',
       ]),
     )
+    // References and non-secrets stay readable.
+    expect(md).toContain('TOKEN=$TOKEN_FROM_CI')
+    expect(md).toContain('ENV PORT=8080')
     expect(meta.warnings.join('\n')).toMatch(/6 sensitive file\(s\) were not embedded/)
     expect(meta.warnings.join('\n')).toMatch(/Redacted \d+ secret-looking value/)
     expect(md).toContain('| sensitive | 6 |')

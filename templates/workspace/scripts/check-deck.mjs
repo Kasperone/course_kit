@@ -5,7 +5,8 @@
 //   `plantUmlServer` (default https://www.plantuml.com), sending the diagram source off-machine;
 // - no web fonts from a CDN (Google Fonts, coollabs): decks use system fonts;
 // - no remote images, embeds, scripts or styles (Markdown images, src/href on loading tags, CSS
-//   url()/@import, <Tweet>/<Youtube>, image:/background: frontmatter); plain links are fine;
+//   url()/@import, <Tweet>/<Youtube>, image:/background:/url: frontmatter, reference-style link
+//   definitions, Mermaid `img:` nodes); inline plain links are fine;
 // - slide imports (`src:`) stay inside the scanned files (no absolute paths, symlinks or skipped
 //   directories);
 // - the root deck's headmatter pins plantUmlServer and favicon (default: cdn.jsdelivr.net) to data:
@@ -16,7 +17,8 @@ import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
 const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
-const FENCE = /^ {0,3}(`{3,}|~{3,})\s*plantuml\b/im
+// [ \t]*, not \s*: a plain fence whose first line starts with "plantuml" is ordinary code.
+const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 const COMPONENT = /<\s*plant-?uml\b/i
 const WEB_FONTS = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.coollabs\.io/i
 const REMOTE_URL = String.raw`(?:https?:)?//(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
@@ -28,7 +30,9 @@ const REMOTE_ASSET = new RegExp(
     String.raw`url\(\s*["']?\s*` + REMOTE_URL,
     String.raw`@import\s+["']\s*` + REMOTE_URL,
     String.raw`<\s*(?:tweet|youtube)\b`,
-    String.raw`^\s*(?:background|image)\s*:\s*["']?\s*` + REMOTE_URL,
+    String.raw`^\s*(?:background|image|url)\s*:\s*["']?\s*` + REMOTE_URL,
+    String.raw`^ {0,3}\[[^\]]+\]:\s*<?` + REMOTE_URL,
+    String.raw`\bimg\s*:\s*["']\s*` + REMOTE_URL,
   ].join('|'),
   'im',
 )
