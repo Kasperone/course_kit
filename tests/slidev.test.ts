@@ -19,6 +19,7 @@ import {
 import { sensitiveReason } from '../src/lib/context-pack/sensitive.js'
 import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
+import { runBounded } from './helpers/bounded.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const calls = (log: string): string[][] =>
@@ -794,8 +795,20 @@ describe('remote assets and slide imports', () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     installFakeSlidev(workspace)
     writeFileSync(path.join(workspace, 'slidev-hang'), '')
-    expect(() => runBuild({ cwd: workspace, timeoutMs: 400 })).toThrow(/did not finish within/)
-  })
+    // In a child process under an outer limit: without the timeout this fails instead of freezing.
+    const run = await runBounded('slidev-build', [workspace, '400'], 20_000)
+    expect(run.hung, run.stdout + run.stderr).toBe(false)
+    expect(run.stdout).toMatch(/RESULT: Slidev did not finish within \d+ s and was stopped/)
+  }, 40_000)
+
+  it('negative control: the same hanging build never finishes without the timeout', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, 'slidev-hang'), '')
+    const run = await runBounded('slidev-build', [workspace, '0'], 6_000)
+    expect(run.hung, 'a timeout-less build of the hanging stand-in must hang').toBe(true)
+    expect(run.stdout).not.toContain('RESULT:')
+  }, 30_000)
 
   it('course build refuses a deck with a remote image or an outside import', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
