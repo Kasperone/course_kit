@@ -58,3 +58,36 @@ jobs:
           node dist/cli.js init "$tmp/target" --out "$tmp/course"
           test -f "$tmp/course/course.json"
           test -f "$tmp/course/.gitignore"
+
+  # The runner's git is much newer than the oldest one we claim to support. ubuntu:24.04 ships git 2.43,
+  # so the git-dependent test files run here against it (add a file to the list when it starts using git).
+  git-oldest:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - name: Require git 2.43
+        run: |
+          git --version
+          git --version | grep -E '^git version 2\.43\.'
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Git-dependent tests
+        run: npx vitest run tests/init.test.ts tests/cli.test.ts tests/child-env.test.ts
