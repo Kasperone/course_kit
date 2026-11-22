@@ -9,6 +9,7 @@ import {
   deckFrontmatter,
   findForbiddenBuildRefs,
   findOutsideImports,
+  localAssetRefs,
   findPlantUmlFiles,
   findRemoteAssetFiles,
   findWebFontFiles,
@@ -18,6 +19,7 @@ import {
 import { sensitiveReason } from '../src/lib/context-pack/sensitive.js'
 import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
+import { runBounded } from './helpers/bounded.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const calls = (log: string): string[][] =>
@@ -458,6 +460,9 @@ function writeSnippetFixtures(workspace: string): void {
   put('snippets/remote.txt', 'flowchart LR\n  A@{ img: "https://example.com/x.png" }\n')
   put('snippets/local.txt', 'flowchart LR\n  A --> B\n')
   put('snippets/key.pem', 'not a real key\n')
+  put('images/logo.png', 'not a real png\n')
+  put('public/hero.png', 'not a real png\n')
+  put('lessons/01-placeholder/en/pic.png', 'not a real png\n')
   put('.env', 'API_KEY=dummy-value\n')
   put('course.local.json', '{"targetRepo": "/x"}\n')
   put('target-repo/a.ts', 'x\n')
@@ -498,6 +503,95 @@ const SNIPPET_CASES: Array<[string, string, boolean]> = [
   ['a src: import of a context pack', '---\nsrc: ../context-pack.md\n---\n', true],
   ['a src: import of .env', '---\nsrc: ../../../.env\n---\n', true],
   ['a src: import of a deck', '---\nsrc: ./local.md\n---\n', false],
+]
+
+const ASSET_ENV = '../../../.env'
+/** Local file references (images, url(), frontmatter, Vue imports) in lessons/01-placeholder/en/extra.md. */
+const ASSET_CASES: Array<[string, string, boolean]> = [
+  ['an image next to the deck', '![](./pic.png)\n', false],
+  ['an image elsewhere in the workspace', '![alt](../../../images/logo.png "title")\n', false],
+  ['an image from public/', '![](/hero.png)\n', false],
+  ['an inline data: image', '![](data:image/png;base64,AAAA)\n', false],
+  [
+    'a plain link to .env (no asset import)',
+    `[x](${ASSET_ENV})\n<a href="${ASSET_ENV}">x</a>\n`,
+    false,
+  ],
+  ['<img> next to the deck', '<img src="./pic.png">\n', false],
+  ['url() next to the deck', '<style>.x { background: url(./pic.png) }</style>\n', false],
+  ['image: frontmatter next to the deck', '---\nlayout: image\nimage: ./pic.png\n---\n', false],
+  ['background: a colour', '---\nbackground: "#fff"\n---\n', false],
+  [
+    'a Vue import of a sibling file',
+    '<script setup>\nimport Foo from "./local.ts"\nimport { ref } from "vue"\n</script>\n',
+    false,
+  ],
+  ['a Markdown image of .env', `![](${ASSET_ENV})\n`, true],
+  ['with ?raw', `![](${ASSET_ENV}?raw)\n`, true],
+  ['with ?url and a fragment', `![](${ASSET_ENV}?url#x)\n`, true],
+  ['in angle brackets', `![alt](<${ASSET_ENV}>)\n`, true],
+  ['with a title and attributes', `![a](${ASSET_ENV} "t"){width=10}\n`, true],
+  ['percent-encoded', '![](..%2F..%2F..%2F.env)\n', true],
+  ['through ./', `![](./../../../.env)\n`, true],
+  ['with doubled slashes', '![](..//..//..//.env)\n', true],
+  ['a reference-style image', `![alt][r]\n\n[r]: ${ASSET_ENV}\n`, true],
+  ['<img src>', `<img src="${ASSET_ENV}">\n`, true],
+  ['<img> with a Vue :src literal', `<img :src="'${ASSET_ENV}'">\n`, true],
+  ['<img> over several lines', `<img\n  class="a"\n  src='${ASSET_ENV}'\n/>\n`, true],
+  ['<img srcset>', `<img srcset="./pic.png 1x, ${ASSET_ENV} 2x">\n`, true],
+  ['<video poster>', `<video poster="${ASSET_ENV}"></video>\n`, true],
+  ['<source src>', `<video><source src="${ASSET_ENV}"></video>\n`, true],
+  ['<input type=image>', `<input type="image" src="${ASSET_ENV}">\n`, true],
+  ['<svg><use href>', `<svg><use href="${ASSET_ENV}#a"/></svg>\n`, true],
+  ['a component :src literal', `<Foo :src="'${ASSET_ENV}'" />\n`, true],
+  ['CSS url()', `<style>.x { background: url(${ASSET_ENV}) }</style>\n`, true],
+  ['CSS url() with quotes', `<style>.x { background: url("${ASSET_ENV}") }</style>\n`, true],
+  ['CSS @import', `<style>\n@import "${ASSET_ENV}";\n</style>\n`, true],
+  ['image: frontmatter', `---\nlayout: image\nimage: ${ASSET_ENV}\n---\n`, true],
+  ['background: frontmatter', `---\nbackground: "${ASSET_ENV}"\n---\n`, true],
+  ['background: url() frontmatter', `---\nbackground: url(${ASSET_ENV})\n---\n`, true],
+  ['an image of a magic-move block', `\`\`\`\`md magic-move\n![](${ASSET_ENV})\n\`\`\`\`\n`, true],
+  ['a Vue static import', `<script setup>\nimport s from '${ASSET_ENV}?raw'\n</script>\n`, true],
+  [
+    'a Vue dynamic import',
+    `<script setup>\nconst s = import("${ASSET_ENV}?raw")\n</script>\n`,
+    true,
+  ],
+  [
+    'new URL()',
+    `<script setup>\nconst u = new URL('${ASSET_ENV}', import.meta.url)\n</script>\n`,
+    true,
+  ],
+  ['a key file', '![](../../../snippets/key.pem)\n', true],
+  ['course.local.json', '![](../../../course.local.json)\n', true],
+  ['outside the workspace (Markdown)', '![](../../../../outside.png)\n', true],
+  [
+    'outside the workspace (url())',
+    '<style>.x { background: url(../../../../outside.png) }</style>\n',
+    true,
+  ],
+  [
+    'outside the workspace (image:)',
+    '---\nlayout: image\nimage: ../../../../outside.png\n---\n',
+    true,
+  ],
+  ['an absolute path (Markdown)', '![](/etc/hostname)\n', true],
+  ['an absolute path (url())', '<style>.x { background: url(/etc/hostname) }</style>\n', true],
+  ['an absolute path (image:)', '---\nlayout: image\nimage: /etc/hostname\n---\n', true],
+  ['a file: URL', '![](file:///etc/hostname)\n', true],
+  ['/@fs/ path', '![](/@fs/etc/hostname)\n', true],
+  ['.env relative to the root', '![](/.env)\n', true],
+  ['.env through public/', '![](/../.env)\n', true],
+  ['through a symlink (Markdown)', '![](../../../linked/x.txt)\n', true],
+  [
+    'through a symlink (url())',
+    '<style>.x { background: url(../../../linked/x.txt) }</style>\n',
+    true,
+  ],
+  ['through a symlink (image:)', '---\nlayout: image\nimage: ../../../linked/x.txt\n---\n', true],
+  ['into target-repo/', '![](../../../target-repo/a.ts)\n', true],
+  ['into node_modules/', '![](../../../node_modules/pkg/x.ts)\n', true],
+  ['a context pack', '![](../context-pack.md)\n', true],
 ]
 
 describe('remote assets and slide imports', () => {
@@ -568,6 +662,56 @@ describe('remote assets and slide imports', () => {
     expect(found.length > 0, found.join('\n')).toBe(flagged)
   })
 
+  it.each(ASSET_CASES)('asset paths: %s -> flagged: %s', (_what, body, flagged) => {
+    const dir = makeTempDir('assets')
+    writeSnippetFixtures(dir)
+    const deckDir = path.join(dir, 'lessons', '01-placeholder', 'en')
+    writeFileSync(path.join(deckDir, 'extra.md'), body)
+    const found = findOutsideImports(dir)
+    expect(found.length > 0, found.join('\n')).toBe(flagged)
+  })
+
+  it('checks CSS, HTML and Vue files too, relative to the file', () => {
+    const dir = makeTempDir('assets-files')
+    writeSnippetFixtures(dir)
+    const deckDir = path.join(dir, 'lessons', '01-placeholder', 'en')
+    writeFileSync(path.join(deckDir, 'a.css'), '.x { background: url(../../../.env) }\n')
+    writeFileSync(path.join(deckDir, 'b.html'), '<img src="../../../.env">\n')
+    writeFileSync(path.join(deckDir, 'c.vue'), '<template><img src="../../../.env" /></template>\n')
+    writeFileSync(path.join(deckDir, 'ok.css'), '.x { background: url(./pic.png) }\n')
+    expect(findOutsideImports(dir)).toEqual([
+      'lessons/01-placeholder/en/a.css -> asset ../../../.env',
+      'lessons/01-placeholder/en/b.html -> asset ../../../.env',
+      'lessons/01-placeholder/en/c.vue -> asset ../../../.env',
+    ])
+  })
+
+  it('lists local asset references like Slidev resolves them', () => {
+    expect(
+      localAssetRefs(
+        [
+          '![a](./a.png "t") ![b](<./b c.png>) ![](https://x.test/r.png)',
+          '<img src="./d.png" :src="\'./e.png\'"> <a href="./f.png">x</a> <link href="./g.css">',
+          '.x { background: url("./h.png"); } @import "./i.css";',
+          'image: ./j.png',
+          'import k from "./k.ts"; import l from "vue"; const m = import("./m.ts")',
+        ].join('\n'),
+      ),
+    ).toEqual([
+      './a.png',
+      './b c.png',
+      'https://x.test/r.png',
+      './h.png',
+      './i.css',
+      './j.png',
+      './k.ts',
+      './m.ts',
+      './d.png',
+      './e.png',
+      './g.css',
+    ])
+  })
+
   it('names the import that was refused', () => {
     const dir = makeTempDir('snippets-names')
     writeSnippetFixtures(dir)
@@ -630,12 +774,41 @@ describe('remote assets and slide imports', () => {
     expect(existsSync(path.join(workspace, 'dist'))).toBe(false)
   })
 
+  it('`course build` refuses an image of the workspace .env before Slidev starts', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const log = installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, '.env'), 'ELEVENLABS_API_KEY=dummy-key-value\n')
+    const file = deck(workspace, '01-placeholder', 'en')
+    const original = readFileSync(file, 'utf8')
+    for (const body of [
+      '![](../../../.env?raw)',
+      '<style>.x { background: url(../../../.env) }</style>',
+    ]) {
+      writeFileSync(file, `${original}\n${body}\n`)
+      expect(() => runBuild({ cwd: workspace })).toThrow(/asset path.*\.env/s)
+    }
+    expect(calls(log)).toHaveLength(0)
+    expect(existsSync(path.join(workspace, 'dist'))).toBe(false)
+  })
+
   it('stops a Slidev build that does not finish', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     installFakeSlidev(workspace)
     writeFileSync(path.join(workspace, 'slidev-hang'), '')
-    expect(() => runBuild({ cwd: workspace, timeoutMs: 400 })).toThrow(/did not finish within/)
-  })
+    // In a child process under an outer limit: without the timeout this fails instead of freezing.
+    const run = await runBounded('slidev-build', [workspace, '400'], 20_000)
+    expect(run.hung, run.stdout + run.stderr).toBe(false)
+    expect(run.stdout).toMatch(/RESULT: Slidev did not finish within \d+ s and was stopped/)
+  }, 40_000)
+
+  it('negative control: the same hanging build never finishes without the timeout', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, 'slidev-hang'), '')
+    const run = await runBounded('slidev-build', [workspace, '0'], 6_000)
+    expect(run.hung, 'a timeout-less build of the hanging stand-in must hang').toBe(true)
+    expect(run.stdout).not.toContain('RESULT:')
+  }, 30_000)
 
   it('course build refuses a deck with a remote image or an outside import', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
@@ -716,6 +889,14 @@ describe('check-deck.mjs agrees with the TypeScript policy', () => {
     const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
     writeFileSync(path.join(deckDir, 'extra.md'), body)
     writeFileSync(path.join(deckDir, 'local.md'), '# local\n')
+    expect(guardFails(workspace)).toBe(findOutsideImports(workspace).length > 0)
+  })
+
+  it.each(ASSET_CASES)('asset paths: %s', async (_what, body) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    writeSnippetFixtures(workspace)
+    const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
+    writeFileSync(path.join(deckDir, 'extra.md'), body)
     expect(guardFails(workspace)).toBe(findOutsideImports(workspace).length > 0)
   })
 
