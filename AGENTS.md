@@ -28,6 +28,7 @@ course init <path-to-target-repo> [--out <dir>] [--lang pl,en] [--submodule]
 
 - `tests/init.test.ts` — creates temp git repos, runs `runInit`, asserts `course.json`, Slidev skeleton, lessons, audio tree, PlantUML guard.
 - `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it.
+- `tests/child-env.test.ts` — `childEnv()` allowlist; git runs without API keys (wrapper script on PATH); the git >= 2.38 check.
 
 Always run lint and tests before pushing.
 

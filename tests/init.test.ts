@@ -8,6 +8,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
@@ -22,7 +23,8 @@ import {
   runInit,
   SUBMODULE_PATH,
 } from '../src/commands/init.js'
-import { git, initRepoWithCommit } from './helpers/git.js'
+import { uncommittedChanges } from '../src/lib/git.js'
+import { commitAll, git, initRepo, initRepoWithCommit, writeFiles } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 /** Every file in the workspace (skipping .git internals) whose content contains `needle`. */
@@ -164,8 +166,19 @@ describe('course init', () => {
     // Slidev's component uses its own `server` prop and ignores plantUmlServer.
     writeFileSync(deck, '# x\n\n<PlantUml server="https://evil.example" code="A -> B" />\n', 'utf8')
     expect(run()).toContain('lessons')
-    // Generated context packs quote the target repo and are not decks.
+    // Slidev registers components/*.vue automatically; a component brings its own server prop.
     rmSync(deck)
+    mkdirSync(path.join(outDir, 'components'))
+    const vue = path.join(outDir, 'components', 'Arch.vue')
+    writeFileSync(
+      vue,
+      '<template><PlantUml server="https://www.plantuml.com/plantuml" code="A -> B" /></template>\n',
+      'utf8',
+    )
+    expect(run()).toContain('components')
+    writeFileSync(vue, '<template><div>ok</div></template>\n', 'utf8')
+    expect(run()).toBeNull()
+    // Generated context packs quote the target repo and are not decks.
     writeFileSync(
       path.join(outDir, 'lessons', 'en', 'context-pack.md'),
       '<PlantUml code="x"/>\n',
@@ -360,6 +373,10 @@ describe('course init', () => {
     expect(await shared('git@github.com:acme/app.git', 'ws-scp')).toBe(
       'git@github.com:acme/app.git',
     )
+    // scp syntax with an absolute path on a self-hosted server is still a network remote.
+    expect(await shared('git@server.example:/srv/git/app.git', 'ws-scp-abs')).toBe(
+      'git@server.example:/srv/git/app.git',
+    )
     // Query-string and fragment tokens are dropped (GitLab-style ?private_token=).
     expect(
       await shared(
@@ -543,6 +560,190 @@ describe('course init', () => {
       submodule: false,
     })
     expect(existsSync(marker)).toBe(false)
+  })
+
+  it('never runs filter drivers configured in the target repository', async () => {
+    const root = makeTempDir('init-filter')
+    const repoDir = path.join(root, 'target')
+    initRepo(repoDir)
+    writeFiles(repoDir, { 'clean.txt': 'a\n', 'proc.txt': 'b\n' })
+    commitAll(repoDir, 'initial')
+    const cleanMarker = path.join(root, 'clean-ran')
+    const procMarker = path.join(root, 'process-ran')
+    // Driver and attributes both live inside .git/: nothing in the tracked tree shows them.
+    writeFileSync(
+      path.join(repoDir, '.git', 'info', 'attributes'),
+      'clean.txt filter=evilclean\nproc.txt filter=evilproc\n',
+    )
+    git(repoDir, [
+      'config',
+      'filter.evilclean.clean',
+      `sh -c 'touch ${JSON.stringify(cleanMarker)}; cat'`,
+    ])
+    git(repoDir, [
+      'config',
+      'filter.evilproc.process',
+      `sh -c 'touch ${JSON.stringify(procMarker)}; exit 1'`,
+    ])
+    // A dotted driver name, a mixed-case one and one marked required must be handled too.
+    git(repoDir, [
+      'config',
+      'filter.a.b.clean',
+      `sh -c 'touch ${JSON.stringify(cleanMarker)}; cat'`,
+    ])
+    git(repoDir, ['config', 'filter.evilclean.required', 'true'])
+    const touchFiles = () => {
+      const t = new Date(Date.now() - 60_000 * Math.ceil(Math.random() * 1000))
+      for (const f of ['clean.txt', 'proc.txt']) utimesSync(path.join(repoDir, f), t, t)
+    }
+
+    // Control: a plain `git status` does run both drivers once the files' stat data changed.
+    touchFiles()
+    git(repoDir, ['status', '--porcelain'])
+    expect(existsSync(cleanMarker)).toBe(true)
+    expect(existsSync(procMarker)).toBe(true)
+    rmSync(cleanMarker)
+    rmSync(procMarker)
+
+    touchFiles()
+    const { notices } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(existsSync(cleanMarker)).toBe(false)
+    expect(existsSync(procMarker)).toBe(false)
+    expect(notices).toEqual([])
+  })
+
+  it("never runs a submodule's filter drivers either (git status descends into submodules)", () => {
+    const root = makeTempDir('init-filter-sub')
+    const inner = path.join(root, 'inner')
+    initRepoWithCommit(inner, 'f.txt')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    git(repoDir, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', inner, 'sm'])
+    commitAll(repoDir, 'add submodule')
+    const marker = path.join(root, 'submodule-driver-ran')
+    const subGitDir = git(path.join(repoDir, 'sm'), ['rev-parse', '--absolute-git-dir']).trim()
+    mkdirSync(path.join(subGitDir, 'info'), { recursive: true })
+    writeFileSync(path.join(subGitDir, 'info', 'attributes'), 'f.txt filter=evil\n')
+    git(path.join(repoDir, 'sm'), [
+      'config',
+      'filter.evil.clean',
+      `sh -c 'touch ${JSON.stringify(marker)}; cat'`,
+    ])
+    const touchFile = () => {
+      const t = new Date(Date.now() - 60_000 * Math.ceil(Math.random() * 1000))
+      utimesSync(path.join(repoDir, 'sm', 'f.txt'), t, t)
+    }
+
+    touchFile()
+    git(repoDir, ['status', '--porcelain'])
+    expect(existsSync(marker), 'control: plain git status runs it').toBe(true)
+    rmSync(marker)
+
+    touchFile()
+    expect(uncommittedChanges(repoDir)).toEqual([])
+    expect(existsSync(marker)).toBe(false)
+    // A new commit in the submodule is still reported.
+    writeFileSync(path.join(repoDir, 'sm', 'g.txt'), 'g\n')
+    commitAll(path.join(repoDir, 'sm'), 'move submodule')
+    expect(uncommittedChanges(repoDir)).toEqual(['sm'])
+  })
+
+  it("keeps filter drivers from the user's own git config", () => {
+    const root = makeTempDir('init-filter-global')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const marker = path.join(root, 'global-driver-ran')
+    const globalConfig = path.join(root, 'gitconfig')
+    // Through `git config`, which quotes the `;` (a hand-written value would start a comment).
+    git(repoDir, [
+      'config',
+      '--file',
+      globalConfig,
+      'filter.mine.clean',
+      `sh -c 'touch ${JSON.stringify(marker)}; cat'`,
+    ])
+    writeFileSync(path.join(repoDir, '.git', 'info', 'attributes'), 'README.md filter=mine\n')
+    // A driver the repository defines as well as one that is only in the global config.
+    git(repoDir, ['config', 'filter.local.clean', 'cat'])
+    const t = new Date(Date.now() - 3_600_000)
+    utimesSync(path.join(repoDir, 'README.md'), t, t)
+    writeFileSync(path.join(repoDir, 'new.txt'), 'x\n')
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    try {
+      expect(uncommittedChanges(repoDir)).toEqual(['new.txt'])
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = previous
+    }
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('reports a huge status instead of treating the target as clean', async () => {
+    const root = makeTempDir('init-huge')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    // ~1.3 MB of `status -z` output: over execFileSync's default 1 MiB buffer.
+    const names: Record<string, string> = {}
+    for (let i = 0; i < 6000; i++) names[`${String(i).padStart(5, '0')}-${'x'.repeat(200)}`] = ''
+    writeFiles(repoDir, names)
+    const { notices } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(notices).toEqual([expect.stringMatching(/6000 uncommitted change\(s\)/)])
+  })
+
+  it('says so when the uncommitted-changes check cannot run', async () => {
+    const root = makeTempDir('init-status-fails')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    writeFileSync(path.join(repoDir, '.git', 'index'), 'not an index')
+    const { notices, course } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(notices).toEqual([expect.stringMatching(/Could not check .* uncommitted changes/)])
+  })
+
+  it('treats a git directory (no work tree) as having no uncommitted changes', () => {
+    const root = makeTempDir('init-no-worktree')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    expect(uncommittedChanges(path.join(repoDir, '.git'))).toEqual([])
+  })
+
+  it('resolves relative paths against options.cwd, not the process directory', async () => {
+    const root = makeTempDir('init-cwd')
+    const pinned = initRepoWithCommit(path.join(root, 'target'))
+    expect(process.cwd()).not.toBe(root)
+    const { outDir, course } = await runInit({
+      targetRepo: 'target',
+      outDir: 'relative-out',
+      languages: ['en'],
+      submodule: false,
+      cwd: root,
+    })
+    expect(outDir).toBe(path.join(root, 'relative-out'))
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(existsSync(path.join(root, 'relative-out', 'course.json'))).toBe(true)
+    // The default output directory is next to the caller's directory too.
+    const second = await runInit({
+      targetRepo: 'target',
+      languages: ['en'],
+      submodule: false,
+      cwd: root,
+    })
+    expect(second.outDir).toBe(path.join(root, 'target-course'))
   })
 })
 

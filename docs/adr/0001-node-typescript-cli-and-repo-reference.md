@@ -83,12 +83,13 @@ Every generated deck's headmatter therefore also sets:
 - `favicon: 'data:,'`, an empty data: URL, so no icon is fetched. A `public/` file would not do:
   lesson decks have their own root, and `slidev build --base` would break an absolute path.
 
-The workspace pins `@slidev/cli` to `^51.8.2`, the version these defaults were checked against.
+The workspace pins `@slidev/cli` to `51.8.2` and `@slidev/theme-default` to `0.25.0` exactly (no caret ranges), the versions these defaults were checked against; a test requires exact versions.
 
 ## Consequences
 
 - Contributors need Node 20+; CI uses the same.
 - `course init --submodule` requires git; for **local** target paths, Git 2.38+ needs `protocol.file.allow=always` — the CLI passes that flag automatically.
 - course_kit needs git >= 2.38 and checks `git --version` before its first call: every read of a target repository pins `safe.bareRepository=explicit`, `core.fsmonitor=false` and `log.showSignature=false` on the command line (`GIT_HARDENING_ARGS`), and older git silently ignores the first.
+- The one command that can run repository-configured programs beyond that is `git status` (the uncommitted-changes check): it runs a filter driver's `clean`/`process` command for every file whose stat data changed and whose attributes name the driver, and both can live inside `.git/`. `course init` therefore lists the drivers defined in the target's own (`local`/`worktree`) config and blanks them on the command line (`-c filter.<name>.clean= …`, `required=false`), keeps drivers from the user's global/system config, and compares submodules by commit only (`--ignore-submodules=dirty`), because looking inside a submodule runs `git status` there with the submodule's own config. If the drivers cannot be listed, or `status` fails for any reason (it also has a 64 MiB output buffer), `course init` prints a notice that the check could not run instead of treating the target as clean.
 - Child processes get an allowlisted environment (`src/lib/child-env.ts`, `childEnv()`): `PATH`, `HOME`, locale, temp dir, terminal, proxy and ssh-agent variables plus `GIT_TERMINAL_PROMPT=0`. An exported API key never reaches git or anything git runs (hooks, credential helpers).
 - Future steps can add plugins without changing this ADR's core stack choice.
