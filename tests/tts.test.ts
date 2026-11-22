@@ -3,13 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runNarrate } from '../src/commands/narrate.js'
 import { runVoicesInstall } from '../src/commands/voices.js'
-import {
-  hasFfmpeg,
-  mp3Duration,
-  pcm16ToWav,
-  wavDuration,
-  wavToMp3,
-} from '../src/lib/narration/audio.js'
+import { hasFfmpeg, mp3Duration, wavDuration } from '../src/lib/narration/audio.js'
 import {
   createElevenLabsProvider,
   createPiperProvider,
@@ -21,12 +15,12 @@ import {
   PIPER_VOICES,
   voicesDir,
 } from '../src/lib/narration/voices.js'
+import { runBounded } from './helpers/bounded.js'
 import { fakeVoice } from './helpers/fake-voice.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const FAKE_PIPER = path.join(__dirname, 'helpers', 'fake-piper.mjs')
-const FAKE_FFMPEG_HANG = path.join(__dirname, 'helpers', 'fake-ffmpeg-hang.mjs')
 describe('Piper voices', () => {
   it('lists exactly the two approved voices with permissive data licences', () => {
     expect(PIPER_VOICES.map((v) => [v.name, v.datasetLicense])).toEqual([
@@ -92,6 +86,21 @@ describe('Piper voices', () => {
     expect(signals[0]).toBeInstanceOf(AbortSignal)
     // The normal path still works with the signal in place.
     await installPiperVoice(v.info.name, { env, fetch: v.fetch, registry: [v.info] })
+  }, 10_000)
+
+  it('negative control: without the abort signal a stalled download never ends', async () => {
+    const env = { COURSE_KIT_VOICES_DIR: makeTempDir('voices') }
+    const v = fakeVoice()
+    // A fetch that ignores its signal is what a removed timeout looks like to the code under test.
+    const deaf = () => new Promise<Response>(() => {})
+    const outcome = await Promise.race([
+      installPiperVoice(v.info.name, { env, fetch: deaf, registry: [v.info], timeoutMs: 50 }).then(
+        () => 'finished',
+        () => 'settled',
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 800)),
+    ])
+    expect(outcome).toBe('still waiting')
   })
 
   it('rejects unknown voices, bad names and other engines', async () => {
@@ -207,28 +216,32 @@ describe('Piper provider (fake piper binary)', () => {
     ).toThrow(/Piper is not available/)
   })
 
+  // The code under test blocks (spawnSync), so a missing timeout would freeze the suite: these run
+  // in a child process under an outer limit. The negative controls run the same scenario with the
+  // timeout disabled (0) and must hang, which shows the limit is what ends it.
   it('stops a Piper that does not finish', async () => {
-    const { env } = await installed()
-    const p = createPiperProvider({
-      lang: 'pl',
-      voice: 'pl_PL-test-medium',
-      env: { ...env, FFMPEG_BIN: '/nonexistent/ffmpeg' },
-      timeoutMs: 400,
-    })
-    process.env.PIPER_FAKE_HANG = '1'
-    try {
-      await expect(p.synthesize('x')).rejects.toThrow(/Piper did not finish within 0\.4 s/)
-    } finally {
-      delete process.env.PIPER_FAKE_HANG
-    }
-  })
+    const run = await runBounded('piper-hang', [makeTempDir('voices'), '400'], 20_000)
+    expect(run.hung, run.stdout + run.stderr).toBe(false)
+    expect(run.stdout).toMatch(/RESULT: Piper did not finish within 0\.4 s/)
+  }, 40_000)
 
-  it('stops an ffmpeg that does not finish', () => {
-    const wav = pcm16ToWav(Buffer.alloc(3200), 16000)
-    expect(() => wavToMp3(wav, FAKE_FFMPEG_HANG, 64, 400)).toThrow(
-      /ffmpeg did not finish within 0\.4 s and was stopped/,
-    )
-  })
+  it('negative control: a hung Piper never finishes without the timeout', async () => {
+    const run = await runBounded('piper-hang', [makeTempDir('voices'), '0'], 6_000)
+    expect(run.hung).toBe(true)
+    expect(run.stdout).not.toContain('RESULT:')
+  }, 30_000)
+
+  it('stops an ffmpeg that does not finish', async () => {
+    const run = await runBounded('ffmpeg-hang', ['400'], 20_000)
+    expect(run.hung, run.stdout + run.stderr).toBe(false)
+    expect(run.stdout).toMatch(/RESULT: ffmpeg did not finish within 0\.4 s and was stopped/)
+  }, 40_000)
+
+  it('negative control: a hung ffmpeg never finishes without the timeout', async () => {
+    const run = await runBounded('ffmpeg-hang', ['0'], 6_000)
+    expect(run.hung).toBe(true)
+    expect(run.stdout).not.toContain('RESULT:')
+  }, 30_000)
 
   it('refuses a voice in the wrong language', async () => {
     const { env } = await installed()
@@ -375,6 +388,25 @@ describe('ElevenLabs provider (mocked HTTP, no key, no live calls)', () => {
       timeoutMs: 50,
     })
     expect(mp3Duration(await ok.synthesize('x'))).toBeGreaterThan(1)
+  }, 10_000)
+
+  it('negative control: without the abort signal a stalled request never ends', async () => {
+    const deaf = () => new Promise<Response>(() => {})
+    const p = createElevenLabsProvider({
+      voice: 'Voice123',
+      apiKey: KEY,
+      fetch: deaf,
+      sleep: () => Promise.resolve(),
+      timeoutMs: 50,
+    })
+    const outcome = await Promise.race([
+      p.synthesize('x').then(
+        () => 'finished',
+        () => 'settled',
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 800)),
+    ])
+    expect(outcome).toBe('still waiting')
   })
 
   it('validates voice and model ids and requires a voice', () => {
