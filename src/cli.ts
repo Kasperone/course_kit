@@ -75,7 +75,11 @@ program
     'Additional globs matched against the target repo (quote them; put <lesson-id> first)',
   )
   .option('--out <file>', 'Output Markdown path (default: lessons/<id>/context-pack.md)')
-  .option('--json', 'Also write lessons/<id>/context-pack.json metadata', false)
+  .option(
+    '--json',
+    'Also write the JSON metadata next to the pack (lessons/<id>/context-pack.json, or <out>.json)',
+    false,
+  )
   .action(async (lessonId: string, opts: { files?: string[]; out?: string; json?: boolean }) => {
     try {
       const meta = await runContext({
@@ -100,7 +104,7 @@ program
 
 function fail(command: string, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
-  console.error(`course ${command} failed: ${message}`)
+  console.error(terminalSafe(`course ${command} failed: ${message}`))
   process.exitCode = 1
 }
 
@@ -112,7 +116,7 @@ program
   .action((commit: string | undefined, opts: { cwd?: string }) => {
     try {
       const result = runPin({ commit, cwd: opts.cwd })
-      for (const warning of result.warnings) console.error(`warning: ${warning}`)
+      for (const warning of result.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(
         result.changed
           ? `pinnedCommit: ${result.previous} -> ${result.pinned}`

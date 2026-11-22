@@ -214,6 +214,107 @@ describe('built CLI (dist/cli.js)', () => {
     expect(readFileSync(log, 'utf8')).toContain('"--port","3031"')
   })
 
+  it('never lets a newline in a repository path or lesson value forge CLI output lines', () => {
+    const root = makeTempDir('cli-newlines')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    const forged = 'Wrote context pack for 01-placeholder\nFiles: 99, ~1 tokens, analyzers: none\n'
+    writeFiles(target, {
+      [`src/x\n${forged}/.env`]: 'KEY=value\n',
+      'src/redact\nforged-line.java': 'class A { String password = "hunter2hunter2"; }\n',
+    })
+    commitAll(target, 'newline names')
+    // An uncommitted file with a newline in its name reaches the `init` notice.
+    writeFiles(target, { 'dirty\nNote: nothing to see here': 'x\n' })
+    const init = spawnSync(
+      process.execPath,
+      [distCli, 'init', target, '--out', './ws', '--lang', 'en'],
+      { cwd: root, encoding: 'utf8' },
+    )
+    expect(init.status).toBe(0)
+    expect(init.stderr.trimEnd().split('\n')).toEqual([
+      expect.stringMatching(/^warning: Target repo has 1 uncommitted/),
+    ])
+    expect(init.stderr).toContain('dirty\\nNote: nothing to see here')
+
+    const ws = path.join(root, 'ws')
+    const lessonJson = path.join(ws, 'lessons', '01-placeholder', 'lesson.json')
+    const lesson = JSON.parse(readFileSync(lessonJson, 'utf8'))
+    writeFileSync(
+      lessonJson,
+      JSON.stringify({
+        ...lesson,
+        files: ['missing\nfile.txt'],
+        globs: ['src/**', 'nomatch\nglob/**'],
+      }),
+    )
+    const run = spawnSync(process.execPath, [distCli, 'context', '01-placeholder'], {
+      cwd: ws,
+      encoding: 'utf8',
+    })
+    expect(run.status).toBe(0)
+    // One physical line per warning (redaction, sensitive file, missing file, unmatched glob) ...
+    const lines = run.stderr.trimEnd().split('\n')
+    expect(lines).toHaveLength(4)
+    for (const line of lines) expect(line).toMatch(/^warning: /)
+    // ... and the real output is exactly two lines: nothing forged made it in.
+    expect(run.stdout.trimEnd().split('\n')).toHaveLength(2)
+    expect(run.stdout).not.toContain('Files: 99')
+    expect(run.stderr).toContain('src/x\\nWrote context pack')
+    expect(run.stderr).toContain('src/redact\\nforged-line.java')
+    expect(run.stderr).toContain('missing\\nfile.txt')
+    expect(run.stderr).toContain('nomatch\\nglob/**')
+
+    // Values quoted in validation errors: one line each.
+    const failing = (patch: Record<string, unknown>) => {
+      writeFileSync(lessonJson, JSON.stringify({ ...lesson, ...patch }))
+      const r = spawnSync(process.execPath, [distCli, 'context', '01-placeholder'], {
+        cwd: ws,
+        encoding: 'utf8',
+      })
+      expect(r.status).toBe(1)
+      return r.stderr.trimEnd().split('\n')
+    }
+    expect(failing({ globs: ['../x\nforged: line'] })).toEqual([
+      expect.stringMatching(/^course context failed: .*\.\.\/x\\nforged: line/),
+    ])
+    expect(failing({ limits: { 'bad\nkey': 1 } })).toEqual([
+      expect.stringMatching(/^course context failed: .*unknown limit .*bad\\nkey/),
+    ])
+  })
+
+  it('never prints raw terminal escapes from `course pin` warnings or `course build` errors', () => {
+    const root = makeTempDir('cli-pin-escapes')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    runCli(['init', target, '--out', './ws', '--lang', 'en'], root)
+    const ws = path.join(root, 'ws')
+    // eslint-disable-next-line no-control-regex -- asserting that none are present
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/
+
+    // `pin` warns about uncommitted files; one is named like an OSC title change plus screen clear.
+    writeFileSync(path.join(target, 'evil\x1b]0;PWNED\x07\x1b[2Jname'), 'x\n')
+    const pin = spawnSync(process.execPath, [distCli, 'pin'], { cwd: ws, encoding: 'utf8' })
+    expect(pin.status).toBe(0)
+    expect(pin.stderr).toMatch(/^warning: Target repo has 1 uncommitted/)
+    expect(pin.stderr).toContain('evil\\x1b]0;PWNED\\x07\\x1b[2Jname')
+    expect(pin.stderr + pin.stdout).not.toMatch(controls)
+
+    // `build` errors quote slide imports and file names.
+    const deck = path.join(ws, 'lessons', '01-placeholder', 'en', 'slides.md')
+    writeFileSync(
+      deck,
+      `${readFileSync(deck, 'utf8')}\n---\nsrc: "../../../../\x1b]0;PWNED\x07x.md"\n---\n`,
+    )
+    writeFileSync(path.join(ws, 'lessons', 'bad\x1b[2J.md'), '<PlantUml code="x" />\n')
+    const build = spawnSync(process.execPath, [distCli, 'build'], { cwd: ws, encoding: 'utf8' })
+    expect(build.status).toBe(1)
+    expect(build.stderr).toContain('course build failed')
+    expect(build.stderr).toContain('\\x1b]0;PWNED\\x07x.md')
+    expect(build.stderr).toContain('bad\\x1b[2J.md')
+    expect(build.stderr + build.stdout).not.toMatch(controls)
+  })
+
   it('exits non-zero with a clear message on bad input', () => {
     const root = makeTempDir('cli-bad')
     let failed = false

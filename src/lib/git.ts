@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { childEnv } from './child-env.js'
+import { escapeControls } from './context-pack/markdown.js'
 
 /** Full SHA-1 (40 hex) or SHA-256 (64 hex) object name. */
 export const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -11,6 +12,8 @@ export const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
  * config: implicit bare repositories are refused (a planted bare repo next to or inside a workspace
  * could otherwise be picked up as the target and run its `core.fsmonitor`/`gpg.program`), signatures
  * are never verified, and no fsmonitor hook runs. Every git call on a target repository uses these.
+ * Filter drivers are not covered here because their names are only known per repository:
+ * `repoFilterOverrides()` blanks them before the one command that can run them (`status`).
  */
 export const GIT_HARDENING_ARGS = [
   '-c',
@@ -57,6 +60,9 @@ export function requireModernGit(): void {
   gitVersionChecked = true
 }
 
+/** `git status` on a huge untracked tree outgrows execFileSync's default 1 MiB buffer. */
+const GIT_MAX_BUFFER = 64 * 1024 * 1024
+
 /** Read-only git call on a target repository: hardened, no index refresh, never prompts. */
 function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}): string {
   requireModernGit()
@@ -76,6 +82,7 @@ function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}
       stdio: ['ignore', 'pipe', 'pipe'],
       env: childEnv(),
       timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
     },
   )
   return opts.trim === false ? out : out.trim()
@@ -119,7 +126,7 @@ export function readHeadCommit(repoPath: string): string {
     throw new Error(`Could not read HEAD commit from ${repoPath}: ${gitErrorDetail(err)}`)
   }
   if (!FULL_SHA_RE.test(hash)) {
-    throw new Error(`Unexpected commit hash from ${repoPath}: ${hash}`)
+    throw new Error(`Unexpected commit hash from ${repoPath}: ${JSON.stringify(hash)}`)
   }
   return hash
 }
@@ -169,17 +176,76 @@ export function resolveCommit(
 }
 
 /**
- * Paths with uncommitted changes (staged, unstaged or untracked, not ignored) in a working tree.
- * Read-only: `--no-optional-locks` keeps `git status` from refreshing and rewriting the index.
- * Returns [] for bare repositories or when status cannot be read.
+ * `-c` overrides that blank every filter driver the repository itself defines (`local` and
+ * `worktree` scope; `.git/config`, `include.path` files and `config.worktree`). `git status`
+ * runs a driver's `clean`/`process` command for each file whose stat data changed and whose
+ * attributes (also repository-local: `.git/info/attributes`) name it, so a target that came from
+ * an archive or a shared folder could run programs. Drivers from the user's global and system
+ * config (for example git-lfs) are theirs and stay. `required=false` keeps a blanked driver that
+ * the repository marks as required from failing the whole command.
+ *
+ * Fails closed: only "no such key" (exit 1) means there is nothing to override; any other failure
+ * throws, so `status` never runs with drivers we could not list.
  */
-export function uncommittedChanges(repoPath: string): string[] {
+function repoFilterOverrides(repoPath: string): string[] {
   let out: string
   try {
-    out = gitRead(repoPath, ['status', '--porcelain=v1', '-z'], { trim: false })
-  } catch {
-    return []
+    out = gitRead(
+      repoPath,
+      [
+        'config',
+        '-z',
+        '--show-scope',
+        '--name-only',
+        '--get-regexp',
+        '^filter\\..+\\.(clean|process)$',
+      ],
+      { trim: false },
+    )
+  } catch (err) {
+    if ((err as { status?: number }).status === 1) return []
+    throw err
   }
+  // -z output: scope NUL key NUL, repeated.
+  const fields = out.split('\0')
+  const names = new Set<string>()
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const scope = fields[i]
+    const key = fields[i + 1]!
+    if (scope !== 'local' && scope !== 'worktree') continue
+    names.add(key.slice('filter.'.length).replace(/\.(clean|process)$/, ''))
+  }
+  return [...names].flatMap((name) => [
+    '-c',
+    `filter.${name}.clean=`,
+    '-c',
+    `filter.${name}.process=`,
+    '-c',
+    `filter.${name}.required=false`,
+  ])
+}
+
+/**
+ * Paths with uncommitted changes (staged, unstaged or untracked, not ignored) in a working tree.
+ * Read-only: `--no-optional-locks` keeps `git status` from refreshing and rewriting the index, and
+ * the target's own filter drivers are blanked (see `repoFilterOverrides`). Submodules are only
+ * compared by commit (`--ignore-submodules=dirty`): looking inside one starts a `git status` in
+ * it, which would run the drivers of the submodule's own config. [] when there is no work tree;
+ * any other failure throws, so a clean answer is never a guess.
+ */
+export function uncommittedChanges(repoPath: string): string[] {
+  if (gitRead(repoPath, ['rev-parse', '--is-inside-work-tree']) !== 'true') return []
+  const out = gitRead(
+    repoPath,
+    [
+      ...repoFilterOverrides(repoPath),
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--ignore-submodules=dirty',
+    ],
+    { trim: false },
+  )
   const paths: string[] = []
   const records = out.split('\0')
   for (let i = 0; i < records.length; i++) {
@@ -194,9 +260,19 @@ export function uncommittedChanges(repoPath: string): string[] {
 
 /** Human-readable warning for uncommitted changes in the target, or null if it is clean. */
 export function uncommittedWarning(repoPath: string, commit: string): string | null {
-  const changes = uncommittedChanges(repoPath)
+  let changes: string[]
+  try {
+    changes = uncommittedChanges(repoPath)
+  } catch (err) {
+    const detail = gitErrorDetail(err).split('\n')[0]
+    return (
+      `Could not check the target repo for uncommitted changes (${detail}); the course is pinned to ` +
+      `${commit.slice(0, 12)} whatever the working tree holds.`
+    )
+  }
   if (changes.length === 0) return null
-  const shown = changes.slice(0, 5).join(', ')
+  // File names come from the target: one physical line per notice, whatever the names contain.
+  const shown = changes.slice(0, 5).map(escapeControls).join(', ')
   const more = changes.length > 5 ? ` and ${changes.length - 5} more` : ''
   return (
     `Target repo has ${changes.length} uncommitted change(s) that are not part of the pinned commit ` +
@@ -230,8 +306,9 @@ export function readShareableRemote(repoPath: string): string | null {
       return null
     }
   }
-  // scp-like syntax: git@github.com:owner/repo.git (the user part is a login name, not a secret)
-  if (/^[\w.-]+@[\w.-]+:[^/\\]/.test(url)) return url
+  // scp-like syntax: git@github.com:owner/repo.git or git@host:/srv/git/app.git (the user part is a
+  // login name, not a secret). The user@host: prefix is what tells it from a local path.
+  if (/^[\w.-]+@[\w.-]+:/.test(url)) return url
   return null
 }
 
