@@ -174,6 +174,18 @@ describe('secret redaction', () => {
     for (const line of keep) expect(redactSecrets(line, 'README.md').text, line).toBe(line)
   })
 
+  it('redacts a URL password that contains @ or :, and bare user:pass@host:port', () => {
+    const { text } = redactSecrets(
+      ['a = "postgres://app:p@ss:w0rd@db/app"', 'HTTPS_PROXY=user:s3cret@proxy:3128'].join('\n'),
+      'README.md',
+    )
+    expect(text).toBe(
+      ['a = "postgres://app:‹redacted›@db/app"', 'HTTPS_PROXY=user:‹redacted›@proxy:3128'].join(
+        '\n',
+      ),
+    )
+  })
+
   it('redacts bearer tokens but keeps the prefix and templates', () => {
     const line = `curl -H "Authorization: Bearer ${BEARER_TOKEN}" https://api.example/v1`
     const { text, redactions } = redactSecrets(line, 'README.md')

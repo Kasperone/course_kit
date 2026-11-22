@@ -86,6 +86,32 @@ describe('built CLI (dist/cli.js)', () => {
     expect(existsSync(path.join(root, 'ws'))).toBe(false)
   })
 
+  it('never prints the password of a proxy URL that git echoes in its error', () => {
+    const root = makeTempDir('cli-proxy-url')
+    const target = path.join(root, 'my-repo')
+    initRepoWithCommit(target)
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    // git >= 2.38 for the version check; every other call fails the way git does behind a proxy.
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.45.0"; exit 0; fi\n' +
+        'echo "fatal: unable to access: proxy http://user:s3cr3t-pw@proxy.example:3128/ refused" >&2\n' +
+        'exit 128\n',
+      { mode: 0o755 },
+    )
+    const run = spawnSync(process.execPath, [distCli, 'init', target, '--out', './ws'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+    })
+    expect(run.status).not.toBe(0)
+    expect(run.stderr).toContain('course init failed')
+    // The error quotes git's output (the stand-in), so the proxy URL is there, minus its password.
+    expect(run.stderr).toContain('http://user:‹redacted›@proxy.example:3128/')
+    expect(run.stderr + run.stdout).not.toContain('s3cr3t-pw')
+  })
+
   it('runs `lesson new` and `context --out x.md --json` from a workspace', () => {
     const root = makeTempDir('cli-context')
     const target = path.join(root, 'repo')

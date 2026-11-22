@@ -80,5 +80,7 @@ any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New em
 `redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Anything the CLI prints that
 quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`), and each such fragment is
 escaped where it enters the message (`escapeControls()`, or `JSON.stringify()` for a rejected value): `terminalSafe`
-keeps line breaks for git's multi-line errors, so a newline in a file name would otherwise forge a line. Extend `src/analyzers/` for
+keeps line breaks for git's multi-line errors, so a newline in a file name would otherwise forge a line. It also drops the
+password of any `user:password@host` URL (`redactUrlCredentials()` in `redact.ts`): tools echo proxy URLs such as
+`HTTPS_PROXY=http://user:secret@proxy:3128` in their errors, and the proxy variables stay in the child-env allowlists. Extend `src/analyzers/` for
 language-specific graphs.
