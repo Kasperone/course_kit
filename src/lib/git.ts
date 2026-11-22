@@ -189,7 +189,17 @@ function repoFilterOverrides(repoPath: string): string[] {
  * any other failure throws, so a clean answer is never a guess.
  */
 export function uncommittedChanges(repoPath: string): string[] {
-  if (gitRead(repoPath, ['rev-parse', '--is-inside-work-tree']) !== 'true') return []
+  let inside: string
+  try {
+    inside = gitRead(repoPath, ['rev-parse', '--is-inside-work-tree'])
+  } catch (err) {
+    // A bare repository, or a `.git` directory passed as the path: git < 2.45 treats the latter as
+    // an implicit bare repository and `safe.bareRepository=explicit` refuses it. Either way there
+    // is no work tree to have changes in.
+    if (/cannot use bare repository/i.test(gitErrorDetail(err))) return []
+    throw err
+  }
+  if (inside !== 'true') return []
   const out = gitRead(
     repoPath,
     [
