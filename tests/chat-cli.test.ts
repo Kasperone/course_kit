@@ -21,7 +21,15 @@ const envLog = (ws: string) =>
   readFileSync(path.join(ws, 'slidev-env.log'), 'utf8')
     .trim()
     .split('\n')
-    .map((l) => JSON.parse(l) as { port: string | null; secrets: string[]; status: number | null })
+    .map((l) => {
+      // The fake also logs its whole environment (checked in slidev.test.ts); only the chat fields here.
+      const { port, secrets, status } = JSON.parse(l) as {
+        port: string | null
+        secrets: string[]
+        status: number | null
+      }
+      return { port, secrets, status }
+    })
 
 describe('course serve', () => {
   it('needs a built course, then serves dist/ and the API on 127.0.0.1', async () => {

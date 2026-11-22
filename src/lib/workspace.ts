@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { resolveCourseTargetRepo, TARGET_REPO_ENV, type CourseJson } from '../commands/init.js'
 import { parseChatSettings } from './chat/config.js'
@@ -78,14 +78,54 @@ function physical(p: string): string {
   }
 }
 
+/** Same device and inode: the same directory however its path is spelled (case, bind mount, ...). */
+type StatFn = (p: string) => { dev: number | bigint; ino: number | bigint }
+
+/**
+ * True if `target` or one of its ancestors is the workspace directory itself, by identity. A path
+ * comparison alone is case-sensitive: on a case-insensitive filesystem `../MY-COURSE/evil` is inside
+ * a workspace cloned as `my-course/`, and the strings differ. Walks up from the target's real path.
+ */
+export function targetIsInsideByIdentity(
+  courseDir: string,
+  target: string,
+  stat: StatFn = (p) => statSync(p),
+): boolean {
+  let workspace: ReturnType<StatFn>
+  try {
+    workspace = stat(courseDir)
+  } catch {
+    return false
+  }
+  let dir = physical(target)
+  for (;;) {
+    try {
+      const s = stat(dir)
+      if (s.ino === workspace.ino && s.dev === workspace.dev) return true
+    } catch {
+      // not there (yet): keep walking up
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return false
+    dir = parent
+  }
+}
+
 /**
  * Refuse a target inside the workspace unless it is the submodule. course.json and even the
  * gitignored course.local.json come with a shared workspace, so they could point at repository
- * files planted in it (e.g. a committed bare repo whose config runs programs).
+ * files planted in it (e.g. a committed bare repo whose config runs programs). The path check
+ * and the identity check back each other up, and `safe.bareRepository=explicit` backs up both.
  */
-function assertTargetOutsideWorkspace(courseDir: string, target: string): void {
+export function assertTargetOutsideWorkspace(
+  courseDir: string,
+  target: string,
+  stat?: StatFn,
+): void {
   const rel = path.relative(physical(courseDir), physical(target))
-  if (rel === '' || !(rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))) {
+  const inside =
+    rel === '' || !(rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
+  if (inside || targetIsInsideByIdentity(courseDir, target, stat)) {
     throw new Error(
       `Target repo ${target} is inside the course workspace. Use --submodule mode, or set ${TARGET_REPO_ENV} to a clone outside it.`,
     )

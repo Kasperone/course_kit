@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { withoutSecrets } from './env.js'
-import { FULL_SHA_RE } from './git.js'
+import { childEnv } from './child-env.js'
+import { FULL_SHA_RE, GIT_HARDENING_ARGS, GIT_TIMEOUT_MS, requireModernGit } from './git.js'
 
 /**
  * Read-only access to a target repository at a pinned commit, via the object database only.
@@ -10,10 +10,11 @@ import { FULL_SHA_RE } from './git.js'
  * - paths are parsed from NUL-separated output (`-z`), so quoting and non-ASCII names are safe;
  * - pathspecs are literal (`--literal-pathspecs`), so file names are never pathspec magic;
  * - stderr is captured, never printed to the user's terminal;
- * - config that can run programs is pinned on the command line, which overrides repository config:
- *   implicit bare repositories are refused (`safe.bareRepository=explicit`; a shared workspace could
- *   commit a bare repo's files and make it the target), signatures are never verified (no
- *   `gpg.program`), and no fsmonitor hook runs.
+ * - config that can run programs is pinned on the command line, which overrides repository config
+ *   (`GIT_HARDENING_ARGS`): implicit bare repositories are refused (a shared workspace could commit
+ *   a bare repo's files and make it the target), signatures are never verified (no `gpg.program`),
+ *   and no fsmonitor hook runs;
+ * - git runs with an allowlisted environment (`childEnv()`), so no API key reaches it or its hooks.
  */
 
 export type TreeEntry = {
@@ -29,28 +30,22 @@ export type TreeEntry = {
 
 const BASE_ARGS = [
   '--no-pager',
+  '--no-optional-locks',
   '--literal-pathspecs',
   '-c',
   'core.quotePath=false',
-  '-c',
-  'safe.bareRepository=explicit',
-  '-c',
-  'log.showSignature=false',
-  '-c',
-  'core.fsmonitor=false',
+  ...GIT_HARDENING_ARGS,
 ]
 
-/** A read of a large repository is still seconds; a hung git (e.g. a lock on NFS) must not hang us. */
-const GIT_TIMEOUT_MS = 120_000
-
 function git(repo: string, args: string[], opts: { input?: string; maxBuffer?: number } = {}) {
+  requireModernGit()
   return execFileSync('git', [...BASE_ARGS, '-C', repo, ...args], {
     input: opts.input,
     maxBuffer: opts.maxBuffer ?? 64 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // A read of a large repository is still seconds; a hung git must not hang us.
     timeout: GIT_TIMEOUT_MS,
-    // Provider keys never reach git or anything it spawns (hooks, helpers).
-    env: withoutSecrets(),
+    env: childEnv(),
   })
 }
 
@@ -142,13 +137,20 @@ export function blobToText(buf: Buffer | undefined): string | null {
   return buf.toString('utf8')
 }
 
+export type GitLog = { entries: string[]; error: string | null }
+
+/**
+ * Recent commits that touched `paths`. A failure (timeout, a path list too long for the command
+ * line) is returned, not hidden: the pack then says the history is missing instead of claiming
+ * there are no entries.
+ */
 export function logTouchingPaths(
   repo: string,
   commit: string,
   paths: string[],
   maxEntries: number,
-): string[] {
-  if (paths.length === 0) return []
+): GitLog {
+  if (paths.length === 0) return { entries: [], error: null }
   assertFullSha(commit)
   const args = [
     'log',
@@ -162,12 +164,13 @@ export function logTouchingPaths(
     ...paths,
   ]
   try {
-    return git(repo, args)
+    const entries = git(repo, args)
       .toString('utf8')
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean)
-  } catch {
-    return []
+    return { entries, error: null }
+  } catch (err) {
+    return { entries: [], error: stderrOf(err) }
   }
 }

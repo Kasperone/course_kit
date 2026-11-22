@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { runInit } from '../../src/commands/init.js'
-import { commitAll, initRepo, writeFiles } from './git.js'
+import { commitAll, git, initRepo, writeFiles } from './git.js'
 import { makeTempDir } from './tmp.js'
 
 export function writeJavaSampleRepo(repoDir: string): string {
@@ -25,6 +25,11 @@ export async function makeWorkspace(
   const root = makeTempDir('ws')
   const repoDir = path.join(root, 'target')
   const pinned = populate(repoDir)
+  if (opts.submodule) {
+    // --submodule needs a network origin; a tracking ref marks the pinned commit as pushed.
+    git(repoDir, ['remote', 'add', 'origin', 'https://git.example/acme/app.git'])
+    git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
+  }
   const workspace = path.join(root, 'course')
   await runInit({
     targetRepo: repoDir,

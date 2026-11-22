@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { withoutSecrets } from '../lib/env.js'
 import { assertNoSymlinkBelow, mkdirInside, writeFileInside } from '../lib/fs-safe.js'
 import { audioDuration, type AudioFormat } from '../lib/narration/audio.js'
 import {
@@ -23,6 +22,8 @@ import {
   type TtsProvider,
 } from '../lib/narration/providers.js'
 import type { FetchLike } from '../lib/narration/voices.js'
+import { childEnv } from '../lib/child-env.js'
+import { GIT_TIMEOUT_MS } from '../lib/git.js'
 import { validateLanguage, validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspaceConfig } from '../lib/workspace.js'
 
@@ -40,7 +41,8 @@ function git(courseDir: string, args: string[]): { status: number; stdout: strin
     const stdout = execFileSync('git', ['--no-optional-locks', '-C', courseDir, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      env: withoutSecrets(),
+      env: childEnv(),
+      timeout: GIT_TIMEOUT_MS,
     })
     return { status: 0, stdout }
   } catch (err) {

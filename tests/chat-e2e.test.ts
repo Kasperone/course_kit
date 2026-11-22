@@ -18,7 +18,7 @@ import { slidevBin } from '../src/commands/slidev.js'
 import { resolveChatConfig } from '../src/lib/chat/config.js'
 import { createAnthropicProvider } from '../src/lib/chat/provider.js'
 import { startChatServer } from '../src/lib/chat/server.js'
-import { withoutSecrets } from '../src/lib/env.js'
+import { childEnv } from '../src/lib/child-env.js'
 import { findForbiddenBuildRefs } from '../src/lib/slidev.js'
 import { DECK, PACK, SHA, parseSse, raw } from './helpers/chat.js'
 import { startFakeAnthropic } from './helpers/fake-anthropic.js'
@@ -60,11 +60,15 @@ function probeWorkspace(): { dir: string; entry: string } {
   return { dir, entry: path.join(lesson, 'en', 'slides.md') }
 }
 
+/** Like course dev/build: an allowlisted environment, plus what Node, Vite and Slidev read. */
+const slidevTestEnv = () =>
+  childEnv({ extra: ['NODE_*', 'VITE_*', 'SLIDEV_*', 'DEBUG', 'BROWSER'] })
+
 function slidevBuild(entry: string, out: string, base: string): void {
   execFileSync(
     process.execPath,
     [slidevBin(workspace), 'build', entry, '--out', out, '--base', base, '--router-mode', 'hash'],
-    { cwd: workspace, stdio: 'pipe', env: withoutSecrets() },
+    { cwd: workspace, stdio: 'pipe', env: slidevTestEnv() },
   )
 }
 
@@ -221,7 +225,7 @@ describe.skipIf(!installed)('Q&A chat with real Slidev (examples/faktura)', () =
     const child = spawn(process.execPath, [slidevBin(workspace), entry, '--port', String(port)], {
       cwd: workspace,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...withoutSecrets(), COURSE_CHAT_PORT: String(chat.port) },
+      env: { ...slidevTestEnv(), COURSE_CHAT_PORT: String(chat.port) },
     })
     let out = ''
     try {

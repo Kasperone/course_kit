@@ -3,6 +3,7 @@ import { runAsk } from './commands/ask.js'
 import { runClean } from './commands/clean.js'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
+import { terminalSafe } from './lib/terminal.js'
 import { runLessonNew } from './commands/lesson-new.js'
 import { runNarrate } from './commands/narrate.js'
 import { runVoicesInstall, runVoicesList } from './commands/voices.js'
@@ -22,12 +23,14 @@ program
   .command('init')
   .description('Create a new course workspace from a target git repository')
   .argument('<path-to-target-repo>', 'Path to the repository the course explains')
-  .option('--out <dir>', 'Output directory for the course workspace')
-  .option('--lang <codes>', 'Comma-separated lesson languages (default: pl,en)', 'pl,en')
+  .option(
+    '--out <dir>',
+    'Output directory for the course workspace (default: ./<repo>-course in the current directory)',
+  )
+  .option('--lang <codes>', 'Comma-separated lesson languages', 'pl,en')
   .option(
     '--submodule',
-    'Also add the target repo as a git submodule at target-repo/ (default: pinned path only)',
-    false,
+    'Also add the target repo as a git submodule at target-repo/ (the target needs a network origin)',
   )
   .action(async (target: string, opts: { out?: string; lang?: string; submodule?: boolean }) => {
     try {
@@ -38,13 +41,13 @@ program
         submodule: opts.submodule,
       })
       const { outDir, course, warnings } = await runInit(options)
-      for (const warning of warnings) console.error(`warning: ${warning}`)
-      console.log(`Course workspace created at ${outDir}`)
+      for (const warning of warnings) console.error(terminalSafe(`warning: ${warning}`))
+      console.log(terminalSafe(`Course workspace created at ${outDir}`))
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course init failed: ${message}`)
+      console.error(terminalSafe(`course init failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -58,10 +61,10 @@ lesson
   .action((lessonId: string) => {
     try {
       const { lessonRoot } = runLessonNew({ lessonId })
-      console.log(`Lesson created at ${lessonRoot}`)
+      console.log(terminalSafe(`Lesson created at ${lessonRoot}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course lesson new failed: ${message}`)
+      console.error(terminalSafe(`course lesson new failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -84,7 +87,7 @@ program
         out: opts.out,
         json: Boolean(opts.json),
       })
-      for (const warning of meta.warnings) console.error(`warning: ${warning}`)
+      for (const warning of meta.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(`Wrote context pack for ${lessonId}`)
       console.log(
         `Files: ${meta.selectedFiles.length}, ~${meta.tokenEstimate} tokens, analyzers: ${
@@ -93,14 +96,14 @@ program
       )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course context failed: ${message}`)
+      console.error(terminalSafe(`course context failed: ${message}`))
       process.exitCode = 1
     }
   })
 
 function fail(command: string, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
-  console.error(`course ${command} failed: ${message}`)
+  console.error(terminalSafe(`course ${command} failed: ${message}`))
   process.exitCode = 1
 }
 
@@ -112,7 +115,7 @@ program
   .action((commit: string | undefined, opts: { cwd?: string }) => {
     try {
       const result = runPin({ commit, cwd: opts.cwd })
-      for (const warning of result.warnings) console.error(`warning: ${warning}`)
+      for (const warning of result.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(
         result.changed
           ? `pinnedCommit: ${result.previous} -> ${result.pinned}`
@@ -151,7 +154,8 @@ program
     }
   })
 
-const parsePort = (v: string) => Number.parseInt(v, 10)
+/** Digits only: `3000abc`, `1e3` and `0x1f90` are rejected by the integer check downstream. */
+const parsePort = (v: string) => (/^\d+$/.test(v) ? Number(v) : Number.NaN)
 
 program
   .command('dev')
@@ -360,7 +364,7 @@ program
           prune: Boolean(opts.prune),
           dryRun: Boolean(opts.dryRun),
           log: (m) => console.log(m),
-          warn: (m) => console.error(`warning: ${m}`),
+          warn: (m) => console.error(terminalSafe(`warning: ${m}`)),
         })
         if (opts.dryRun) return
         console.log(`Audio quality: ${result.quality}`)
