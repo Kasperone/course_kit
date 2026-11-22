@@ -83,7 +83,14 @@ export function verifyCommit(repo: string, commit: string): void {
 /** Every entry of the commit's tree (recursive), with sizes, from a single git process. */
 export function listTreeAtCommit(repo: string, commit: string): TreeEntry[] {
   assertFullSha(commit)
-  const out = git(repo, ['ls-tree', '-r', '-z', '-l', '--full-tree', '--end-of-options', commit])
+  let out: Buffer
+  try {
+    out = git(repo, ['ls-tree', '-r', '-z', '-l', '--full-tree', '--end-of-options', commit])
+  } catch (err) {
+    // `-l` needs each blob's size; older git (no GIT_NO_LAZY_FETCH) fails on the blocked fetch.
+    if (isBlockedFetch(err)) throw partialCloneError(repo)
+    throw err
+  }
   const entries: TreeEntry[] = []
   let unreadable = 0
   for (const record of out.toString('utf8').split('\0')) {
@@ -129,7 +136,7 @@ export function readBlobs(
     })
   } catch (err) {
     // Older git (no GIT_NO_LAZY_FETCH) fails on the blocked fetch instead of reporting "missing".
-    if (/promisor|transport .* not allowed/i.test(stderrOf(err))) throw partialCloneError(repo)
+    if (isBlockedFetch(err)) throw partialCloneError(repo)
     throw err
   }
   let missing = 0
@@ -150,6 +157,11 @@ export function readBlobs(
   }
   if (missing > 0) throw partialCloneError(repo, missing)
   return result
+}
+
+/** git failed because it tried to lazily fetch a missing object and `protocol.allow=never` stopped it. */
+function isBlockedFetch(err: unknown): boolean {
+  return /promisor|transport .* not allowed/i.test(stderrOf(err))
 }
 
 function partialCloneError(repo: string, missing?: number): Error {

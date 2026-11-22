@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -728,6 +729,32 @@ describe('course init', () => {
     const repoDir = path.join(root, 'target')
     initRepoWithCommit(repoDir)
     expect(uncommittedChanges(path.join(repoDir, '.git'))).toEqual([])
+  })
+
+  it('git < 2.45 refuses a .git directory under safe.bareRepository=explicit: still no changes, other errors still throw', () => {
+    const root = makeTempDir('init-old-git-dotgit')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const bin = makeTempDir('init-old-git-bin')
+    // Stand-in for git 2.43: it refuses `rev-parse --is-inside-work-tree` like an implicit bare
+    // repository (the real message), or fails differently when a `fail` file is next to it (git runs with an allowlisted env).
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = --is-inside-work-tree ]; then\n' +
+        '    if [ -e "$(dirname "$0")/fail" ]; then echo "fatal: something else broke" >&2; exit 128; fi\n' +
+        "    echo \"fatal: cannot use bare repository '$PWD' (safe.bareRepository is 'explicit')\" >&2; exit 128\n" +
+        '  fi\ndone\nPATH="${PATH#*:}" exec git "$@"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const saved = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${saved}`
+    try {
+      expect(uncommittedChanges(path.join(repoDir, '.git'))).toEqual([])
+      writeFileSync(path.join(bin, 'fail'), '')
+      expect(() => uncommittedChanges(path.join(repoDir, '.git'))).toThrow(/something else broke/)
+    } finally {
+      process.env.PATH = saved
+    }
   })
 
   it('resolves relative paths against options.cwd, not the process directory', async () => {
