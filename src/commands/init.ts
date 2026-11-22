@@ -195,12 +195,14 @@ export async function runInit(
   options: InitOptions,
 ): Promise<{ outDir: string; course: CourseJson; warnings: string[] }> {
   const languages = validateLanguages(options.languages)
-  const targetRepo = resolveTargetRepo(options.targetRepo)
+  // Relative paths resolve against the caller's directory (CLI: process.cwd()), not the process's.
+  const base = options.cwd ?? process.cwd()
+  const targetRepo = resolveTargetRepo(path.resolve(base, options.targetRepo))
   const pinnedCommit = readHeadCommit(targetRepo)
   const warnings: string[] = []
   const dirty = uncommittedWarning(targetRepo, pinnedCommit)
   if (dirty) warnings.push(dirty)
-  const outDir = path.resolve(options.outDir ?? defaultOutDir(targetRepo, options.cwd))
+  const outDir = path.resolve(base, options.outDir ?? defaultOutDir(targetRepo, options.cwd))
   assertOutsideTarget(outDir, targetRepo)
 
   if (existsSync(outDir) && requireNotEmpty(outDir)) {

@@ -52,7 +52,9 @@ export function validateRepoPattern(pattern: unknown, what: string): string {
   }
   const p = pattern.trim()
   if (p.startsWith('/') || /^[a-z]:/i.test(p) || p.includes('\\') || p.split('/').includes('..')) {
-    throw new Error(`${what} must be relative to the target repo root without "..": ${pattern}`)
+    throw new Error(
+      `${what} must be relative to the target repo root without "..": ${JSON.stringify(pattern)}`,
+    )
   }
   return p
 }
@@ -64,7 +66,9 @@ export function validateRelativeDir(value: unknown, what: string): string {
     !/^[\w.-]+(\/[\w.-]+)*$/.test(value) ||
     value.split('/').some((seg) => seg === '..' || seg === '.')
   ) {
-    throw new Error(`${what} must be a relative directory inside the workspace: ${String(value)}`)
+    throw new Error(
+      `${what} must be a relative directory inside the workspace: ${JSON.stringify(value)}`,
+    )
   }
   return value
 }

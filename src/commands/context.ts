@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { buildContextPack, defaultPackPaths } from '../lib/context-pack/build.js'
 import { readLessonJson } from '../lib/lesson.js'
-import { validateLessonId } from '../lib/validate.js'
+import { validateLessonId, validateRepoPattern } from '../lib/validate.js'
 import { lessonDir, resolveWorkspace } from '../lib/workspace.js'
 
 export type ContextOptions = {
@@ -29,7 +29,9 @@ export async function runContext(options: ContextOptions) {
   }
   const lesson = readLessonJson(root)
   const defaults = defaultPackPaths(courseDir, options.lessonId)
-  const outMarkdown = options.out ? path.resolve(options.out) : defaults.md
+  const outMarkdown = options.out
+    ? path.resolve(options.cwd ?? process.cwd(), options.out)
+    : defaults.md
   const outJson = options.json
     ? options.out
       ? jsonPathFor(outMarkdown)
@@ -40,7 +42,7 @@ export async function runContext(options: ContextOptions) {
     course,
     repoPath: targetRepoPath,
     lesson,
-    cliFileGlobs: options.files ?? [],
+    cliFileGlobs: (options.files ?? []).map((g) => validateRepoPattern(g, '--files')),
     outMarkdown,
     outJson,
     courseDir,

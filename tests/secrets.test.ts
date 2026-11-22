@@ -13,6 +13,8 @@ const SK = ['sk', 'live', 'SECRET123'].join('-')
 const GHP = 'ghp_' + 'a'.repeat(36)
 const AWS = 'AKIA' + 'ABCDEFGHIJKLMNOP'
 const EL_KEY = ['sk', 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718'].join('_')
+const BEARER_TOKEN = 'abcdef0123456789ABCDEF0123456789xyz'
+const KUBE_TOKEN = 'kube-admin-token-0123456789'
 const PEM_BEGIN = '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----'
 const PEM_END = '-----END OPENSSH ' + 'PRIVATE KEY-----'
 
@@ -23,7 +25,10 @@ function writeHostileRepo(dir: string): string {
     'README.md': `# Target\n\nUse key ${GHP} for the demo.\n\n\`\`\`sh\nexport ELEVENLABS_API_KEY=${EL_KEY}\n\`\`\`\n`,
     'scripts/deploy.sh':
       '#!/bin/sh\nexport DB_PASSWORD=hunter2hunter2\ndocker run -e TOKEN=$TOKEN_FROM_CI app\n',
-    Dockerfile: 'FROM node:22\nENV API_TOKEN=abcd1234efgh5678\nENV PORT=8080\n',
+    Dockerfile:
+      'FROM node:22\nENV API_TOKEN=abcd1234efgh5678\nENV DB_PASSWORD=admin1\nENV PORT=8080\n',
+    'docs/api.md': `Call it with curl:\n\n\`\`\`sh\ncurl -H "Authorization: Bearer ${BEARER_TOKEN}" https://api.example/v1/items\ncurl -H "Authorization: Bearer \${TOKEN}" https://api.example/v1/items\n\`\`\`\n`,
+    'deploy/kubeconfig': `apiVersion: v1\nusers:\n- name: admin\n  user:\n    token: ${KUBE_TOKEN}\n    client-key-data: LS0tLS1CRUdJTi1mYWtl\n`,
     'src/tts.ts': `import { ElevenLabs } from "./client"\nconst c = new ElevenLabs("${EL_KEY}")\n`,
     'src/.env': `API_KEY=${SK}\nDB_PASSWORD=hunter2\n`,
     '.env': 'ROOT_SECRET=topsecret\n',
@@ -61,6 +66,11 @@ describe('sensitive path denylist', () => {
     ['infra/secrets/db.txt', 'secrets directory'],
     ['infra/terraform.tfstate', 'Terraform state/vars'],
     ['src/main/resources/application-prod.yml', 'Spring profile with credentials'],
+    ['.kube/config', 'credentials file'],
+    ['home/.kube/config', 'credentials file'],
+    ['deploy/kubeconfig', 'credentials file'],
+    ['ci/prod.kubeconfig', 'credentials file'],
+    ['keys/deploy.ppk', 'key or keystore'],
   ])('denies %s', (p, reason) => {
     expect(sensitiveReason(p)).toBe(reason)
   })
@@ -73,6 +83,8 @@ describe('sensitive path denylist', () => {
     'src/main/java/com/example/KeyService.java',
     'docs/environment.md',
     'README.md',
+    'docs/kubeconfig-howto.md',
+    'src/main/java/com/example/KubeConfig.java',
   ])('allows %s', (p) => {
     expect(sensitiveReason(p)).toBeNull()
   })
@@ -162,6 +174,58 @@ describe('secret redaction', () => {
     for (const line of keep) expect(redactSecrets(line, 'README.md').text, line).toBe(line)
   })
 
+  it('redacts bearer tokens but keeps the prefix and templates', () => {
+    const line = `curl -H "Authorization: Bearer ${BEARER_TOKEN}" https://api.example/v1`
+    const { text, redactions } = redactSecrets(line, 'README.md')
+    expect(text).toBe(`curl -H "Authorization: Bearer ${REDACTED}" https://api.example/v1`)
+    expect(redactions).toEqual([{ line: 1, kind: 'bearer-token' }])
+    const padded = redactSecrets(`Authorization: Bearer ${BEARER_TOKEN}==`, 'x.txt').text
+    expect(padded).toBe(`Authorization: Bearer ${REDACTED}`)
+    const keep = [
+      'curl -H "Authorization: Bearer ${TOKEN}" https://api.example',
+      'Authorization: Bearer $ACCESS_TOKEN',
+      'Authorization: Bearer <your-token-here>',
+      'the Bearer scheme is described in RFC 6750',
+      'Bearer short',
+    ]
+    for (const l of keep) expect(redactSecrets(l, 'README.md').text, l).toBe(l)
+  })
+
+  it('redacts short unquoted values too, but not numbers or booleans', () => {
+    const redacted: Array<[line: string, secret: string]> = [
+      ['ENV DB_PASSWORD=admin1', 'admin1'],
+      ['export API_KEY=abc1234', 'abc1234'],
+      ['SECRET=s3cr', 's3cr'],
+    ]
+    for (const [line, secret] of redacted) {
+      const { text, redactions } = redactSecrets(line, 'Dockerfile')
+      expect(text, line).not.toContain(secret)
+      expect(redactions, line).toHaveLength(1)
+    }
+    for (const line of [
+      'MAX_TOKENS=1000',
+      'TOKEN_TTL=3600',
+      'PASSWORD_REQUIRED=true',
+      'SECRET_ROTATION_ENABLED=FALSE',
+      'API_KEY=abc',
+    ]) {
+      expect(redactSecrets(line, 'README.md').text, line).toBe(line)
+    }
+  })
+
+  it('redacts kubeconfig-style keys in YAML files', () => {
+    const yml = [
+      'users:',
+      '- user:',
+      '    token: abc',
+      '    client-key-data: LS0tLS1CRUdJTi1mYWtl',
+    ].join('\n')
+    const { text } = redactSecrets(yml, 'cluster/admin.yaml')
+    expect(text).not.toContain('LS0tLS1')
+    expect(text).toContain(`token: ${REDACTED}`)
+    expect(text).toContain(`client-key-data: ${REDACTED}`)
+  })
+
   it('redacts private key blocks but keeps line numbers', () => {
     const src = `a\n${PEM_BEGIN}\nAAAA\nBBBB\n${PEM_END}\nb`
     const { text } = redactSecrets(src, 'x.txt')
@@ -177,7 +241,15 @@ describe('context packs and secrets (review fixture)', () => {
     writeLessonJson(lessonRoot, {
       ...readLessonJson(lessonRoot),
       files: ['.env', 'src/id_ed25519'],
-      globs: ['README.md', 'src/**', '.env.example', 'scripts/**', 'Dockerfile'],
+      globs: [
+        'README.md',
+        'src/**',
+        '.env.example',
+        'scripts/**',
+        'Dockerfile',
+        'docs/**',
+        'deploy/**',
+      ],
     })
     const meta = await runContext({ lessonId: '01-placeholder', json: true, cwd: fx.workspace })
     const md = readFileSync(path.join(lessonRoot, 'context-pack.md'), 'utf8')
@@ -200,6 +272,10 @@ describe('context packs and secrets (review fixture)', () => {
       'test-token-value',
       EL_KEY,
       'abcd1234efgh5678',
+      'admin1',
+      BEARER_TOKEN,
+      KUBE_TOKEN,
+      'LS0tLS1CRUdJTi1mYWtl',
     ]) {
       expect(md, secret).not.toContain(secret)
       expect(json, secret).not.toContain(secret)
@@ -209,6 +285,7 @@ describe('context packs and secrets (review fixture)', () => {
     expect(sensitive.sort()).toEqual(
       [
         '.env',
+        'deploy/kubeconfig',
         'src/.env',
         'src/id_ed25519',
         'src/main/resources/application-prod.yml',
@@ -229,15 +306,17 @@ describe('context packs and secrets (review fixture)', () => {
         'src/test/java/com/example/ConfigTest.java',
         'scripts/deploy.sh',
         'Dockerfile',
+        'docs/api.md',
         'src/tts.ts',
       ]),
     )
     // References and non-secrets stay readable.
     expect(md).toContain('TOKEN=$TOKEN_FROM_CI')
     expect(md).toContain('ENV PORT=8080')
-    expect(meta.warnings.join('\n')).toMatch(/6 sensitive file\(s\) were not embedded/)
+    expect(md).toContain('Authorization: Bearer ${TOKEN}')
+    expect(meta.warnings.join('\n')).toMatch(/7 sensitive file\(s\) were not embedded/)
     expect(meta.warnings.join('\n')).toMatch(/Redacted \d+ secret-looking value/)
-    expect(md).toContain('| sensitive | 6 |')
+    expect(md).toContain('| sensitive | 7 |')
     expect(md).toContain('request.getPassword()')
     expect(md).toContain('server.port=8080')
   })

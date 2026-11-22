@@ -45,7 +45,11 @@ Every call pins, on the command line (which overrides repository config), the se
 make git run a program: `safe.bareRepository=explicit` (no implicit bare repos),
 `log.showSignature=false` (no `gpg.program`) and `core.fsmonitor=false`
 (`GIT_HARDENING_ARGS`, shared with `course init`). `safe.bareRepository` exists since git 2.38 and
-older git silently ignores it, so course_kit refuses to run on older git. Calls time out after
+older git silently ignores it, so course_kit refuses to run on older git. Pack reads never touch
+the network either: in a partial clone (`--filter=blob:none`) git would otherwise run `git fetch`
+against the target's own remote config to fill in a missing blob, so they set `GIT_NO_LAZY_FETCH=1`
+(git 2.44+) and `protocol.allow=never` (older versions) and fail with "partial clone: fetch the
+missing files or point `COURSE_TARGET_REPO` at a full clone". Calls time out after
 120 s, `jdeps` after 60 s. git and `jdeps` run with an allowlisted environment (`childEnv()`; for
 jdeps also `JAVA_HOME`), so an exported API key never reaches them. `course lesson new` reads only `course.json`, so it works in a fresh
 clone without the target.
@@ -67,13 +71,15 @@ skipped and not counted or listed as embedded.
 Packs go to LLMs and may be shared, so:
 
 1. A path **denylist** (`src/lib/context-pack/sensitive.ts`) always wins, even over explicit
-   `files`: `.env*` (except `.env.example`/`sample`/`template`), SSH keys, `*.pem`/`*.key`/keystores,
-   credentials files, `secrets/`, Terraform state/vars, service-account keys, and Spring
+   `files`: `.env*` (except `.env.example`/`sample`/`template`), SSH keys, `*.pem`/`*.key`/`*.ppk`/keystores,
+   credentials files (including kubeconfigs), `secrets/`, Terraform state/vars, service-account keys, and Spring
    `application-{prod,production,local,secret}*` profiles.
 2. Everything embedded passes through line-preserving **redaction** (`redact.ts`): known token
-   formats (including `sk_…` keys), JWTs, private key blocks, URL passwords, literal assignments
+   formats (including `sk_…` keys), JWTs, `Bearer <token>` (the prefix stays, `Bearer ${TOKEN}`
+   templates do not match), private key blocks, URL passwords, literal assignments
    to secret-looking names, unquoted `NAME=value` assignments to upper-snake secret-looking names in
-   any file (`export DB_PASSWORD=…`, `ENV API_TOKEN=…`; `$VAR` references stay), and
+   any file (`export DB_PASSWORD=…`, `ENV API_TOKEN=…`; values of 4+ characters, however short; `$VAR`
+   references, plain numbers and booleans stay), and
    secret-looking keys in config files (`${VAR:default}` keeps `VAR`, hides the default).
    That includes the git log (author names and subjects), reported as `(git log)`.
 
@@ -129,7 +135,10 @@ later step.
 Warnings and errors quote repository content (file names, globs, git output), and the target can be
 any third-party repo. The CLI prints them through `terminalSafe()` (`src/lib/terminal.ts`): line
 breaks stay, every other control character (ESC, C1 controls, bidirectional overrides) becomes a
-visible escape such as `\x1b`. `context-pack.json` keeps the raw names (JSON escapes them itself).
+visible escape such as `\x1b`. `terminalSafe()` cannot tell a git error's line breaks from one inside a
+file name, so every repository- or lesson-derived fragment is escaped where it enters a message
+(`escapeControls()` for paths and globs, `JSON.stringify()` for rejected values): a name with a newline
+cannot start a forged line (`Files: 99 …`). `context-pack.json` keeps the raw names (JSON escapes them itself).
 
 ### Lesson layout
 
