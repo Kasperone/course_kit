@@ -112,7 +112,7 @@ Always run lint and tests before pushing.
   write it. Tests use mocked HTTP only; never make live API calls.
 - Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
   an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty cwd (Cursor: the one stable `cursor-ws` in the cache dir, never with course files; `--trust` only for it), with
-  no tools, a timeout, an output cap and an allowlisted env (`cliChildEnv()`: base, proxy/CA and the CLI's own `CliSpec.envNames`; `ANTHROPIC_*`/`ELEVENLABS_*` never pass; a variable a CLI needs goes into its `envNames` with a test). Never add
+  no tools, a timeout, an output cap and an allowlisted env (`cliChildEnv()`: base, proxy/CA and the CLI's own `CliSpec.envNames`; `ANTHROPIC_*`/`ELEVENLABS_*` never pass; a variable a CLI needs goes into its `envNames` with a test; proxy URLs may hold `user:password@`, so CLI output in messages goes through `redactUrlCredentials`). Never add
   `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
   CLIs only; never run the real `claude` / `cursor-agent` from a test.
 - Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via

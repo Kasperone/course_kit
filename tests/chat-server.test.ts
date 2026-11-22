@@ -196,7 +196,12 @@ describe('chat server: answers', () => {
         { deltas: ['[[off-topic]]\nLet us stay with the lesson.'] },
         { deltas: [], stopReason: 'refusal' },
         { deltas: ['long'], stopReason: 'max_tokens' },
-        { error: new ProviderError('offline', `Cannot reach the API ${KEY}`) },
+        {
+          error: new ProviderError(
+            'offline',
+            `Cannot reach the API ${KEY} via http://u:proxy-pw-s3cr3t@proxy.example:3128`,
+          ),
+        },
       ],
       env: { ANTHROPIC_API_KEY: KEY },
     })
@@ -216,6 +221,9 @@ describe('chat server: answers', () => {
       data: { code: 'offline' },
     })
     expect(failed.body).not.toContain(KEY)
+    // A proxy URL in a provider error reaches the browser without its password.
+    expect(failed.body).toContain('http://u:‹redacted›@proxy.example:3128')
+    expect(failed.body).not.toContain('proxy-pw-s3cr3t')
   })
 
   it('aborts the upstream answer when the browser goes away', async () => {

@@ -207,6 +207,12 @@ describe('workspace secrets', () => {
     expect(() => readWorkspaceSecret(dir, 'A.*', {})).toThrow(/Invalid variable name/)
   })
 
+  it('redactSecrets also drops the password of a proxy URL', () => {
+    expect(redactSecrets('via http://u:s3cr3t@proxy:3128 with key sk-1', ['sk-1'])).toBe(
+      'via http://u:‹redacted›@proxy:3128 with key ‹redacted›',
+    )
+  })
+
   it('are redacted and never passed on to child processes', () => {
     expect(redactSecrets('key sk-1 and sk-1 again', ['sk-1', null])).toBe(
       'key ‹redacted› and ‹redacted› again',

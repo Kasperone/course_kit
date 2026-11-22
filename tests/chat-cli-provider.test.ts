@@ -599,6 +599,28 @@ describe('CLI providers: availability and errors', () => {
     expect(err.message).toBe('Claude Code CLI failed (exit 3): fake cli: something broke')
   })
 
+  it('proxy URLs stay in the CLI environment but their password never reaches an error message', async () => {
+    const { dir } = fakeBin()
+    const PROXY = 'http://proxy-user:s3cr3t-pw@proxy.example:3128'
+    const REDACTED_PROXY = 'http://proxy-user:‹redacted›@proxy.example:3128'
+    for (const id of CLIS) {
+      // The allowlisted variable reaches the CLI (the stand-in echoes it) ...
+      const env = cliEnv(dir, { FAKE_CLI_MODE: 'fail-proxy', HTTPS_PROXY: PROXY })
+      const err = await failure(collect(provider(id, env).p))
+      expect(calls(env)[0]!.env.HTTPS_PROXY, id).toBe(PROXY)
+      // ... and the error that goes to the browser and the terminal has no password.
+      expect(err.message, id).toContain(`via proxy ${REDACTED_PROXY}`)
+      expect(JSON.stringify(err.message), id).not.toContain('s3cr3t-pw')
+
+      // The login-status check quotes stderr the same way.
+      const statusEnv = cliEnv(dir, { FAKE_CLI_STATUS_PROXY: '1', HTTPS_PROXY: PROXY })
+      const a = await provider(id, statusEnv).p.check!()
+      expect(a.state, id).toBe('error')
+      expect(a.message, id).toContain(REDACTED_PROXY)
+      expect(JSON.stringify(a), id).not.toContain('s3cr3t-pw')
+    }
+  })
+
   it('timeout: the whole process group is killed and the temp directory removed', async () => {
     const { dir } = fakeBin()
     const pidFile = path.join(makeTempDir('cli-pid'), 'grandchild.pid')
