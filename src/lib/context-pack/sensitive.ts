@@ -13,12 +13,14 @@ const DENY: Array<[pattern: string, reason: string]> = [
   ['**/*.env', 'environment file'],
   ['**/.envrc', 'environment file'],
   ['**/id_{rsa,dsa,ecdsa,ed25519}{,.pub}', 'SSH key'],
-  ['**/*.{pem,key,p8,p12,pfx,jks,keystore,truststore,gpg,pgp,kdbx,ovpn}', 'key or keystore'],
+  ['**/*.{pem,key,ppk,p8,p12,pfx,jks,keystore,truststore,gpg,pgp,kdbx,ovpn}', 'key or keystore'],
   [
     '**/{.npmrc,.pypirc,.netrc,_netrc,.git-credentials,.htpasswd,.pgpass,.dockercfg}',
     'credentials file',
   ],
   ['**/.docker/config.json', 'credentials file'],
+  // kubeconfigs hold cluster tokens and client keys
+  ['**/{.kube/config,kubeconfig,*.kubeconfig}', 'credentials file'],
   ['**/{credentials,credentials.*,*credentials*.json,*-credentials.*}', 'credentials file'],
   ['**/{secret,secrets}.*', 'secrets file'],
   ['**/{secret,secrets}/**', 'secrets directory'],

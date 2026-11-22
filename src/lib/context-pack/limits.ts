@@ -38,7 +38,9 @@ export function parseLimitOverrides(value: unknown, file: string): Partial<PackL
   const out: Partial<PackLimits> = {}
   for (const [key, v] of Object.entries(value)) {
     if (!(LIMIT_KEYS as string[]).includes(key)) {
-      throw new Error(`${file}: unknown limit "${key}" (known: ${LIMIT_KEYS.join(', ')})`)
+      throw new Error(
+        `${file}: unknown limit ${JSON.stringify(key)} (known: ${LIMIT_KEYS.join(', ')})`,
+      )
     }
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > LIMIT_CEILING) {
       throw new Error(`${file}: limits.${key} must be a positive integer`)

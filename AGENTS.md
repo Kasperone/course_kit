@@ -49,7 +49,7 @@ Always run lint and tests before pushing.
 - `.env` or real API keys (ElevenLabs, etc.)
 - Files under `audio/local/` or other generated narration
 - Secrets in `course.json` or lesson content
-- Generated audio. Context packs are gitignored in workspaces; force-add one only after reviewing it (secrets are
+- Generated context packs: gitignored in workspaces; force-add one only after reviewing it (secrets are
   denylisted and redacted, but that is a safety net)
 
 ## Child processes and git
@@ -78,5 +78,7 @@ Build with `course context <id>`. Packs read the target repo through `src/lib/gi
 never the working tree, never `git show`/shell. A `targetRepo` inside the workspace is refused. Validate
 any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content must go through
 `redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Anything the CLI prints that
-quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`). Extend `src/analyzers/` for
+quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`), and each such fragment is
+escaped where it enters the message (`escapeControls()`, or `JSON.stringify()` for a rejected value): `terminalSafe`
+keeps line breaks for git's multi-line errors, so a newline in a file name would otherwise forge a line. Extend `src/analyzers/` for
 language-specific graphs.

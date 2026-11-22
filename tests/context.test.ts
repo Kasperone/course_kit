@@ -368,6 +368,87 @@ describe('--out', () => {
   })
 })
 
+describe('partial clones', () => {
+  /** Target = `--filter=blob:none` clone of a sibling repository that could serve the blobs. */
+  function writePartialClone(repoDir: string): string {
+    const origin = path.join(path.dirname(repoDir), 'origin')
+    writeJavaSampleRepo(origin)
+    git(origin, ['config', 'uploadpack.allowFilter', 'true'])
+    git(origin, ['config', 'uploadpack.allowAnySHA1InWant', 'true'])
+    git(path.dirname(repoDir), [
+      'clone',
+      '-q',
+      '--no-checkout',
+      '--filter=blob:none',
+      `file://${origin}`,
+      repoDir,
+    ])
+    return git(repoDir, ['rev-parse', 'HEAD']).trim()
+  }
+
+  it('never fetches missing blobs from the target remote and says what to do', async () => {
+    const fx = await makeWorkspace(writePartialClone)
+    setLesson(fx.workspace, { files: ['README.md'] })
+    await expect(runContext({ lessonId: LESSON, cwd: fx.workspace })).rejects.toThrow(
+      /partial clone.*COURSE_TARGET_REPO/s,
+    )
+    // The blob is still absent: git did not run `git fetch` against the clone's origin.
+    const oid = git(fx.repoDir, ['rev-parse', `${fx.pinned}:README.md`]).trim()
+    expect(() =>
+      execFileSync('git', ['-C', fx.repoDir, 'cat-file', '-e', oid], {
+        stdio: 'pipe',
+        env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+      }),
+    ).toThrow()
+  })
+
+  it('also reports git versions that fail on the blocked fetch instead of printing "missing"', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    const bin = makeTempDir('git-old-promisor')
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = --batch ]; then echo "fatal: could not fetch abc from promisor remote" >&2; exit 128; fi\ndone\n' +
+        'PATH="${PATH#*:}" exec git "$@"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+    try {
+      await expect(runContext({ lessonId: LESSON, cwd: fx.workspace })).rejects.toThrow(
+        /partial clone/,
+      )
+    } finally {
+      process.env.PATH = savedPath
+    }
+  })
+})
+
+describe('runContext options', () => {
+  it('resolves a relative --out against options.cwd', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    expect(process.cwd()).not.toBe(fx.workspace)
+    await runContext({ lessonId: LESSON, out: 'notes/pack.md', json: true, cwd: fx.workspace })
+    expect(existsSync(path.join(fx.workspace, 'notes', 'pack.md'))).toBe(true)
+    expect(existsSync(path.join(fx.workspace, 'notes', 'pack.json'))).toBe(true)
+    expect(existsSync(path.resolve('notes', 'pack.md'))).toBe(false)
+  })
+
+  it('validates --files globs like lesson.json ones', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    for (const bad of ['../x/**', '/etc/passwd', 'src\\main/**']) {
+      await expect(
+        runContext({ lessonId: LESSON, files: [bad], cwd: fx.workspace }),
+        bad,
+      ).rejects.toThrow(/--files must be relative to the target repo root/)
+    }
+    const ok = await runContext({ lessonId: LESSON, files: ['src/**'], cwd: fx.workspace })
+    expect(ok.selectedFiles).toContain('src/main/java/com/example/App.java')
+  })
+})
+
 describe('git history failures', () => {
   it('reports a failed git log in the warnings instead of "No log entries"', async () => {
     const fx = await makeWorkspace()

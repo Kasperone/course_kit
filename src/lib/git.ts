@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { childEnv } from './child-env.js'
+import { escapeControls } from './context-pack/markdown.js'
 
 /** Full SHA-1 (40 hex) or SHA-256 (64 hex) object name. */
 export const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -125,7 +126,7 @@ export function readHeadCommit(repoPath: string): string {
     throw new Error(`Could not read HEAD commit from ${repoPath}: ${gitErrorDetail(err)}`)
   }
   if (!FULL_SHA_RE.test(hash)) {
-    throw new Error(`Unexpected commit hash from ${repoPath}: ${hash}`)
+    throw new Error(`Unexpected commit hash from ${repoPath}: ${JSON.stringify(hash)}`)
   }
   return hash
 }
@@ -226,7 +227,8 @@ export function uncommittedWarning(repoPath: string, commit: string): string | n
     )
   }
   if (changes.length === 0) return null
-  const shown = changes.slice(0, 5).join(', ')
+  // File names come from the target: one physical line per notice, whatever the names contain.
+  const shown = changes.slice(0, 5).map(escapeControls).join(', ')
   const more = changes.length > 5 ? ` and ${changes.length - 5} more` : ''
   return (
     `Target repo has ${changes.length} uncommitted change(s) that are not part of the pinned commit ` +

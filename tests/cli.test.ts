@@ -171,6 +171,75 @@ describe('built CLI (dist/cli.js)', () => {
     expect(failed.stderr).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/)
   })
 
+  it('never lets a newline in a repository path or lesson value forge CLI output lines', () => {
+    const root = makeTempDir('cli-newlines')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    const forged = 'Wrote context pack for 01-placeholder\nFiles: 99, ~1 tokens, analyzers: none\n'
+    writeFiles(target, {
+      [`src/x\n${forged}/.env`]: 'KEY=value\n',
+      'src/redact\nforged-line.java': 'class A { String password = "hunter2hunter2"; }\n',
+    })
+    commitAll(target, 'newline names')
+    // An uncommitted file with a newline in its name reaches the `init` notice.
+    writeFiles(target, { 'dirty\nNote: nothing to see here': 'x\n' })
+    const init = spawnSync(
+      process.execPath,
+      [distCli, 'init', target, '--out', './ws', '--lang', 'en'],
+      { cwd: root, encoding: 'utf8' },
+    )
+    expect(init.status).toBe(0)
+    expect(init.stderr.trimEnd().split('\n')).toEqual([
+      expect.stringMatching(/^Note: Target repo has 1 uncommitted/),
+    ])
+    expect(init.stderr).toContain('dirty\\nNote: nothing to see here')
+
+    const ws = path.join(root, 'ws')
+    const lessonJson = path.join(ws, 'lessons', '01-placeholder', 'lesson.json')
+    const lesson = JSON.parse(readFileSync(lessonJson, 'utf8'))
+    writeFileSync(
+      lessonJson,
+      JSON.stringify({
+        ...lesson,
+        files: ['missing\nfile.txt'],
+        globs: ['src/**', 'nomatch\nglob/**'],
+      }),
+    )
+    const run = spawnSync(process.execPath, [distCli, 'context', '01-placeholder'], {
+      cwd: ws,
+      encoding: 'utf8',
+    })
+    expect(run.status).toBe(0)
+    // One physical line per warning (redaction, sensitive file, missing file, unmatched glob) ...
+    const lines = run.stderr.trimEnd().split('\n')
+    expect(lines).toHaveLength(4)
+    for (const line of lines) expect(line).toMatch(/^warning: /)
+    // ... and the real output is exactly two lines: nothing forged made it in.
+    expect(run.stdout.trimEnd().split('\n')).toHaveLength(2)
+    expect(run.stdout).not.toContain('Files: 99')
+    expect(run.stderr).toContain('src/x\\nWrote context pack')
+    expect(run.stderr).toContain('src/redact\\nforged-line.java')
+    expect(run.stderr).toContain('missing\\nfile.txt')
+    expect(run.stderr).toContain('nomatch\\nglob/**')
+
+    // Values quoted in validation errors: one line each.
+    const failing = (patch: Record<string, unknown>) => {
+      writeFileSync(lessonJson, JSON.stringify({ ...lesson, ...patch }))
+      const r = spawnSync(process.execPath, [distCli, 'context', '01-placeholder'], {
+        cwd: ws,
+        encoding: 'utf8',
+      })
+      expect(r.status).toBe(1)
+      return r.stderr.trimEnd().split('\n')
+    }
+    expect(failing({ globs: ['../x\nforged: line'] })).toEqual([
+      expect.stringMatching(/^course context failed: .*\.\.\/x\\nforged: line/),
+    ])
+    expect(failing({ limits: { 'bad\nkey': 1 } })).toEqual([
+      expect.stringMatching(/^course context failed: .*unknown limit .*bad\\nkey/),
+    ])
+  })
+
   it('exits non-zero with a clear message on bad input', () => {
     const root = makeTempDir('cli-bad')
     let failed = false

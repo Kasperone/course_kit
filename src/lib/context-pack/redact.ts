@@ -23,11 +23,17 @@ const TOKEN_PATTERNS: Array<[kind: string, re: RegExp]> = [
   ['jwt', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
 ]
 
+/**
+ * `Authorization: Bearer <token>` (curl examples, scripts, READMEs). The prefix stays; `Bearer ${TOKEN}`
+ * and other templates do not match because `$`, `{` and `<` are outside the token alphabet.
+ */
+const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/g
+
 /** user:password@ in URLs (keep the user, drop the password). */
 const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):([^\s@/]+)@/gi
 
 const SECRET_NAME =
-  '[A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credentials?)[A-Za-z0-9_.-]*'
+  '[A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|client[_-]?key|credentials?)[A-Za-z0-9_.-]*'
 
 /** `password = "literal"` style assignments in any language (literal of 4+ chars). */
 const LITERAL_ASSIGNMENT = new RegExp(
@@ -39,10 +45,14 @@ const LITERAL_ASSIGNMENT = new RegExp(
  * `NAME=value` with an upper-snake name that looks secret and an unquoted value, in any file:
  * `export DB_PASSWORD=...` in a README or shell script, `ENV API_TOKEN=...` in a Dockerfile, a
  * `- POSTGRES_PASSWORD=...` compose line. Values starting with `$` (`$VAR`, `${VAR}`, `$(cmd)`) are
- * references, not secrets, and are left alone.
+ * references, not secrets, and are left alone, as are plain numbers and booleans (`MAX_TOKENS=1000`);
+ * any other value of 4+ characters is redacted, however short (`DB_PASSWORD=admin1`).
  */
 const ENV_ASSIGNMENT =
-  /\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Z0-9_]*)=([^\s"'`$][^\s"'`]{7,})/g
+  /\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Z0-9_]*)=([^\s"'`$][^\s"'`]{3,})/g
+
+/** Values that cannot be a credential: numbers (`MAX_TOKENS=1000`) and booleans. */
+const NOT_A_SECRET = /^(?:\d+|true|false)$/i
 
 /** `key: value` / `key=value` lines in config files where the key looks secret. */
 const CONFIG_LINE = new RegExp(
@@ -98,6 +108,10 @@ export function redactSecrets(text: string, filePath: string): RedactionResult {
         return REDACTED
       })
     }
+    out = out.replace(BEARER, (_m, prefix: string) => {
+      redactions.push({ line: lineNo, kind: 'bearer-token' })
+      return `${prefix}${REDACTED}`
+    })
     out = out.replace(URL_CREDENTIALS, (_m, prefix: string) => {
       redactions.push({ line: lineNo, kind: 'url-credentials' })
       return `${prefix}:${REDACTED}@`
@@ -108,7 +122,7 @@ export function redactSecrets(text: string, filePath: string): RedactionResult {
       return `${name}${sep}${q}${REDACTED}${q}`
     })
     out = out.replace(ENV_ASSIGNMENT, (m, name: string, value: string) => {
-      if (value.startsWith(REDACTED)) return m
+      if (value.startsWith(REDACTED) || NOT_A_SECRET.test(value)) return m
       redactions.push({ line: lineNo, kind: 'secret-assignment' })
       return `${name}=${REDACTED}`
     })
