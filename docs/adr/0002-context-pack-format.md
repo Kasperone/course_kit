@@ -140,6 +140,12 @@ file name, so every repository- or lesson-derived fragment is escaped where it e
 (`escapeControls()` for paths and globs, `JSON.stringify()` for rejected values): a name with a newline
 cannot start a forged line (`Files: 99 …`). `context-pack.json` keeps the raw names (JSON escapes them itself).
 
+`terminalSafe()` also drops the password of every `user:password@host` URL (`redactUrlCredentials()`: the password
+runs to the last `@`, so `@` or `:` inside it is covered; `user:password@host:port` without a scheme too). Git, Slidev and
+the chat CLIs echo proxy URLs (`HTTPS_PROXY=http://user:secret@proxy:3128`) in their errors, and proxy variables stay in
+the child-environment allowlists on purpose (tools behind a proxy break without them). A user name alone
+(`http://token@host`) is kept. Context-pack redaction uses the same patterns.
+
 ### Lesson layout
 
 ```
