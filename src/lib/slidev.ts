@@ -169,17 +169,34 @@ export const REMOTE_ASSET_RE = new RegExp(
   'im',
 )
 
-/** Workspace directories the guard never scans (dependencies, output, vendored target). */
-const GUARD_SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
+/**
+ * Directories a scan skips. `anywhere`: installed dependencies and git internals, at any depth.
+ * `topLevel`: workspace-level directories only (build output, the vendored target, local audio, and
+ * for code scans the helper `scripts/`): Slidev loads `components/**` at any depth, so a nested
+ * `components/audio/` or `components/scripts/` is deck code and must be scanned.
+ */
+export type WalkSkip = { anywhere: Set<string>; topLevel: Set<string> }
 
-function* walkFiles(dir: string, skip: Set<string>): Generator<string> {
+const GUARD_SKIP: WalkSkip = {
+  anywhere: new Set(['node_modules', '.git']),
+  topLevel: new Set(['dist', 'target-repo', 'audio']),
+}
+const NO_SKIP: WalkSkip = { anywhere: new Set(), topLevel: new Set() }
+
+function* walkFiles(dir: string, skip: WalkSkip, atRoot = true): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (skip.has(entry.name)) continue
+    if (skip.anywhere.has(entry.name) || (atRoot && skip.topLevel.has(entry.name))) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are never followed: a link could point anywhere on the machine.
-    if (entry.isDirectory()) yield* walkFiles(abs, skip)
+    if (entry.isDirectory()) yield* walkFiles(abs, skip, false)
     else if (entry.isFile()) yield abs
   }
+}
+
+/** True if a workspace-relative path lies in a directory the scans skip. */
+function isSkippedPath(rel: string): boolean {
+  const segments = rel.split(path.sep)
+  return segments.some((s) => GUARD_SKIP.anywhere.has(s)) || GUARD_SKIP.topLevel.has(segments[0]!)
 }
 
 function isSymlink(p: string): boolean {
@@ -297,7 +314,7 @@ function importProblem(root: string, target: string, ref: string): string | null
   ) {
     return 'outside the workspace'
   }
-  if (GUARD_SKIP.has(rel.split(path.sep)[0]!)) return 'a directory the guard does not scan'
+  if (isSkippedPath(rel)) return 'a directory the guard does not scan'
   if (goesThroughSymlink(root, rel)) return 'a symlink'
   // A pack is data quoted from the target repository and is not scanned; secret files must never
   // be rendered or shown as code.
@@ -314,7 +331,8 @@ function importProblem(root: string, target: string, ref: string): string | null
  * snippets (`<<< ./code.ts`). Refused: absolute paths, paths outside the workspace, into a
  * directory the guard skips, through a symlink, to a context pack or a secret-looking file
  * (`.env*`, keys: the context-pack denylist), and snippets in a PlantUML language (Slidev renders
- * them as a PlantUML request) or Mermaid snippets that load a remote image. Returns "file -> src" and "file -> <<< path" strings.
+ * them as a PlantUML request) or Mermaid snippets that load a remote image. Returns "file -> src"
+ * and "file -> <<< path" strings.
  */
 export function findOutsideImports(courseDir: string): string[] {
   const root = path.resolve(courseDir)
@@ -365,10 +383,16 @@ export function findWebFontFiles(courseDir: string): string[] {
  * `"//host…"` / `url(//host…)`. Loopback hosts (localhost, 127.0.0.1, [::1]) are allowed.
  */
 export const EXTERNAL_URL_RE =
-  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1)\b)[a-z0-9-]+\.[a-z0-9.-]+/i
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
 
-/** Top-level workspace helpers that are not part of any deck (their comments may cite URLs). */
-const CODE_SKIP = new Set([...GUARD_SKIP, 'scripts'])
+/** The top-level `scripts/` holds workspace helpers, not deck code (their comments may cite URLs). */
+const CODE_SKIP: WalkSkip = {
+  anywhere: GUARD_SKIP.anywhere,
+  topLevel: new Set([...GUARD_SKIP.topLevel, 'scripts']),
+}
+
+/** Files Slidev loads as code: Vue components and JS/TS (also JSX/TSX, which it registers too). */
+const CODE_FILE_RE = /\.(vue|[cm]?[jt]sx?)$/i
 
 /**
  * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons) and
@@ -378,7 +402,7 @@ const CODE_SKIP = new Set([...GUARD_SKIP, 'scripts'])
 export function findExternalUrlFiles(courseDir: string): string[] {
   const offenders: string[] = []
   for (const file of walkFiles(courseDir, CODE_SKIP)) {
-    if (!/\.(vue|[cm]?[jt]s)$/i.test(file)) continue
+    if (!CODE_FILE_RE.test(file)) continue
     if (EXTERNAL_URL_RE.test(readFileSync(file, 'utf8'))) {
       offenders.push(path.relative(courseDir, file).split(path.sep).join('/'))
     }
@@ -392,7 +416,7 @@ export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | '
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
   const hits: BuildRef[] = []
   if (!existsSync(distDir)) return hits
-  for (const file of walkFiles(distDir, new Set())) {
+  for (const file of walkFiles(distDir, NO_SKIP)) {
     if (!/\.(html|m?js|css|json|txt|svg|map)$|_redirects$/i.test(file)) continue
     const text = readFileSync(file, 'utf8')
     if (/plantuml\.com/i.test(text)) hits.push({ file, what: 'PlantUML server' })

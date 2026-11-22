@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { useNav } from '@slidev/client'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { createPlayGeneration, playFailure } from './playback'
 
 type Clip = { slide: number; click: number; file: string; duration: number; text: string }
 type Loaded = { state: 'ready'; clips: Map<string, Clip> } | { state: 'missing' | 'loading' }
@@ -40,6 +41,7 @@ const autoNext = ref(stored('autoNext') === '1')
 const on = ref(false)
 const playing = ref(false)
 const manifests = reactive<Record<string, Loaded>>({})
+const generation = createPlayGeneration()
 const audio = typeof Audio === 'undefined' ? null : new Audio()
 if (audio) audio.preload = 'auto'
 
@@ -88,6 +90,7 @@ const status = computed(() => {
 
 function stop(): void {
   if (!audio) return
+  generation.begin() // a pending play() that settles later is stale
   audio.pause()
   playing.value = false
 }
@@ -99,12 +102,18 @@ function playCurrent(): void {
   const src = new URL(c.file, dirUrl(lang.value)).href
   if (audio.src !== src) audio.src = src
   audio.currentTime = 0
+  const id = generation.begin()
   audio.play().then(
-    () => (playing.value = true),
     () => {
-      // Autoplay refused or the clip failed: stay quiet, keep the deck usable.
+      if (generation.isCurrent(id)) playing.value = true
+    },
+    (err: unknown) => {
+      if (!generation.isCurrent(id)) return // superseded by a newer clip or a stop
+      const failure = playFailure(err)
+      if (failure === 'ignore') return
+      // Autoplay refused: switch narration off. Any other failure: stay on, keep the deck usable.
       playing.value = false
-      on.value = false
+      if (failure === 'off') on.value = false
     },
   )
 }

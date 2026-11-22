@@ -19,7 +19,11 @@ import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
-const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
+// Skipped at any depth: installed dependencies and git internals. Skipped only at the workspace top
+// level: build output, the vendored target, local audio (and `scripts/` for code): Slidev loads
+// components/** at any depth, so a nested components/audio/ or components/scripts/ is deck code.
+const SKIP_ANYWHERE = new Set(['node_modules', '.git'])
+const SKIP_TOP_LEVEL = new Set(['dist', 'target-repo', 'audio'])
 // [ \t]*, not \s*: a plain fence whose first line starts with "plantuml" is ordinary code.
 const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 // The name must end at whitespace, `/` or `>`: a quoted `<plantuml.version>` is not the component.
@@ -112,7 +116,8 @@ function importLeavesTree(target, ref) {
   if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
     return true
   }
-  if (SKIP.has(rel.split(path.sep)[0])) return true
+  const segments = rel.split(path.sep)
+  if (segments.some((s) => SKIP_ANYWHERE.has(s)) || SKIP_TOP_LEVEL.has(segments[0])) return true
   let current = root
   for (const segment of rel.split(path.sep)) {
     current = path.join(current, segment)
@@ -132,14 +137,14 @@ function mentionsRemoteAsset(file) {
 }
 
 const EXTERNAL_URL =
-  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1)\b)[a-z0-9-]+\.[a-z0-9.-]+/i
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
 
-function* files(dir, skip = SKIP, ext = /\.(md|vue|css|html)$/i) {
+function* files(dir, skipTop = SKIP_TOP_LEVEL, ext = /\.(md|vue|css|html)$/i, atRoot = true) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (skip.has(entry.name)) continue
+    if (SKIP_ANYWHERE.has(entry.name) || (atRoot && skipTop.has(entry.name))) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are not followed.
-    if (entry.isDirectory()) yield* files(abs, skip, ext)
+    if (entry.isDirectory()) yield* files(abs, skipTop, ext, false)
     else if (entry.isFile() && ext.test(entry.name)) yield abs
   }
 }
@@ -185,7 +190,7 @@ for (const file of files(root)) {
 
 // This script and other top-level helpers are not deck code (their comments may cite URLs).
 const external = []
-for (const file of files(root, new Set([...SKIP, 'scripts']), /\.(vue|[cm]?[jt]s)$/i)) {
+for (const file of files(root, new Set([...SKIP_TOP_LEVEL, 'scripts']), /\.(vue|[cm]?[jt]sx?)$/i)) {
   if (EXTERNAL_URL.test(readFileSync(file, 'utf8'))) external.push(path.relative(root, file))
 }
 

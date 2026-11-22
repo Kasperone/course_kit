@@ -38,7 +38,10 @@ committing generated audio or API keys.
   hold everything else that changes the audio (Piper: length/noise scales, sentence silence, sample
   rate, channels, quality preset, format, effective bitrate; ElevenLabs: quality preset, output
   format, format, bitrate). For Piper, `model` includes the sha256 of the
-  `.onnx` file. An existing non-empty file with that name is reused; `--force` regenerates.
+  `.onnx` file. An existing non-empty file with that name is reused if it is valid audio (its duration
+  can be read); otherwise it is regenerated. A provider response is validated before it is cached, so
+  a proxy's HTML page or a truncated MP3 never stays in the cache (the error names the clip).
+  `--force` regenerates.
 - Older clips that a new manifest no longer uses are kept (switching providers back and forth must
   not pay a paid provider twice) and reported; `--prune` deletes them.
 - `manifest.json` next to the clips: lesson, lang, provider, voice, model, format, settings,
@@ -91,10 +94,14 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
   voice's own sample rate and channels. `lossless` keeps the WAV. Without ffmpeg it writes WAV and
   warns. No temp files, no shell.
 - Piper and ffmpeg run with an allowlisted environment (`piperEnv()`/`ffmpegEnv()` in
-  `src/lib/narration/env.ts`, built on `childEnv()`): `PATH`, `HOME`, locale, temp dir and terminal
-  variables, plus `PIPER_*`, `ESPEAK_*`, `LD_LIBRARY_PATH`/`DYLD_*` and `OMP_*`/`ORT_*` for Piper.
+  `src/lib/narration/env.ts`, built on `childEnv()` minus what these tools never use: proxy
+  variables, `SSH_AUTH_SOCK` and `GIT_*`): `PATH`, `HOME`, `USER`/`LOGNAME`, locale, `XDG_*`, temp dir
+  and terminal variables, plus `PIPER_*`, `ESPEAK_*`, `LD_LIBRARY_PATH`/`DYLD_*` and `OMP_*`/`ORT_*` for Piper.
   Credential-looking names (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) never pass, so an
   exported `ELEVENLABS_API_KEY` stays in this process (the ElevenLabs HTTP call) and reaches no child.
+- Nothing waits forever (`src/lib/narration/timeouts.ts`): Piper 5 min per clip, ffmpeg 2 min per
+  encode (both killed with SIGKILL), probes 30 s, an ElevenLabs request 2 min including its body
+  (a timeout is retried like a 429/5xx), a voice download 15 min.
 - **GPL boundary.** Piper is GPL-3.0-or-later. course_kit (MIT) only executes it as a separate
   program and exchanges data over pipes. It never vendors, bundles, links or imports Piper, never
   installs it, and its npm package contains no Piper code. Users install Piper themselves.
@@ -126,13 +133,17 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
 - The key comes only from `ELEVENLABS_API_KEY` in the environment or the workspace's gitignored
   `.env`. It is sent only in the `xi-api-key` header. It is never printed, logged, written to a
   manifest or file, or included in an error message (any occurrence in a provider error is
-  replaced). Tests assert this with a mocked HTTP layer; there are no live calls.
+  replaced, before the text is cut to its 300-character limit, so a key at the cut leaves no
+  prefix). Tests assert this with a mocked HTTP layer; there are no live calls.
 
 ### Never commit generated audio
 
-- Before writing, `course narrate` checks (when the workspace is in a git work tree) that a clip
-  path under `audio/local/<lang>/<lesson>/` is ignored by git and that nothing under `audio/local/`
-  except `.gitkeep` is tracked. Otherwise it stops before calling any provider.
+- Before writing, `course narrate` checks (when the workspace is in a git work tree) that every
+  kind of file a run writes (an MP3 clip, a WAV clip, `manifest.json`) under
+  `audio/local/<lang>/<lesson>/` is ignored by git, so a narrower rule such as
+  `audio/local/**/*.mp3` fails, and that nothing under `audio/local/` except `.gitkeep` is tracked.
+  Otherwise it stops before calling any provider. Its git calls use the same hardening arguments
+  as calls on a target repository (a workspace can be a clone of someone else's).
 - course_kit's own test suite fails if the repository tracks any audio file.
 - `audio/ATTRIBUTION.md` (generated from the voice registry by `course init`) names the voices,
   data licences and the never-commit rule, with a table to fill in for ElevenLabs voices.
@@ -147,13 +158,17 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
 - `global-top.vue`: a small top-right control on the main slideshow (not presenter, print or
   embedded views): narration on/off, an "auto" toggle (advance when a clip ends), language
   buttons for every course language, and a status line. It plays the clip for the current
-  `currentSlideNo` and `clicks` and re-plays on navigation while narration is on. Nothing plays
+  `currentSlideNo` and `clicks` and re-plays on navigation while narration is on. A rejected
+  `play()` switches narration off only when the browser refuses (autoplay, unsupported format);
+  an `AbortError` (a newer clip or pause interrupted it, e.g. pressing "next" twice) is ignored
+  (`playback.ts`). Nothing plays
   until the viewer turns narration on. A missing manifest or clip shows a dimmed "no narration" /
   "no clip" state; the deck keeps working. Settings persist in `localStorage` when available.
 - `setup/vite-plugins.ts`: defines `__COURSE_NARRATION__` (`{lesson, lang, langs, base}`) from the
   deck's path and `course.json`. In `course dev` it serves `audio/local/<lang>/<lesson>/` at
   `/@course-narration/<lang>/<file>`; only `manifest.json` and clip-shaped names, only course
-  languages, never symlinks. Other decks (the root `slides.md`) get `null` and no player.
+  languages, never symlinks (the real path must stay under `audio/local/`, so a symlinked lesson
+  directory is refused too); a malformed `%`-escape is a 404. Other decks (the root `slides.md`) get `null` and no player.
 - `course build` copies each built lesson's manifests and the clips they list (validated names,
   no symlinks) to `dist/<lesson>/narration/<lang>/` for every course language; the player reaches
   it as `../narration/<lang>/` from the deck base. `--no-narration` skips the copy. `dist/` is

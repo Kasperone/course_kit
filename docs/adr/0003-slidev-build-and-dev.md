@@ -162,4 +162,9 @@ Lesson decks now load the workspace's narration addon (`addons/narration`, see
 [ADR 0004](0004-narration-tts-adapters.md)), and `course build` copies narration clips to
 `dist/<id>/narration/<lang>/`. The offline policy gains one rule: deck code (Vue/TS/JS outside
 `node_modules`, `dist`, `audio` and `scripts`) must not reference external URLs; loopback hosts are
-allowed. `course build`/`course dev` and `scripts/check-deck.mjs` enforce it.
+allowed (a host such as `localhost.evil.com` is not loopback, in `https://` and `//` URLs alike).
+`course build`/`course dev` and `scripts/check-deck.mjs` enforce it. Vue, JS/TS and JSX/TSX files are
+scanned (Slidev registers all of them). Only `node_modules` and `.git` are skipped at any depth;
+`dist`, `target-repo`, `audio` and `scripts` are skipped only as top-level workspace directories,
+because Slidev loads `components/**` at any depth, so a nested `components/scripts/` or
+`components/audio/` is deck code.

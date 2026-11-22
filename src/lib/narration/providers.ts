@@ -10,6 +10,14 @@ import {
   mp3Bitrate,
   type AudioQuality,
 } from './quality.js'
+import {
+  ELEVENLABS_TIMEOUT_MS,
+  PIPER_TIMEOUT_MS,
+  PROBE_TIMEOUT_MS,
+  seconds,
+  spawnLimit,
+  timedOut,
+} from './timeouts.js'
 import { DEFAULT_PIPER_VOICE, loadInstalledVoice, type FetchLike } from './voices.js'
 
 /**
@@ -40,15 +48,15 @@ export function validateProvider(id: string): ProviderId {
 // bundles or links it (ADR 0004).
 
 /** Default venv binary from the README install steps. */
-export function defaultPiperVenvBin(): string {
-  const data = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share')
+export function defaultPiperVenvBin(env: NodeJS.ProcessEnv = process.env): string {
+  const data = env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share')
   return path.join(data, 'course_kit', 'piper-venv', 'bin', 'piper')
 }
 
 /** PIPER_BIN, else the course_kit venv's piper if it exists, else `piper` on PATH. */
 export function piperBin(env: NodeJS.ProcessEnv = process.env): string {
   if (env.PIPER_BIN) return env.PIPER_BIN
-  const venv = defaultPiperVenvBin()
+  const venv = defaultPiperVenvBin(env)
   return existsSync(venv) ? venv : 'piper'
 }
 
@@ -59,6 +67,8 @@ export type PiperOptions = {
   /** Quality preset (default standard). MP3 presets fall back to WAV (with a warning) without ffmpeg. */
   quality?: AudioQuality
   warn?: (message: string) => void
+  /** Limit for one synthesis and one encode (default: PIPER_TIMEOUT_MS / FFMPEG_TIMEOUT_MS). */
+  timeoutMs?: number
 }
 
 export function createPiperProvider(options: PiperOptions): TtsProvider {
@@ -74,7 +84,11 @@ export function createPiperProvider(options: PiperOptions): TtsProvider {
     )
   }
   const bin = piperBin(env)
-  const probe = spawnSync(bin, ['--help'], { stdio: 'ignore', env: piperEnv() })
+  const probe = spawnSync(bin, ['--help'], {
+    stdio: 'ignore',
+    env: piperEnv(),
+    ...spawnLimit(PROBE_TIMEOUT_MS),
+  })
   if (probe.error || probe.status !== 0) {
     throw new Error(
       `Piper is not available (${bin}). Install it in a venv (see README "Narration") or set PIPER_BIN.`,
@@ -136,8 +150,16 @@ export function createPiperProvider(options: PiperOptions): TtsProvider {
           cwd: voice.dir,
           maxBuffer: 512 * 1024 * 1024,
           env: piperEnv(),
+          ...spawnLimit(options.timeoutMs ?? PIPER_TIMEOUT_MS),
         },
       )
+      if (timedOut(r.error)) {
+        return Promise.reject(
+          new Error(
+            `Piper did not finish within ${seconds(options.timeoutMs ?? PIPER_TIMEOUT_MS)} and was stopped (${bin})`,
+          ),
+        )
+      }
       if (r.error)
         return Promise.reject(new Error(`Piper failed to start (${bin}): ${r.error.message}`))
       if (r.status !== 0 || r.stdout.length === 0) {
@@ -146,7 +168,9 @@ export function createPiperProvider(options: PiperOptions): TtsProvider {
       }
       const wav = pcm16ToWav(r.stdout, voice.sampleRate)
       try {
-        return Promise.resolve(kbps !== undefined ? wavToMp3(wav, ffmpeg, kbps) : wav)
+        return Promise.resolve(
+          kbps !== undefined ? wavToMp3(wav, ffmpeg, kbps, options.timeoutMs) : wav,
+        )
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)))
       }
@@ -204,6 +228,8 @@ export type ElevenLabsOptions = {
   /** Wait between retries (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>
   quality?: AudioQuality
+  /** Limit for one request including its body (default ELEVENLABS_TIMEOUT_MS). */
+  timeoutMs?: number
 }
 
 /** Replace every occurrence of the key, so it can never leak through an error message. */
@@ -228,6 +254,7 @@ export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvide
   const doFetch = options.fetch ?? (globalThis.fetch as FetchLike)
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)))
   const quality = options.quality ?? DEFAULT_AUDIO_QUALITY
+  const timeoutMs = options.timeoutMs ?? ELEVENLABS_TIMEOUT_MS
   const out = ELEVENLABS_OUTPUT[quality]
   const settings = {
     quality,
@@ -244,10 +271,11 @@ export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvide
     format: out.format,
     async synthesize(text: string): Promise<Buffer> {
       const body = JSON.stringify({ text, model_id: model })
-      for (let attempt = 1; ; attempt++) {
-        let res: Response
+      type Attempt = { audio: Buffer } | { status: number; detail: string } | { timeout: true }
+      const once = async (): Promise<Attempt> => {
+        const signal = AbortSignal.timeout(timeoutMs)
         try {
-          res = await doFetch(url, {
+          const res = await doFetch(url, {
             method: 'POST',
             headers: {
               'xi-api-key': apiKey,
@@ -255,19 +283,33 @@ export function createElevenLabsProvider(options: ElevenLabsOptions): TtsProvide
               accept: out.format === 'wav' ? 'audio/wav' : 'audio/mpeg',
             },
             body,
+            signal,
           })
+          if (res.ok) return { audio: Buffer.from(await res.arrayBuffer()) }
+          // Redact first, then cut: a key that straddles the limit must not survive as a prefix.
+          const detail = redactKey(await res.text().catch(() => ''), apiKey).slice(0, 300)
+          return { status: res.status, detail }
         } catch (err) {
+          if (signal.aborted) return { timeout: true }
           const msg = err instanceof Error ? err.message : String(err)
           throw new Error(`ElevenLabs request failed: ${redactKey(msg, apiKey)}`)
         }
-        if (res.ok) return Buffer.from(await res.arrayBuffer())
-        const retry = res.status === 429 || res.status >= 500
+      }
+      for (let attempt = 1; ; attempt++) {
+        const r = await once()
+        if ('audio' in r) return r.audio
+        // A timeout is retried like a 429 or 5xx.
+        const retry = 'timeout' in r || r.status === 429 || r.status >= 500
         if (retry && attempt < 3) {
           await sleep(1000 * attempt)
           continue
         }
-        const detail = redactKey((await res.text().catch(() => '')).slice(0, 300), apiKey)
-        throw new Error(`ElevenLabs HTTP ${res.status}${detail ? `: ${detail}` : ''}`)
+        if ('timeout' in r) {
+          throw new Error(
+            `ElevenLabs did not answer within ${seconds(timeoutMs)} (${attempt} attempts)`,
+          )
+        }
+        throw new Error(`ElevenLabs HTTP ${r.status}${r.detail ? `: ${r.detail}` : ''}`)
       }
     },
   }

@@ -221,7 +221,12 @@ describe('workspace template and the faktura example stay in sync', () => {
     const tpl = path.join(repo, 'templates', 'workspace')
     const ex = path.join(repo, 'examples', 'faktura')
     const files = tree(path.join(tpl, 'addons', 'narration'))
-    expect(files.sort()).toEqual(['global-top.vue', 'package.json', 'setup/vite-plugins.ts'])
+    expect(files.sort()).toEqual([
+      'global-top.vue',
+      'package.json',
+      'playback.ts',
+      'setup/vite-plugins.ts',
+    ])
     for (const f of files) {
       expect(readFileSync(path.join(ex, 'addons', 'narration', f), 'utf8')).toBe(
         readFileSync(path.join(tpl, 'addons', 'narration', f), 'utf8'),

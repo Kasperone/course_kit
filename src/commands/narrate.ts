@@ -23,7 +23,7 @@ import {
 } from '../lib/narration/providers.js'
 import type { FetchLike } from '../lib/narration/voices.js'
 import { childEnv } from '../lib/child-env.js'
-import { GIT_TIMEOUT_MS } from '../lib/git.js'
+import { GIT_HARDENING_ARGS, GIT_TIMEOUT_MS, requireModernGit } from '../lib/git.js'
 import { validateLanguage, validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspaceConfig } from '../lib/workspace.js'
 
@@ -38,12 +38,18 @@ export function narrationDir(courseDir: string, lang: string, lessonId: string):
 
 function git(courseDir: string, args: string[]): { status: number; stdout: string } {
   try {
-    const stdout = execFileSync('git', ['--no-optional-locks', '-C', courseDir, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: childEnv(),
-      timeout: GIT_TIMEOUT_MS,
-    })
+    requireModernGit()
+    // The workspace can be a clone of someone else's: same hardening as for a target repository.
+    const stdout = execFileSync(
+      'git',
+      ['--no-optional-locks', ...GIT_HARDENING_ARGS, '-C', courseDir, ...args],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: childEnv(),
+        timeout: GIT_TIMEOUT_MS,
+      },
+    )
     return { status: 0, stdout }
   } catch (err) {
     const e = err as { status?: number; stdout?: string }
@@ -59,11 +65,15 @@ function git(courseDir: string, args: string[]): { status: number; stdout: strin
 export function assertAudioNotCommittable(courseDir: string, dir: string): void {
   if (git(courseDir, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return
   const rel = (p: string) => path.relative(courseDir, p).split(path.sep).join('/')
-  const probe = rel(path.join(dir, 's01-c00-000000000000.mp3'))
-  if (git(courseDir, ['check-ignore', '-q', '--', probe]).status !== 0) {
-    throw new Error(
-      `${probe} would not be ignored by git. Add "audio/local/*" to the workspace .gitignore; generated audio must never be committed.`,
-    )
+  // Every kind of file a run writes: MP3 clips, WAV clips (lossless preset, no-ffmpeg fallback) and
+  // the manifest. A narrower user rule such as `audio/local/**/*.mp3` must not pass.
+  for (const name of ['s01-c00-000000000000.mp3', 's01-c00-000000000000.wav', MANIFEST_FILE]) {
+    const probe = rel(path.join(dir, name))
+    if (git(courseDir, ['check-ignore', '-q', '--', probe]).status !== 0) {
+      throw new Error(
+        `${probe} would not be ignored by git. Add "audio/local/*" to the workspace .gitignore; generated audio must never be committed.`,
+      )
+    }
   }
   const tracked = git(courseDir, ['ls-files', '-z', '--', rel(path.join(courseDir, AUDIO_LOCAL))])
     .stdout.split('\0')
@@ -119,6 +129,10 @@ export type NarrateResult = {
   provider: string
   quality: AudioQuality
   langs: NarrateLangResult[]
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function providerFactory(
@@ -233,13 +247,31 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
       const file = clipFileName(step.slide, step.click, key, provider.format)
       const abs = path.join(dir, file)
       assertNoSymlinkBelow(courseDir, abs, 'Clip')
-      let audio: Buffer
+      const format = provider.format as AudioFormat
+      const at = `${lang} ${step.slide}.${step.click}`
+      let seconds: number | undefined
       if (!options.force && existsSync(abs) && lstatSync(abs).size > 0) {
-        audio = readFileSync(abs)
-        reused++
-      } else {
-        log(`${lang} ${step.slide}.${step.click}: synthesizing ${step.text.length} chars`)
-        audio = await provider.synthesize(step.text)
+        try {
+          seconds = audioDuration(readFileSync(abs), format)
+          reused++
+        } catch (err) {
+          // A clip that is not valid audio (an older bad response, a truncated file) is not reused.
+          log(
+            `${at}: cached clip ${file} is not valid ${format} audio (${errorText(err)}); regenerating`,
+          )
+        }
+      }
+      if (seconds === undefined) {
+        log(`${at}: synthesizing ${step.text.length} chars`)
+        const audio = await provider.synthesize(step.text)
+        // Validate before caching: a proxy's HTML page or a truncated MP3 must not stay in the cache.
+        try {
+          seconds = audioDuration(audio, format)
+        } catch (err) {
+          throw new Error(
+            `The ${provider.id} response for ${at} is not valid ${format} audio (${errorText(err)}); nothing was cached for ${file}`,
+          )
+        }
         writeFileInside(courseDir, abs, audio)
         generated++
         charsSent += step.text.length
@@ -248,7 +280,7 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
         slide: step.slide,
         click: step.click,
         file,
-        duration: Math.round(audioDuration(audio, provider.format as AudioFormat) * 1000) / 1000,
+        duration: Math.round(seconds * 1000) / 1000,
         key,
         text: step.text,
       })
