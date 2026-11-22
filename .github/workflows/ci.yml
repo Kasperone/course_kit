@@ -134,5 +134,5 @@ jobs:
         run: npm ci
 
       - name: Git-dependent tests
-        run: npx vitest run tests/init.test.ts tests/cli.test.ts tests/child-env.test.ts tests/config.test.ts tests/context.test.ts tests/fs-safe.test.ts tests/secrets.test.ts tests/pin.test.ts tests/slidev.test.ts tests/narrate.test.ts tests/quality.test.ts tests/tts.test.ts
+        run: npx vitest run tests/init.test.ts tests/cli.test.ts tests/child-env.test.ts tests/config.test.ts tests/context.test.ts tests/fs-safe.test.ts tests/secrets.test.ts tests/pin.test.ts tests/slidev.test.ts tests/narrate.test.ts tests/quality.test.ts tests/tts.test.ts tests/chat-config.test.ts tests/chat-cli.test.ts
 >>>>>>> feat/step-2-context-pack
