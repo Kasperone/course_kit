@@ -132,7 +132,7 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
   const external = findExternalUrlFiles(courseDir)
   if (external.length > 0) {
     errors.push(
-      `Deck code (Vue/TS/JS) must not reference external URLs (decks stay offline; only localhost is allowed). Offending files: ${external.join(', ')}`,
+      `Deck code (Vue/TS/JS) must not reference external URLs (decks stay offline; only localhost is allowed). Offending files: ${list(external)}`,
     )
   }
   const remote = findRemoteAssetFiles(courseDir)
@@ -330,7 +330,7 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   if (leaks.length > 0) {
     throw new Error(
       `Built output references external servers: ${leaks
-        .map((l) => `${path.relative(courseDir, l.file)} (${l.what})`)
+        .map((l) => `${escapeControls(path.relative(courseDir, l.file))} (${l.what})`)
         .join(', ')}`,
     )
   }
