@@ -6,11 +6,13 @@
 //   FAKE_CLI_LOG       append one JSON line per call (argv, stdin, cwd, cwd entries, system prompt
 //                      file, provider-key variable names seen, CLAUDE_CODE_MAX_OUTPUT_TOKENS and its
 //                      whole environment)
-//   FAKE_CLI_MODE      stream (default) | whole | no-partial | not-logged-in | fail | hang | flood
+//   FAKE_CLI_MODE      stream (default) | whole | no-partial | not-logged-in | fail | fail-proxy | hang | flood
 //                      | stray (answers, but leaves a background process behind, like
 //                      cursor-agent's worker-server)
 //   FAKE_CLI_ANSWER    answer text (default: a lesson part and a [[general]] part)
 //   FAKE_CLI_LOGGED_OUT=1   the login-status command reports "not logged in"
+//   (fail-proxy: fails like a CLI behind a proxy and echoes its HTTPS_PROXY variable; FAKE_CLI_STATUS_PROXY=1
+//   makes the login-status command do the same)
 //   FAKE_CLI_PIDFILE   hang and stray modes: write the pid of a grandchild process here
 import { spawn } from 'node:child_process'
 import { appendFileSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -47,6 +49,10 @@ function status(kind) {
       `${SETTINGS.FAKE_CLI_LOG}.status`,
       JSON.stringify({ kind, env: process.env }) + '\n',
     )
+  }
+  if (SETTINGS.FAKE_CLI_STATUS_PROXY === '1') {
+    process.stderr.write(`fake cli: status failed via proxy ${process.env.HTTPS_PROXY}\n`)
+    process.exit(5)
   }
   const loggedIn = SETTINGS.FAKE_CLI_LOGGED_OUT !== '1'
   if (kind === 'claude') {
@@ -136,6 +142,12 @@ export async function run(kind) {
   if (mode === 'fail') {
     process.stderr.write('fake cli: something broke\nsecond line\n')
     process.exit(3)
+  }
+  if (mode === 'fail-proxy') {
+    process.stderr.write(
+      `fake cli: connect failed via proxy ${process.env.HTTPS_PROXY}\nsecond line\n`,
+    )
+    process.exit(4)
   }
   if (mode === 'not-logged-in') {
     if (kind === 'claude') {

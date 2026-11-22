@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { redactUrlCredentials } from '../context-pack/redact.js'
 import { isPlainObject } from '../validate.js'
 import { SECRET_ENV_NAMES } from '../env.js'
 import type { CliProviderId, Effort } from './config.js'
@@ -572,8 +573,15 @@ function stableWorkspace(env: NodeJS.ProcessEnv): string {
   }
 }
 
+/** First non-empty line of a CLI's output, for an error message: URL passwords (proxies) dropped, then cut. */
 const firstLine = (text: string): string =>
-  (text.split(/\r?\n/).find((l) => l.trim()) ?? '').trim().slice(0, 300)
+  (
+    redactUrlCredentials(text)
+      .split(/\r?\n/)
+      .find((l) => l.trim()) ?? ''
+  )
+    .trim()
+    .slice(0, 300)
 
 /** Map a CLI failure text to a ProviderError with an actionable message (no secrets: CLIs print none). */
 export function classifyCliFailure(

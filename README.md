@@ -68,7 +68,7 @@ Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0
 `course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
 PlantUML, if a file references a web-font CDN, if a slide loads a remote resource (images, embeds, scripts,
 styles, `<Tweet>`/`<Youtube>`, `url:` iframe layouts, reference-style images; inline plain links are fine), or if a
-slide `src:` import or `<<<` snippet leaves the checked files (or reads a context pack or a secret-looking file such as `.env`). `course dev` checks when it starts; `course build` is the gate for
+slide `src:` import, `<<<` snippet or local image/asset path leaves the checked files (or reads a context pack or a secret-looking file such as `.env`). `course dev` checks when it starts; `course build` is the gate for
 later edits. Slidev runs without your API keys in its environment. The
 build fails if its output references plantuml.com, a font CDN or the jsDelivr favicon. `course build` does not
 need the target repo.
@@ -247,7 +247,8 @@ How the CLI providers run, and what that costs you:
   anything it started are killed. The CLI gets an allowlisted environment
   (`PATH`, `HOME`, locale, temp dirs, proxy and CA-certificate settings and its own login/config variables such as
   `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `CURSOR_API_KEY`): `GITHUB_TOKEN`, `ANTHROPIC_*`,
-  `ELEVENLABS_API_KEY` and everything else of your shell stay out, so it always uses its own login.
+  `ELEVENLABS_API_KEY` and everything else of your shell stay out, so it always uses its own login. A password in a proxy
+  URL (`http://user:secret@proxy:3128`) is removed from any error the CLI echoes.
 - **Slower and uncached.** The API provider reuses the cached ~23k-token prefix; a CLI provider
   sends the whole prompt every time (whatever caching the CLI does on its own is outside
   course_kit's control) and adds a few seconds of CLI start-up. Costs show as `subscription`.

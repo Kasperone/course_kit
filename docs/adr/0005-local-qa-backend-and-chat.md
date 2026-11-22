@@ -236,7 +236,10 @@ Cursor ids are account-dependent, so the README points to that command.
   locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`/`TMP`/`TEMP`, `TERM`, `NO_COLOR` and the Windows
   basics; the network settings both CLIs read (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
   `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, so they work behind a proxy; not
-  `NODE_TLS_REJECT_UNAUTHORIZED`); and each CLI's own login/config variables (`CliSpec.envNames`,
+  `NODE_TLS_REJECT_UNAUTHORIZED`). Proxy URLs may carry credentials (`http://user:secret@proxy:3128`), and a CLI
+  can echo one in its error: the first line of a CLI's output that goes into an error or status message, and every
+  message the server sends or logs (`redactSecrets` in `src/lib/env.ts`), has the password of any
+  `user:password@host` URL removed (`redactUrlCredentials`, ADR 0002); and each CLI's own login/config variables (`CliSpec.envNames`,
   names taken from `cursor-agent --help`, the variables its code reads and the `claude` binary):
   Claude Code `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; a subscription token, not an API
   key), `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`; Cursor `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`,

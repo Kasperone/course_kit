@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { redactUrlCredentials } from './context-pack/redact.js'
 
 /**
  * Secrets (API keys) for a course workspace. A key comes from the environment, else from the
@@ -37,9 +38,12 @@ export function readWorkspaceSecret(
   return null
 }
 
-/** Replace every occurrence of each secret, so none can leak through a message. */
+/**
+ * Replace every occurrence of each secret, so none can leak through a message, and drop the password
+ * of any `user:password@host` URL (a proxy URL a tool echoes in its error).
+ */
 export function redactSecrets(text: string, secrets: Array<string | null | undefined>): string {
   let out = text
   for (const s of secrets) if (s) out = out.split(s).join('‹redacted›')
-  return out
+  return redactUrlCredentials(out)
 }
