@@ -88,10 +88,13 @@ function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}
   return opts.trim === false ? out : out.trim()
 }
 
-/** Git call that writes inside the workspace we are creating (`cwd`). */
-function gitWrite(cwd: string, args: string[]): void {
+/**
+ * Git call that writes inside the workspace we are creating (`cwd`). `hardened` adds the pinned
+ * config for calls that run in, or read, the target repository's submodule clone.
+ */
+function gitWrite(cwd: string, args: string[], hardened = false): void {
   requireModernGit()
-  execFileSync('git', args, {
+  execFileSync('git', hardened ? [...GIT_HARDENING_ARGS, ...args] : args, {
     cwd,
     stdio: 'pipe',
     env: childEnv(),
@@ -393,6 +396,6 @@ export function checkoutSubmoduleCommit(
   commit: string,
 ): void {
   if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
-  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit])
-  gitWrite(courseDir, ['add', '--', submodulePath])
+  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit], true)
+  gitWrite(courseDir, ['add', '--', submodulePath], true)
 }

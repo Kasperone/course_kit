@@ -25,7 +25,7 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 // The name must end at whitespace, `/` or `>`: a quoted `<plantuml.version>` is not the component.
 const COMPONENT = /<\s*plant-?uml(?=[\s/>])/i
 const WEB_FONTS = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.coollabs\.io/i
-const REMOTE_URL = String.raw`(?:https?:)?//(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
+const REMOTE_URL = String.raw`(?:https?:[\\/]*|[\\/]{2})(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
 const REMOTE_ASSET = new RegExp(
   [
     String.raw`!\[[^\]]*\]\(\s*<?` + REMOTE_URL,
@@ -49,20 +49,31 @@ function isSymlink(p) {
   }
 }
 
-// `src:` values in slide frontmatter, outside fenced code blocks.
+// `src:` values anywhere in a Markdown file. Slidev reads slide frontmatter in more spellings than
+// the canonical `---` block: a ```yaml code block at the start of a slide, a quoted key, an indented
+// mapping, the flow form `{ src: x }` and a value on the next line. Every line is scanned, fences
+// included: a false positive only matters when the path itself is refused.
 function slideImports(text) {
   const out = []
-  let fence = null
-  for (const line of text.split(/\r?\n/)) {
-    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
-    if (f) {
-      if (fence === null) fence = f[1]
-      else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = null
-      continue
+  const clean = (v) =>
+    // A quoted value ends at its closing quote (a trailing comment may follow); `#2-3` is a slide range.
+    (/^(["'])(.*?)\1/.exec(v.trim())?.[2] ?? v).replace(/#.*$/, '').trim()
+  const lines = text.split(/\r?\n/)
+  lines.forEach((line, i) => {
+    const block = line.match(/^[ \t]*(?:-[ \t]+)?["']?src["']?[ \t]*:[ \t]*(.*?)[ \t]*$/)
+    if (block) {
+      let value = block[1]
+      if (value === '' || /^[|>][+-]?\d?$/.test(value)) {
+        value = lines.slice(i + 1).find((l) => l.trim() !== '') ?? ''
+      }
+      if (clean(value) !== '') out.push(clean(value))
     }
-    const m = fence === null ? line.match(/^src:\s*(.+?)\s*$/) : null
-    if (m) out.push(m[1].replace(/^(["'])(.*)\1$/, '$2').replace(/#.*$/, ''))
-  }
+    for (const m of line.matchAll(
+      /[{,][ \t]*["']?src["']?[ \t]*:[ \t]*("[^"]*"|'[^']*'|[^,}]*)/g,
+    )) {
+      if (clean(m[1]) !== '') out.push(clean(m[1]))
+    }
+  })
   return out
 }
 
@@ -183,7 +194,14 @@ function localAssetRefs(text) {
 // directory (`@/` is the deck's directory). A leading `/` is Vite's: the public/ directory or the
 // root, an existing filesystem path, or `/@fs/<path>`. Query and fragment are dropped; the raw,
 // percent-decoded and backslash-normalised spellings are all tried.
-function assetTargets(file, ref) {
+// `@/` is Slidev's userRoot: the directory of the entry deck, also inside a file pulled in with
+// `src:`. The entry is not known here, so the importing file's directory and every deck directory
+// (a `slides.md`) are all checked.
+function atTargets(file, rest, deckDirs) {
+  return [path.dirname(file), ...deckDirs].map((dir) => path.resolve(dir, rest))
+}
+
+function assetTargets(file, ref, deckDirs) {
   if (NON_LOCAL_REF.test(ref)) return []
   const base = ref.replace(/^file:\/\//i, '').replace(/[?#].*$/s, '')
   if (base === '') return []
@@ -199,7 +217,7 @@ function assetTargets(file, ref) {
     else if (v.startsWith('/')) {
       targets.push(path.join(root, 'public', v), path.join(root, v))
       if (existsSync(v)) targets.push(v)
-    } else if (v.startsWith('@/')) targets.push(path.resolve(path.dirname(file), v.slice(2)))
+    } else if (v.startsWith('@/')) targets.push(...atTargets(file, v.slice(2), deckDirs))
     else targets.push(path.resolve(path.dirname(file), v))
   }
   return targets
@@ -235,7 +253,11 @@ const plantUml = []
 const webFonts = []
 const remote = []
 const imports = []
-for (const file of files(root)) {
+const allFiles = [...files(root)]
+const deckDirs = allFiles
+  .filter((f) => path.basename(f) === 'slides.md')
+  .map((f) => path.dirname(f))
+for (const file of allFiles) {
   // Context packs quote the target repository as data; they are not slides (and no deck may import one).
   if (path.basename(file) === 'context-pack.md') continue
   const text = readFileSync(file, 'utf8')
@@ -244,7 +266,7 @@ for (const file of files(root)) {
   if (WEB_FONTS.test(text)) webFonts.push(rel)
   if (REMOTE_ASSET.test(text)) remote.push(rel)
   for (const ref of localAssetRefs(text)) {
-    if (assetTargets(file, ref).some((t) => importLeavesTree(t, ''))) {
+    if (assetTargets(file, ref, deckDirs).some((t) => importLeavesTree(t, ''))) {
       imports.push(`${rel.split(path.sep).join('/')} -> asset ${ref}`)
     }
   }
@@ -255,13 +277,15 @@ for (const file of files(root)) {
       }
     }
     for (const snippet of snippetImports(text)) {
-      // `@/` is Slidev's root, which is the deck's own directory (checked against Slidev 52.20.1).
-      const ref = snippet.path.startsWith('@/') ? snippet.path.slice(2) : snippet.path
-      const target = path.resolve(path.dirname(file), ref)
+      const targets = snippet.path.startsWith('@/')
+        ? atTargets(file, snippet.path.slice(2), deckDirs)
+        : [path.resolve(path.dirname(file), snippet.path)]
       const bad =
-        importLeavesTree(target, snippet.path) ||
-        ['plantuml', 'puml'].includes(snippet.lang) ||
-        (snippet.lang === 'mermaid' && mentionsRemoteAsset(target))
+        targets.some(
+          (target) =>
+            importLeavesTree(target, snippet.path) ||
+            (snippet.lang === 'mermaid' && mentionsRemoteAsset(target)),
+        ) || ['plantuml', 'puml'].includes(snippet.lang)
       if (bad) imports.push(`${rel} -> <<< ${snippet.path}`)
     }
   }

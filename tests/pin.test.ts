@@ -154,9 +154,9 @@ describe('course pin', () => {
       }
     }
     const calls = readFileSync(log, 'utf8').trim().split('\n')
-    const reads = calls.filter((c) => /\b(rev-parse|status|fetch|cat-file)\b/.test(c))
-    // rev-parse, status, cat-file (all runs) and fetch (submodule mode) were seen ...
-    for (const verb of ['rev-parse', 'status', 'cat-file', 'fetch']) {
+    const reads = calls.filter((c) => /\b(rev-parse|status|fetch|cat-file|checkout|add)\b/.test(c))
+    // rev-parse, status, cat-file (all runs) and fetch, checkout, add (submodule mode) were seen ...
+    for (const verb of ['rev-parse', 'status', 'cat-file', 'fetch', 'checkout', 'add']) {
       expect(
         reads.some((c) => c.includes(` ${verb} `)),
         verb,
