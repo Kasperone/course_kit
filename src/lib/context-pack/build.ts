@@ -17,7 +17,7 @@ import { buildDocExcerpts, DOC_CANDIDATES } from './docs.js'
 import { estimateTokens } from './estimate.js'
 import { selectEntries, type Skipped } from './files.js'
 import { resolveLimits, type PackLimits } from './limits.js'
-import { fence, inlineCode, numberedExcerpt, tableCell } from './markdown.js'
+import { escapeControls, fence, inlineCode, numberedExcerpt, tableCell } from './markdown.js'
 import { redactSecrets } from './redact.js'
 import { sensitiveReason } from './sensitive.js'
 import { findRelatedTests } from './tests-heuristic.js'
@@ -137,13 +137,13 @@ function warningsFor(
   const sensitive = count('sensitive')
   if (sensitive.length > 0) {
     warnings.push(
-      `${sensitive.length} sensitive file(s) were not embedded: ${sensitive.map((s) => s.path).join(', ')}`,
+      `${sensitive.length} sensitive file(s) were not embedded: ${sensitive.map((s) => escapeControls(s.path)).join(', ')}`,
     )
   }
   if (redactions.length > 0) {
     const total = redactions.reduce((n, r) => n + r.count, 0)
     warnings.push(
-      `Redacted ${total} secret-looking value(s) in ${redactions.length} file(s): ${redactions.map((r) => r.path).join(', ')}. Review the pack before sharing it.`,
+      `Redacted ${total} secret-looking value(s) in ${redactions.length} file(s): ${redactions.map((r) => escapeControls(r.path)).join(', ')}. Review the pack before sharing it.`,
     )
   }
   const overCap = count('over-cap')
@@ -159,12 +159,14 @@ function warningsFor(
     )
   }
   if (missingFiles.length > 0) {
-    warnings.push(`lesson.json files not found at the pinned commit: ${missingFiles.join(', ')}`)
+    warnings.push(
+      `lesson.json files not found at the pinned commit: ${missingFiles.map(escapeControls).join(', ')}`,
+    )
   }
   // Default globs cover several layouts, so only user-written globs that match nothing warn.
   const userUnmatched = unmatchedGlobs.filter((g) => !DEFAULT_LESSON_GLOBS.includes(g))
   if (userUnmatched.length > 0) {
-    warnings.push(`Globs that matched nothing: ${userUnmatched.join(', ')}`)
+    warnings.push(`Globs that matched nothing: ${userUnmatched.map(escapeControls).join(', ')}`)
   }
   return warnings
 }

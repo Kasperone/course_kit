@@ -223,6 +223,63 @@ describe('course narrate', () => {
   })
 })
 
+describe('the clip cache', () => {
+  const html = () => Promise.resolve(Buffer.from('<html>Please log in to the Wi-Fi</html>'))
+
+  it('does not cache a response that is not audio, and names the clip in the error', async () => {
+    const { workspace } = await narratedWorkspace()
+    const bad = fakeProvider({ synthesize: html })
+    await expect(
+      runNarrate({
+        lessonId: '01-placeholder',
+        cwd: workspace,
+        lang: 'en',
+        makeProvider: () => bad.provider,
+      }),
+    ).rejects.toThrow(
+      /response for en 1\.0 is not valid wav audio .*nothing was cached for s01-c00-/,
+    )
+    const dir = narrationDir(workspace, 'en', '01-placeholder')
+    expect(clipsIn(dir)).toEqual([])
+
+    // The next run with a working provider is not stuck on the bad response.
+    const good = fakeProvider()
+    const result = await runNarrate({
+      lessonId: '01-placeholder',
+      cwd: workspace,
+      lang: 'en',
+      makeProvider: () => good.provider,
+    })
+    expect(result.langs[0]).toMatchObject({ generated: 3, reused: 0 })
+  })
+
+  it('regenerates a cached clip that is not valid audio instead of failing on it forever', async () => {
+    const { workspace } = await narratedWorkspace()
+    const first = fakeProvider()
+    await runNarrate({
+      lessonId: '01-placeholder',
+      cwd: workspace,
+      lang: 'en',
+      makeProvider: () => first.provider,
+    })
+    const dir = narrationDir(workspace, 'en', '01-placeholder')
+    const [clip] = clipsIn(dir)
+    writeFileSync(path.join(dir, clip!), '<html>truncated</html>')
+    const logs: string[] = []
+    const second = fakeProvider()
+    const result = await runNarrate({
+      lessonId: '01-placeholder',
+      cwd: workspace,
+      lang: 'en',
+      makeProvider: () => second.provider,
+      log: (m) => logs.push(m),
+    })
+    expect(result.langs[0]).toMatchObject({ generated: 1, reused: 2 })
+    expect(logs.join('\n')).toMatch(new RegExp(`cached clip ${clip!} is not valid wav audio`))
+    expect(wavDuration(readFileSync(path.join(dir, clip!)))).toBeGreaterThan(0)
+  })
+})
+
 describe('generated audio is never committable', () => {
   it('passes when audio/local is gitignored and nothing under it is tracked', async () => {
     const { workspace } = await narratedWorkspace()
@@ -243,6 +300,21 @@ describe('generated audio is never committable', () => {
     await expect(
       runNarrate({ lessonId: '01-placeholder', cwd: workspace, makeProvider: () => provider }),
     ).rejects.toThrow(/would not be ignored by git/)
+    expect(calls).toEqual([])
+  })
+
+  it('refuses a narrower ignore rule that covers MP3 clips but not WAV clips or the manifest', async () => {
+    const { workspace } = await narratedWorkspace()
+    const ignore = path.join(workspace, '.gitignore')
+    writeFileSync(
+      ignore,
+      readFileSync(ignore, 'utf8').replace(/^audio\/local\/\*$/m, 'audio/local/**/*.mp3'),
+    )
+    initRepo(workspace)
+    const { provider, calls } = fakeProvider()
+    await expect(
+      runNarrate({ lessonId: '01-placeholder', cwd: workspace, makeProvider: () => provider }),
+    ).rejects.toThrow(/\.wav would not be ignored by git/)
     expect(calls).toEqual([])
   })
 
@@ -346,6 +418,64 @@ describe('offline policy for deck code', () => {
 
     installFakeSlidev(workspace)
     expect(() => runBuild({ cwd: workspace })).toThrow(/must not reference external URLs/)
+  })
+
+  it.each([
+    ['a component in a nested scripts/ directory', 'components/scripts/Tracker.vue', true],
+    ['a component in a nested audio/ directory', 'components/audio/Player.vue', true],
+    ['a TSX component', 'components/Widget.tsx', true],
+    ['a JSX component', 'components/Widget.jsx', true],
+    ['a layout', 'layouts/Wide.vue', true],
+    ['the top-level scripts/ helpers (not deck code)', 'scripts/helper.mjs', false],
+    ['the top-level audio/ directory', 'audio/local/x.js', false],
+    ['node_modules at any depth', 'components/node_modules/x/index.js', false],
+  ])('scans %s', async (_what, file, flagged) => {
+    const { workspace } = await makeWorkspace()
+    mkdirSync(path.dirname(path.join(workspace, file)), { recursive: true })
+    writeFileSync(path.join(workspace, file), 'export const u = "https://evil.example.com/t"\n')
+    expect(findExternalUrlFiles(workspace)).toEqual(flagged ? [file] : [])
+    // The workspace guard script (npm run dev/build) applies the same rules.
+    let failed = false
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(workspace, 'scripts', 'check-deck.mjs'), workspace],
+        {
+          stdio: 'pipe',
+        },
+      )
+    } catch {
+      failed = true
+    }
+    expect(failed).toBe(flagged)
+  })
+
+  it.each([
+    ['//localhost.evil.com/x.js', true],
+    ['//127.0.0.1.nip.io/x', true],
+    ['//evil.example.com/x.js', true],
+    ['//localhost/x.js', false],
+    ['//localhost:3030/x.js', false],
+    ['//127.0.0.1/x.js', false],
+    ['//127.0.0.1:8080/x.js', false],
+  ])('protocol-relative %s -> flagged: %s', async (url, flagged) => {
+    const { workspace } = await makeWorkspace()
+    mkdirSync(path.join(workspace, 'components'), { recursive: true })
+    writeFileSync(path.join(workspace, 'components', 'P.ts'), `const u = "${url}"\n`)
+    expect(findExternalUrlFiles(workspace).length > 0).toBe(flagged)
+    let failed = false
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(workspace, 'scripts', 'check-deck.mjs'), workspace],
+        {
+          stdio: 'pipe',
+        },
+      )
+    } catch {
+      failed = true
+    }
+    expect(failed).toBe(flagged)
   })
 
   it('the workspace template (with the narration player) passes the policy', async () => {

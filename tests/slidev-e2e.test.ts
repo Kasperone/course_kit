@@ -8,6 +8,7 @@ import { runBuild, slidevBin } from '../src/commands/slidev.js'
 import {
   deckFrontmatter,
   findForbiddenBuildRefs,
+  findOutsideImports,
   PLANTUML_DISABLED_SERVER,
 } from '../src/lib/slidev.js'
 
@@ -124,6 +125,37 @@ const flag = (env: string, name: string) => env.match(new RegExp(`"${name}":\\s*
 const without = (pattern: RegExp) => OFFLINE.replace(pattern, '')
 
 describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
+  it('snippet imports: Slidev inlines any workspace file, so the guard refuses secrets (negative control)', () => {
+    try {
+      // `@/` is the deck's own directory; a benign snippet there is inlined and not flagged.
+      const entry = probeDeck(
+        OFFLINE,
+        '<<< @/benign.txt text\n\n<<< ./dummy.env text\n\n<<< ./diagram.txt plantuml\n',
+      )
+      const dir = path.dirname(entry)
+      writeFileSync(path.join(dir, 'benign.txt'), 'benign-snippet-marker\n')
+      writeFileSync(path.join(dir, 'dummy.env'), 'E2E_DUMMY_SECRET=dummy-env-marker\n')
+      writeFileSync(path.join(dir, 'diagram.txt'), '@startuml\nA -> B\n@enduml\n')
+      const out = path.join(dir, 'out')
+      // Without the guard Slidev inlines the env file, and a PlantUML snippet becomes a component.
+      execFileSync(process.execPath, [slidevBin(workspace), 'build', entry, '--out', out], {
+        cwd: workspace,
+        stdio: 'pipe',
+      })
+      const text = allText(out)
+      expect(text).toContain('benign-snippet-marker')
+      expect(text).toContain('dummy-env-marker')
+      // The guard sees both problems, and not the benign snippet.
+      const probe = path.relative(workspace, entry).split(path.sep).join('/')
+      expect(findOutsideImports(workspace)).toEqual([
+        `${probe} -> <<< ./diagram.txt`,
+        `${probe} -> <<< ./dummy.env`,
+      ])
+    } finally {
+      cleanup()
+    }
+  }, 180_000)
+
   it('PlantUML: the data: server keeps diagrams off plantuml.com; the scan catches the default', () => {
     try {
       const safe = buildProbe(OFFLINE, PLANTUML_BLOCK)

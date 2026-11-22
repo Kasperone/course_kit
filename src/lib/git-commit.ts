@@ -14,7 +14,11 @@ import { FULL_SHA_RE, GIT_HARDENING_ARGS, GIT_TIMEOUT_MS, requireModernGit } fro
  *   (`GIT_HARDENING_ARGS`): implicit bare repositories are refused (a shared workspace could commit
  *   a bare repo's files and make it the target), signatures are never verified (no `gpg.program`),
  *   and no fsmonitor hook runs;
- * - git runs with an allowlisted environment (`childEnv()`), so no API key reaches it or its hooks.
+ * - git runs with an allowlisted environment (`childEnv()`), so no API key reaches it or its hooks;
+ * - git never touches the network: in a partial clone (`--filter=blob:none`) git would otherwise
+ *   run `git fetch` against the target's own remote config to fill in a missing blob. Reads fail
+ *   with a clear error instead (`GIT_NO_LAZY_FETCH` from git 2.44 on; `protocol.allow=never` stops
+ *   older versions and any other transport).
  */
 
 export type TreeEntry = {
@@ -34,6 +38,8 @@ const BASE_ARGS = [
   '--literal-pathspecs',
   '-c',
   'core.quotePath=false',
+  '-c',
+  'protocol.allow=never',
   ...GIT_HARDENING_ARGS,
 ]
 
@@ -45,7 +51,7 @@ function git(repo: string, args: string[], opts: { input?: string; maxBuffer?: n
     stdio: ['pipe', 'pipe', 'pipe'],
     // A read of a large repository is still seconds; a hung git must not hang us.
     timeout: GIT_TIMEOUT_MS,
-    env: childEnv(),
+    env: { ...childEnv(), GIT_NO_LAZY_FETCH: '1' },
   })
 }
 
@@ -79,11 +85,14 @@ export function listTreeAtCommit(repo: string, commit: string): TreeEntry[] {
   assertFullSha(commit)
   const out = git(repo, ['ls-tree', '-r', '-z', '-l', '--full-tree', '--end-of-options', commit])
   const entries: TreeEntry[] = []
+  let unreadable = 0
   for (const record of out.toString('utf8').split('\0')) {
     if (!record) continue
     const tab = record.indexOf('\t')
     const meta = record.slice(0, tab).trim().split(/\s+/)
     const [mode, type, oid, size] = meta as [string, TreeEntry['type'], string, string]
+    // A blob that is not in the object database (partial clone) has no size: git prints `BAD`.
+    if (size !== '-' && !/^\d+$/.test(size)) unreadable++
     entries.push({
       mode,
       type,
@@ -93,6 +102,7 @@ export function listTreeAtCommit(repo: string, commit: string): TreeEntry[] {
       symlink: mode === '120000',
     })
   }
+  if (unreadable > 0) throw partialCloneError(repo, unreadable)
   return entries
 }
 
@@ -111,10 +121,18 @@ export function readBlobs(
     if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(oid)) throw new Error(`Bad object id: ${oid}`)
   }
   const total = [...sizes.values()].reduce((a, b) => a + b, 0)
-  const out = git(repo, ['cat-file', '--batch'], {
-    input: [...sizes.keys()].join('\n') + '\n',
-    maxBuffer: total + sizes.size * 128 + 1024,
-  })
+  let out: Buffer
+  try {
+    out = git(repo, ['cat-file', '--batch'], {
+      input: [...sizes.keys()].join('\n') + '\n',
+      maxBuffer: total + sizes.size * 128 + 1024,
+    })
+  } catch (err) {
+    // Older git (no GIT_NO_LAZY_FETCH) fails on the blocked fetch instead of reporting "missing".
+    if (/promisor|transport .* not allowed/i.test(stderrOf(err))) throw partialCloneError(repo)
+    throw err
+  }
+  let missing = 0
   let pos = 0
   while (pos < out.length) {
     const nl = out.indexOf(0x0a, pos)
@@ -122,12 +140,25 @@ export function readBlobs(
     const header = out.subarray(pos, nl).toString('utf8')
     pos = nl + 1
     const parts = header.split(' ')
-    if (parts[1] === 'missing' || parts.length < 3) continue
+    if (parts[1] === 'missing' || parts.length < 3) {
+      missing++
+      continue
+    }
     const size = Number(parts[2])
     result.set(parts[0]!, Buffer.from(out.subarray(pos, pos + size)))
     pos += size + 1 // content is followed by a newline
   }
+  if (missing > 0) throw partialCloneError(repo, missing)
   return result
+}
+
+function partialCloneError(repo: string, missing?: number): Error {
+  const what = missing === undefined ? 'Some files' : `${missing} file(s)`
+  return new Error(
+    `${what} at the pinned commit are not in the local object database of ${repo}: it looks like a ` +
+      'partial clone (course_kit never fetches from the target). Fetch the missing files yourself, ' +
+      'or point COURSE_TARGET_REPO at a full clone.',
+  )
 }
 
 /** Decode a blob as UTF-8 text, or null if it looks binary (NUL byte). */

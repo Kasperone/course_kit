@@ -228,9 +228,24 @@ Cursor ids are account-dependent, so the README points to that command.
   either kills the whole process group (SIGTERM, SIGKILL 2 s later). An aborted request (browser
   gone, Ctrl+C in `course ask`) does the same. After a normal exit the rest of the group gets
   SIGTERM too: `cursor-agent` leaves a per-workspace `worker-server` running otherwise.
-- **Environment.** The child gets the parent's environment minus `ANTHROPIC_*` and `ELEVENLABS_*`
-  (and the other `SECRET_ENV_NAMES`), so a workspace key never reaches a CLI and the CLI always
-  uses its own login. Claude Code also gets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` = `chat.maxOutputTokens`.
+- **Environment: an allowlist** (`cliChildEnv()` in `cli-provider.ts`), for answer runs and status
+  commands alike. A denylist would let everything else in the user's shell through (`GITHUB_TOKEN`,
+  cloud credentials, `ELEVENLABS_API_KEY`, `NODE_OPTIONS`, ...) to a program that is not ours. The
+  child gets: `PATH`, `HOME` (the OAuth logins of both CLIs live in config files below it, which is
+  why a login keeps working: checked with `HOME` and `PATH` as the only variables), `USER`/`LOGNAME`,
+  locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`/`TMP`/`TEMP`, `TERM`, `NO_COLOR` and the Windows
+  basics; the network settings both CLIs read (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
+  `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, so they work behind a proxy; not
+  `NODE_TLS_REJECT_UNAUTHORIZED`); and each CLI's own login/config variables (`CliSpec.envNames`,
+  names taken from `cursor-agent --help`, the variables its code reads and the `claude` binary):
+  Claude Code `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`; a subscription token, not an API
+  key), `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`; Cursor `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`,
+  `CURSOR_API_ENDPOINT`, `CURSOR_CONFIG_DIR`, `CURSOR_DATA_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`.
+  One CLI never gets the other's variables. `ANTHROPIC_*` and `ELEVENLABS_*` (and the other
+  `SECRET_ENV_NAMES`) never pass whatever a list says, so a workspace key never reaches a CLI, Claude
+  Code is not switched to API billing and the CLI always uses its own login. A new variable a CLI
+  needs is added to its `envNames` (with a test), not by loosening the base list. Claude Code also
+  gets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` = `chat.maxOutputTokens`.
 - **Status.** `claude auth status --json` (`loggedIn`) and `cursor-agent status --format json`
   (`isAuthenticated`): only that boolean is read; account details are never parsed, logged or
   returned. Results are cached for 60 s (failures for 5 s). Not installed / not logged in become

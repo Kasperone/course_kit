@@ -81,7 +81,7 @@ course voices list
   breakpoint, frame-tag escaping (hostile pack), ask validation, `SourceSplitter` markers.
 - `tests/chat-cli-provider.test.ts` — `claude-cli` / `cursor-cli` against fake CLIs on PATH
   (`tests/helpers/fake-claude.mjs`, `fake-cursor-agent.mjs`): argument lists (no shell, no permission-skipping
-  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), stripped env, stream-json parsing, not installed / not
+  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), allowlisted env for runs and status (GITHUB_TOKEN etc. do not reach the child; the fakes read `fake-cli.json`, not variables), stream-json parsing, not installed / not
   logged in, timeout and abort kill the process group, output cap, leftovers, status, markers, cost label.
 - `tests/chat-clean.test.ts` — `course clean`: slug and cache-dir paths, `--dry-run`, only our folder removed, symlink and
   foreign-workspace refusal.
@@ -112,7 +112,7 @@ Always run lint and tests before pushing.
   write it. Tests use mocked HTTP only; never make live API calls.
 - Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
   an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty cwd (Cursor: the one stable `cursor-ws` in the cache dir, never with course files; `--trust` only for it), with
-  no tools, a timeout, an output cap and `ANTHROPIC_*`/`ELEVENLABS_*` stripped from their env. Never add
+  no tools, a timeout, an output cap and an allowlisted env (`cliChildEnv()`: base, proxy/CA and the CLI's own `CliSpec.envNames`; `ANTHROPIC_*`/`ELEVENLABS_*` never pass; a variable a CLI needs goes into its `envNames` with a test). Never add
   `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
   CLIs only; never run the real `claude` / `cursor-agent` from a test.
 - Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via
@@ -120,7 +120,7 @@ Always run lint and tests before pushing.
   fake provider or the local mock API; `tests/setup.ts` refuses any non-loopback `fetch`. Never make live calls.
 - Child processes course_kit starts (git, jdeps, Slidev, the narration audio guard) get `childEnv()` from
   `src/lib/child-env.ts` (an allowlist): provider keys never reach them or anything they spawn. The chat CLI
-  providers build their own stripped environment (`cli-provider.ts`).
+  providers build their own allowlisted environment (`cliChildEnv()` in `cli-provider.ts`).
 - Agents never read, print or edit a workspace `.env` (e.g. `examples/faktura/.env`); only the program reads it.
 - Test workers are capped at 4 (`vitest.config.ts`); run heavy suites with `nice -n 10 ionice -c3`.
 - Write files inside a workspace only through `src/lib/fs-safe.ts` (`writeFileInside`, `mkdirInside`): they refuse
@@ -162,9 +162,11 @@ Decks are Mermaid-only, fully offline and export-free (ADR 0001, 0003). Every de
 refuse to start Slidev otherwise, or if any workspace file has a PlantUML fence or `<PlantUml>` component,
 references a web-font CDN or loads a remote resource (images, embeds, scripts, styles, `url:` iframe layouts,
 reference-style images, Mermaid `img:` nodes; inline plain links are fine), if deck code (Vue/TS/JS) references an
-external URL, or if a slide `src:` import leaves the checked files. `course dev` checks once at startup (Slidev
-hot-reloads; `course build` is the gate). Slidev runs with `childEnv()` plus `NODE_*`/`VITE_*`/`SLIDEV_*`. The
-template's
+external URL, or if a slide `src:` import or `<<<` snippet leaves the checked files, targets a context pack or a
+secret-looking file (`.env*`, keys) or is a PlantUML snippet. Context packs are skipped by every scan. `course dev`
+checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with `childEnv()` plus
+`NODE_*`/`VITE_*`/`SLIDEV_*` (secret-looking names are dropped even under those wildcards) and a 10-minute build
+timeout. The template's
 `scripts/check-deck.mjs` applies the same rules for `npm run dev/build`. `course build` fails if the built output
 mentions plantuml.com, a font CDN or (in HTML) cdn.jsdelivr.net. Never remove these keys when editing a deck's
 headmatter.
@@ -203,8 +205,10 @@ never the working tree, never `git show`/shell. A `targetRepo` inside the worksp
 `rev-parse --verify --end-of-options` and a lock-free `git --no-optional-locks status`; it never writes to the
 target. Validate any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content
 must go through `redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Anything the CLI
-prints that quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`). Extend
-`src/analyzers/` for language-specific graphs.
+prints that quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`), and each such
+fragment is escaped where it enters the message (`escapeControls()`, or `JSON.stringify()` for a rejected value):
+`terminalSafe` keeps line breaks for git's multi-line errors, so a newline in a file name would otherwise forge a
+line. Extend `src/analyzers/` for language-specific graphs.
 
 ## Q&A chat
 

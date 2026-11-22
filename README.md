@@ -68,7 +68,7 @@ Decks are Mermaid-only, fully offline and export-free (see [ADR 0003](docs/adr/0
 `course build`/`course dev` refuse to start if a deck's headmatter drops these settings, if a deck contains
 PlantUML, if a file references a web-font CDN, if a slide loads a remote resource (images, embeds, scripts,
 styles, `<Tweet>`/`<Youtube>`, `url:` iframe layouts, reference-style images; inline plain links are fine), or if a
-slide `src:` import leaves the checked files. `course dev` checks when it starts; `course build` is the gate for
+slide `src:` import or `<<<` snippet leaves the checked files (or reads a context pack or a secret-looking file such as `.env`). `course dev` checks when it starts; `course build` is the gate for
 later edits. Slidev runs without your API keys in its environment. The
 build fails if its output references plantuml.com, a font CDN or the jsDelivr favicon. `course build` does not
 need the target repo.
@@ -98,7 +98,7 @@ course narrate 01-architecture --lang all            # --dry-run first to see st
   `audio/ATTRIBUTION.md`).
 - `PIPER_BIN` and `COURSE_KIT_VOICES_DIR` override the binary and voice directory. MP3 presets need
   `ffmpeg` on `PATH` (or `FFMPEG_BIN`); without it, clips are written as WAV with a warning. Piper and ffmpeg run without your API keys in their
-  environment (only `PATH`, `HOME`, locale, temp dir and `PIPER_*`/`ESPEAK_*`/library paths pass).
+  environment (they get `PATH`, `HOME`, user name, locale, `XDG_*`, temp dir, terminal variables and, for Piper, `PIPER_*`/`ESPEAK_*`/library paths; no proxy, ssh or git variables) and are stopped if they hang.
 
 **Audio quality.** `--audio-quality <preset>`, or `"audioQuality": "<preset>"` in `course.json` for the
 whole course (the flag wins; default `standard`). The preset is part of the cache key, so switching
@@ -244,8 +244,10 @@ How the CLI providers run, and what that costs you:
 - **The prompt goes through stdin** (Claude Code: our instructions and the lesson materials through a
   0600 file in that temp directory, which is deleted afterwards), never through the command line.
 - **Limits.** Each answer has a timeout (default 180 s) and an 8 MB output cap; then the CLI and
-  anything it started are killed. `ANTHROPIC_*` and `ELEVENLABS_*` variables are removed from the
-  CLI's environment, so it always uses its own login.
+  anything it started are killed. The CLI gets an allowlisted environment
+  (`PATH`, `HOME`, locale, temp dirs, proxy and CA-certificate settings and its own login/config variables such as
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `CURSOR_API_KEY`): `GITHUB_TOKEN`, `ANTHROPIC_*`,
+  `ELEVENLABS_API_KEY` and everything else of your shell stay out, so it always uses its own login.
 - **Slower and uncached.** The API provider reuses the cached ~23k-token prefix; a CLI provider
   sends the whole prompt every time (whatever caching the CLI does on its own is outside
   course_kit's control) and adds a few seconds of CLI start-up. Costs show as `subscription`.

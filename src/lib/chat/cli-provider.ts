@@ -87,6 +87,12 @@ export type CliSpec = {
   /** Run in one stable empty directory instead of a fresh temp directory per answer. */
   stableWorkspace: boolean
   args(input: ArgsInput): string[]
+  /**
+   * This CLI's own login and configuration variables, passed on besides `CLI_BASE_ENV` and
+   * `CLI_NETWORK_ENV`. Names come from the CLI itself (its help, docs and the variables its code
+   * reads); anything not listed never reaches it.
+   */
+  envNames: readonly string[]
   extraEnv(maxOutputTokens: number): Record<string, string>
   parser(): StreamParser
 }
@@ -233,6 +239,9 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
       '--disable-slash-commands',
       '--no-session-persistence',
     ],
+    // `claude setup-token` yields CLAUDE_CODE_OAUTH_TOKEN (a subscription token, not an API key);
+    // logins stored by `claude auth login` live in CLAUDE_CONFIG_DIR (default ~/.claude).
+    envNames: ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME'],
     extraEnv: (maxOutputTokens) => ({ CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }),
     parser: () => new ClaudeStreamParser(),
   },
@@ -264,18 +273,86 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
       '--sandbox',
       'enabled',
     ],
+    // `cursor-agent --help`: --api-key / CURSOR_API_KEY, -e / CURSOR_API_ENDPOINT; the agent also reads
+    // CURSOR_AUTH_TOKEN, CURSOR_CONFIG_DIR, CURSOR_DATA_DIR and the XDG directories for its login.
+    envNames: [
+      'CURSOR_API_KEY',
+      'CURSOR_AUTH_TOKEN',
+      'CURSOR_API_ENDPOINT',
+      'CURSOR_CONFIG_DIR',
+      'CURSOR_DATA_DIR',
+      'XDG_CONFIG_HOME',
+      'XDG_DATA_HOME',
+    ],
     extraEnv: () => ({}),
     parser: () => new CursorStreamParser(),
   },
 }
 
-/** A copy of `env` for a CLI child: no ANTHROPIC_* / ELEVENLABS_* variables or other provider keys. */
-export function cliChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/**
+ * What every CLI child gets: where to find programs and the home directory (OAuth logins are
+ * stored in config files below it), user name, locale, time zone, temp directories and terminal
+ * type, plus the Windows basics.
+ */
+const CLI_BASE_ENV = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'LANGUAGE',
+  'TZ',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'TERM',
+  'NO_COLOR',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+]
+const CLI_BASE_PREFIXES = ['LC_']
+
+/**
+ * Both CLIs talk to their vendor over HTTPS, so proxy and CA-certificate settings must pass for
+ * them to work behind a corporate proxy (their code reads exactly these). `NODE_TLS_REJECT_UNAUTHORIZED`
+ * is deliberately absent: it would switch certificate checks off.
+ */
+const CLI_NETWORK_ENV = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+]
+
+/**
+ * An allowlisted copy of `env` for a CLI child: the base and network variables above and the CLI's
+ * own login and configuration variables (`spec.envNames`), nothing else. So `GITHUB_TOKEN`,
+ * `ELEVENLABS_API_KEY`, cloud credentials and every other variable of the user's shell stay in this
+ * process, and a provider key (`ANTHROPIC_*`: it would also switch Claude Code to API billing) never
+ * passes whatever a list says. Names match case-insensitively (Windows) and keep their spelling.
+ */
+export function cliChildEnv(
+  env: NodeJS.ProcessEnv,
+  spec: Pick<CliSpec, 'envNames'>,
+): NodeJS.ProcessEnv {
+  const allowed = new Set(
+    [...CLI_BASE_ENV, ...CLI_NETWORK_ENV, ...spec.envNames].map((n) => n.toUpperCase()),
+  )
   const out: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue
+    const key = name.toUpperCase()
+    if (!allowed.has(key) && !CLI_BASE_PREFIXES.some((p) => key.startsWith(p))) continue
     if (/^(?:ANTHROPIC|ELEVENLABS)_/i.test(name)) continue
-    if ((SECRET_ENV_NAMES as readonly string[]).includes(name)) continue
+    if ((SECRET_ENV_NAMES as readonly string[]).includes(key)) continue
     out[name] = value
   }
   return out
@@ -565,7 +642,7 @@ export function createCliProvider(o: CliProviderOptions): AnswerProvider {
         bin,
         args: spec.statusArgs,
         cwd: work,
-        env: cliChildEnv(env),
+        env: cliChildEnv(env, spec),
         stdin: '',
         timeoutMs: o.statusTimeoutMs ?? 15_000,
         maxStdoutBytes: 64 * 1024,
@@ -648,7 +725,7 @@ export function createCliProvider(o: CliProviderOptions): AnswerProvider {
           bin: resolved.bin,
           args: spec.args({ model: o.model, effort: req.effort, systemFile, workDir: work }),
           cwd: work,
-          env: { ...cliChildEnv(env), ...spec.extraEnv(req.maxTokens) },
+          env: { ...cliChildEnv(env, spec), ...spec.extraEnv(req.maxTokens) },
           stdin,
           timeoutMs: o.timeoutMs,
           maxStdoutBytes: o.maxOutputBytes,

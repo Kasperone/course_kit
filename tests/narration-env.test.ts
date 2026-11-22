@@ -51,6 +51,16 @@ const logLines = (file: string) =>
     .split('\n')
     .map((l) => JSON.parse(l) as { args: string[]; env: Record<string, string> })
 
+const NETWORK_AND_GIT = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'NO_PROXY',
+  'SSH_AUTH_SOCK',
+  'GIT_SSH_COMMAND',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_TERMINAL_PROMPT',
+]
+
 describe('piperEnv / ffmpegEnv', () => {
   const source = {
     PATH: '/usr/bin',
@@ -62,6 +72,13 @@ describe('piperEnv / ffmpegEnv', () => {
     LD_LIBRARY_PATH: '/venv/lib',
     OMP_NUM_THREADS: '2',
     FFMPEG_BIN: '/usr/bin/ffmpeg',
+    // Kept for git and Slidev, but not for the audio tools.
+    HTTPS_PROXY: 'http://user:proxy-pass@proxy:3128',
+    https_proxy: 'http://user:proxy-pass@proxy:3128',
+    NO_PROXY: 'localhost',
+    SSH_AUTH_SOCK: '/run/ssh-agent',
+    GIT_SSH_COMMAND: 'ssh -i /key',
+    GIT_CONFIG_GLOBAL: '/etc/gitconfig',
     ...SECRETS,
     UNRELATED: 'x',
   }
@@ -80,14 +97,13 @@ describe('piperEnv / ffmpegEnv', () => {
     })
     expect(env).not.toHaveProperty('UNRELATED')
     expect(env).not.toHaveProperty('PIPER_API_TOKEN')
+    for (const name of NETWORK_AND_GIT) expect(env, name).not.toHaveProperty(name)
     expectNoSecrets(env, 'piperEnv')
   })
 
   it('ffmpeg gets the base allowlist only', () => {
     const env = ffmpegEnv(source)
-    expect(Object.keys(env).sort()).toEqual(
-      ['GIT_TERMINAL_PROMPT', 'HOME', 'LANG', 'PATH', 'TMPDIR'].sort(),
-    )
+    expect(Object.keys(env).sort()).toEqual(['HOME', 'LANG', 'PATH', 'TMPDIR'].sort())
   })
 })
 

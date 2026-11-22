@@ -3,7 +3,13 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runNarrate } from '../src/commands/narrate.js'
 import { runVoicesInstall } from '../src/commands/voices.js'
-import { hasFfmpeg, mp3Duration, wavDuration } from '../src/lib/narration/audio.js'
+import {
+  hasFfmpeg,
+  mp3Duration,
+  pcm16ToWav,
+  wavDuration,
+  wavToMp3,
+} from '../src/lib/narration/audio.js'
 import {
   createElevenLabsProvider,
   createPiperProvider,
@@ -20,6 +26,7 @@ import { makeWorkspace } from './helpers/fixture-repo.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 const FAKE_PIPER = path.join(__dirname, 'helpers', 'fake-piper.mjs')
+const FAKE_FFMPEG_HANG = path.join(__dirname, 'helpers', 'fake-ffmpeg-hang.mjs')
 describe('Piper voices', () => {
   it('lists exactly the two approved voices with permissive data licences', () => {
     expect(PIPER_VOICES.map((v) => [v.name, v.datasetLicense])).toEqual([
@@ -67,6 +74,24 @@ describe('Piper voices', () => {
     ).rejects.toThrow(/sha256 mismatch/)
     const dir = path.join(env.COURSE_KIT_VOICES_DIR, v.info.name)
     expect(readdirSync(dir).filter((f) => f.endsWith('.onnx') || f.endsWith('.part'))).toEqual([])
+  })
+
+  it('stops a stalled download and passes an abort signal to fetch', async () => {
+    const env = { COURSE_KIT_VOICES_DIR: makeTempDir('voices') }
+    const v = fakeVoice()
+    const signals: Array<AbortSignal | undefined> = []
+    const stalled = (_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined)
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    }
+    await expect(
+      installPiperVoice(v.info.name, { env, fetch: stalled, registry: [v.info], timeoutMs: 50 }),
+    ).rejects.toThrow(/Download did not finish within 0\.1 s/)
+    expect(signals[0]).toBeInstanceOf(AbortSignal)
+    // The normal path still works with the signal in place.
+    await installPiperVoice(v.info.name, { env, fetch: v.fetch, registry: [v.info] })
   })
 
   it('rejects unknown voices, bad names and other engines', async () => {
@@ -182,6 +207,29 @@ describe('Piper provider (fake piper binary)', () => {
     ).toThrow(/Piper is not available/)
   })
 
+  it('stops a Piper that does not finish', async () => {
+    const { env } = await installed()
+    const p = createPiperProvider({
+      lang: 'pl',
+      voice: 'pl_PL-test-medium',
+      env: { ...env, FFMPEG_BIN: '/nonexistent/ffmpeg' },
+      timeoutMs: 400,
+    })
+    process.env.PIPER_FAKE_HANG = '1'
+    try {
+      await expect(p.synthesize('x')).rejects.toThrow(/Piper did not finish within 0\.4 s/)
+    } finally {
+      delete process.env.PIPER_FAKE_HANG
+    }
+  })
+
+  it('stops an ffmpeg that does not finish', () => {
+    const wav = pcm16ToWav(Buffer.alloc(3200), 16000)
+    expect(() => wavToMp3(wav, FAKE_FFMPEG_HANG, 64, 400)).toThrow(
+      /ffmpeg did not finish within 0\.4 s and was stopped/,
+    )
+  })
+
   it('refuses a voice in the wrong language', async () => {
     const { env } = await installed()
     expect(() => createPiperProvider({ lang: 'en', voice: 'pl_PL-test-medium', env })).toThrow(
@@ -281,6 +329,52 @@ describe('ElevenLabs provider (mocked HTTP, no key, no live calls)', () => {
     const err2 = (await boom.synthesize('x').catch((e: unknown) => e)) as Error
     expect(err2.message).toMatch(/request failed/)
     expect(err2.message).not.toContain(KEY)
+  })
+
+  it('redacts the key before cutting the error text, so a key at the limit leaves no prefix', async () => {
+    // 280 filler characters, then the key: it starts before the 300-character cut and ends after it.
+    const body = `${'x'.repeat(280)}${KEY}`
+    const { fetch } = mockFetch([() => new Response(body, { status: 401 })])
+    const p = createElevenLabsProvider({ voice: 'Voice123', apiKey: KEY, fetch })
+    const err = (await p.synthesize('x').catch((e: unknown) => e)) as Error
+    expect(err.message).toMatch(/ElevenLabs HTTP 401/)
+    expect(err.message).not.toContain(KEY.slice(0, 8))
+    expect(err.message).toContain('‹redacted›')
+  })
+
+  it('times out a stalled request, retries it, and gives up with a clear error', async () => {
+    const calls: RequestInit[] = []
+    const stalled = (_url: string, init?: RequestInit) => {
+      calls.push(init ?? {})
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    }
+    const p = createElevenLabsProvider({
+      voice: 'Voice123',
+      apiKey: KEY,
+      fetch: stalled,
+      sleep: () => Promise.resolve(),
+      timeoutMs: 50,
+    })
+    const err = (await p.synthesize('x').catch((e: unknown) => e)) as Error
+    expect(err.message).toMatch(/did not answer within 0\.1 s \(3 attempts\)/)
+    expect(calls).toHaveLength(3)
+    expect(calls.every((c) => c.signal instanceof AbortSignal)).toBe(true)
+    expect(err.message).not.toContain(KEY)
+
+    // A timeout then a good answer succeeds.
+    let n = 0
+    const flaky = (url: string, init?: RequestInit) =>
+      ++n === 1 ? stalled(url, init) : Promise.resolve(new Response(new Uint8Array(mp3Frame())))
+    const ok = createElevenLabsProvider({
+      voice: 'Voice123',
+      apiKey: KEY,
+      fetch: flaky,
+      sleep: () => Promise.resolve(),
+      timeoutMs: 50,
+    })
+    expect(mp3Duration(await ok.synthesize('x'))).toBeGreaterThan(1)
   })
 
   it('validates voice and model ids and requires a voice', () => {

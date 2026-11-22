@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { ffmpegEnv } from './env.js'
+import { FFMPEG_TIMEOUT_MS, PROBE_TIMEOUT_MS, seconds, spawnLimit, timedOut } from './timeouts.js'
 
 /** Audio container formats a narration clip can have. */
 export type AudioFormat = 'mp3' | 'wav'
@@ -115,7 +116,11 @@ export function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function hasFfmpeg(bin: string): boolean {
-  const r = spawnSync(bin, ['-hide_banner', '-version'], { stdio: 'ignore', env: ffmpegEnv() })
+  const r = spawnSync(bin, ['-hide_banner', '-version'], {
+    stdio: 'ignore',
+    env: ffmpegEnv(),
+    ...spawnLimit(PROBE_TIMEOUT_MS),
+  })
   return r.status === 0
 }
 
@@ -163,7 +168,12 @@ export function mp3Format(buf: Buffer): { sampleRate: number; channels: number }
  * channels are left as they are (no -ar/-ac): the result is checked against the source, so a clip is
  * never resampled, upsampled or downmixed. Pass a bitrate valid for the sample rate (mp3Bitrate).
  */
-export function wavToMp3(wav: Buffer, bin: string, kbps: number): Buffer {
+export function wavToMp3(
+  wav: Buffer,
+  bin: string,
+  kbps: number,
+  timeoutMs = FFMPEG_TIMEOUT_MS,
+): Buffer {
   const r = spawnSync(
     bin,
     [
@@ -182,8 +192,11 @@ export function wavToMp3(wav: Buffer, bin: string, kbps: number): Buffer {
       'mp3',
       'pipe:1',
     ],
-    { input: wav, maxBuffer: 512 * 1024 * 1024, env: ffmpegEnv() },
+    { input: wav, maxBuffer: 512 * 1024 * 1024, env: ffmpegEnv(), ...spawnLimit(timeoutMs) },
   )
+  if (timedOut(r.error)) {
+    throw new Error(`ffmpeg did not finish within ${seconds(timeoutMs)} and was stopped (${bin})`)
+  }
   if (r.error) throw new Error(`ffmpeg failed to start (${bin}): ${r.error.message}`)
   if (r.status !== 0) {
     throw new Error(

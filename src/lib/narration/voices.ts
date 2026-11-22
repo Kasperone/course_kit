@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs
 import os from 'node:os'
 import path from 'node:path'
 import { writeFileNoFollow } from '../fs-safe.js'
+import { DOWNLOAD_TIMEOUT_MS, seconds } from './timeouts.js'
 
 /**
  * Piper voices course_kit knows how to install: exact files from rhasspy/piper-voices on Hugging
@@ -134,7 +135,13 @@ export type InstallResult = {
  */
 export async function installPiperVoice(
   name: string,
-  options: { env?: NodeJS.ProcessEnv; fetch?: FetchLike; registry?: PiperVoiceInfo[] } = {},
+  options: {
+    env?: NodeJS.ProcessEnv
+    fetch?: FetchLike
+    registry?: PiperVoiceInfo[]
+    /** Limit for one file download (default DOWNLOAD_TIMEOUT_MS). */
+    timeoutMs?: number
+  } = {},
 ): Promise<InstallResult> {
   validatePiperVoice(name)
   const registry = options.registry ?? PIPER_VOICES
@@ -156,9 +163,18 @@ export async function installPiperVoice(
       continue
     }
     const url = voiceUrl(voice, file)
-    const res = await doFetch(url, { redirect: 'follow' })
-    if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}): ${url}`)
-    const data = Buffer.from(await res.arrayBuffer())
+    const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS
+    const signal = AbortSignal.timeout(timeoutMs)
+    let data: Buffer
+    try {
+      const res = await doFetch(url, { redirect: 'follow', signal })
+      if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}): ${url}`)
+      data = Buffer.from(await res.arrayBuffer())
+    } catch (err) {
+      if (signal.aborted)
+        throw new Error(`Download did not finish within ${seconds(timeoutMs)}: ${url}`)
+      throw err
+    }
     const actual = sha256(data)
     if (actual !== file.sha256) {
       throw new Error(
