@@ -6,17 +6,22 @@
 //   FAKE_CLI_LOG       append one JSON line per call (argv, stdin, cwd, cwd entries, system prompt
 //                      file, provider-key variable names seen, CLAUDE_CODE_MAX_OUTPUT_TOKENS and its
 //                      whole environment)
-//   FAKE_CLI_MODE      stream (default) | whole | no-partial | not-logged-in | fail | fail-proxy | hang | flood
+//   FAKE_CLI_MODE      stream (default) | whole | no-partial | not-logged-in | fail | fail-proxy | fail-token | hang | flood
 //                      | stray (answers, but leaves a background process behind, like
 //                      cursor-agent's worker-server)
 //   FAKE_CLI_ANSWER    answer text (default: a lesson part and a [[general]] part)
 //   FAKE_CLI_LOGGED_OUT=1   the login-status command reports "not logged in"
 //   (fail-proxy: fails like a CLI behind a proxy and echoes its HTTPS_PROXY variable; FAKE_CLI_STATUS_PROXY=1
-//   makes the login-status command do the same)
+//   makes the login-status command do the same; fail-token echoes its login token, and
+//   FAKE_CLI_STATUS_TOKEN=1 does the same for the status command)
 //   FAKE_CLI_PIDFILE   hang and stray modes: write the pid of a grandchild process here
 import { spawn } from 'node:child_process'
 import { appendFileSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+
+/** The login credential the real CLI would send (names are in CliSpec.envNames). */
+const loginToken = () =>
+  process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.CURSOR_API_KEY || process.env.CURSOR_AUTH_TOKEN
 
 const SETTINGS = (() => {
   try {
@@ -49,6 +54,10 @@ function status(kind) {
       `${SETTINGS.FAKE_CLI_LOG}.status`,
       JSON.stringify({ kind, env: process.env }) + '\n',
     )
+  }
+  if (SETTINGS.FAKE_CLI_STATUS_TOKEN === '1') {
+    process.stderr.write(`fake cli: status failed for token ${loginToken()}\n`)
+    process.exit(6)
   }
   if (SETTINGS.FAKE_CLI_STATUS_PROXY === '1') {
     process.stderr.write(`fake cli: status failed via proxy ${process.env.HTTPS_PROXY}\n`)
@@ -142,6 +151,10 @@ export async function run(kind) {
   if (mode === 'fail') {
     process.stderr.write('fake cli: something broke\nsecond line\n')
     process.exit(3)
+  }
+  if (mode === 'fail-token') {
+    process.stderr.write(`fake cli: auth rejected for token ${loginToken()}\nsecond line\n`)
+    process.exit(7)
   }
   if (mode === 'fail-proxy') {
     process.stderr.write(

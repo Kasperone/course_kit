@@ -237,9 +237,11 @@ How the CLI providers run, and what that costs you:
 
 - **No tools, no permissions.** The CLI is started directly (no shell) in an empty directory, never
   in the repo or the workspace (Claude Code: a private temp directory per answer; Cursor: one stable
-  empty directory, see below). Claude Code runs with no tools, no MCP servers,
-  `--permission-mode dontAsk`, `--restricted`, `--safe-mode` and no session saved; Cursor runs in
-  read-only `--mode ask` with its sandbox on. Permission-skipping flags (`--dangerously-skip-permissions`,
+  directory that holds only a deny-all permission file, see below). Claude Code runs with no tools,
+  no MCP servers, `--permission-mode dontAsk`, `--restricted`, `--safe-mode` and no session saved.
+  Cursor runs in read-only `--mode ask` with its sandbox on; ask mode is read-only but not tool-free,
+  so the workspace's `.cursor/cli.json` also denies its shell, file, web and MCP tools, and the
+  provider refuses to run if that directory holds anything else. Permission-skipping flags (`--dangerously-skip-permissions`,
   `--force`, `--yolo`) are never used.
 - **The prompt goes through stdin** (Claude Code: our instructions and the lesson materials through a
   0600 file in that temp directory, which is deleted afterwards), never through the command line.
@@ -256,9 +258,10 @@ How the CLI providers run, and what that costs you:
   the CLI is missing or not logged in, with the command to run.
 - **Cursor keeps transcripts.** `cursor-agent` has no option to turn them off: it writes each
   conversation (including the lesson materials) under `~/.cursor/projects/<workspace-name>/`.
-  To keep that to one folder, `cursor-cli` always runs in the same empty workspace,
+  To keep that to one folder, `cursor-cli` always runs in the same workspace,
   `$XDG_CACHE_HOME/course-kit/cursor-ws` (default `~/.cache/course-kit/cursor-ws`; created on first use,
-  never holds course files, and the only directory `--trust` covers). Remove the transcripts with
+  never holds course files, only our deny-all `.cursor/cli.json`, and is the only directory `--trust`
+  covers). Remove the transcripts with
   `course clean` (`--dry-run` lists what would go): it deletes only that workspace's folder in
   `~/.cursor/projects/` and refuses anything that resolves outside it. course_kit itself still
   stores nothing.

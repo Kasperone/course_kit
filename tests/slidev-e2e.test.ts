@@ -165,6 +165,39 @@ describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
     }
   }, 180_000)
 
+  it('src: imports: Slidev follows every YAML spelling of src:, so the guard flags each (negative control)', () => {
+    // slideImports used to match only `src:` at column 0 outside fences. Slidev's matter() also reads
+    // frontmatter from a yaml code block, and its YAML parser takes a quoted key, an indented
+    // mapping and the flow form; each of them loaded .env into the build.
+    const marker = 'src-import-leak-marker'
+    const cases: Array<[string, string]> = [
+      ['canonical (positive control)', '\n---\nsrc: ./dummy.env\n---\n'],
+      ['yaml code block', '\n---\n\n```yaml\nsrc: ./dummy.env\n```\n'],
+      ['quoted key', '\n---\n"src": ./dummy.env\n---\n'],
+      ['indented mapping', '\n---\n  src: ./dummy.env\n---\n'],
+      ['flow mapping', '\n---\n{ src: ./dummy.env }\n---\n'],
+    ]
+    for (const [what, body] of cases) {
+      try {
+        const entry = probeDeck(OFFLINE, body)
+        const dir = path.dirname(entry)
+        writeFileSync(path.join(dir, 'dummy.env'), `E2E_DUMMY_SECRET=${marker}\n`)
+        const out = path.join(dir, 'out')
+        // Without the guard Slidev loads the env file as a slide ...
+        execFileSync(process.execPath, [slidevBin(workspace), 'build', entry, '--out', out], {
+          cwd: workspace,
+          stdio: 'pipe',
+        })
+        expect(allText(out), what).toContain(marker)
+        // ... and the guard refuses it (and the real build gate stops before Slidev starts).
+        const probe = path.relative(workspace, entry).split(path.sep).join('/')
+        expect(findOutsideImports(workspace), what).toEqual([`${probe} -> ./dummy.env`])
+      } finally {
+        cleanup()
+      }
+    }
+  }, 300_000)
+
   it('asset paths: Slidev bundles any file a local path points to, so the guard refuses secrets (negative control)', () => {
     // Slidev only refuses paths outside its Vite root, and only for Markdown/HTML images: CSS url()
     // and image:/background: frontmatter reach any file, and ?raw puts a file's text into the bundle.

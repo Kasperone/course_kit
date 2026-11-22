@@ -152,6 +152,26 @@ describe('audio helpers', () => {
     expect(mp3Duration(mp3)).toBeCloseTo((50 * 1152) / 44100, 6)
     expect(() => mp3Duration(Buffer.alloc(100))).toThrow(/No MP3 frames/)
   })
+
+  it('rejects a WAV or MP3 that is cut off, but accepts streamed WAV size placeholders', () => {
+    const wav = pcm16ToWav(Buffer.alloc(22050 * 2 * 3), 22050)
+    expect(() => wavDuration(wav.subarray(0, Math.floor(wav.length * 0.1)))).toThrow(/truncated/)
+    expect(() => wavDuration(wav.subarray(0, wav.length - 1))).toThrow(/truncated/)
+    // A WAV the API streamed has 0 or 0xFFFFFFFF in the data chunk size: the file's length counts.
+    for (const placeholder of [0, 0xffffffff]) {
+      const streamed = Buffer.from(wav)
+      streamed.writeUInt32LE(placeholder, 40)
+      expect(wavDuration(streamed)).toBeCloseTo(3, 6)
+    }
+
+    const frame = Buffer.alloc(417)
+    frame.set([0xff, 0xfb, 0x90, 0x00])
+    const mp3 = Buffer.concat(Array.from({ length: 10 }, () => frame))
+    expect(mp3Duration(mp3)).toBeCloseTo((10 * 1152) / 44100, 6)
+    // 10 whole frames plus 7 bytes of an 11th: the old walker counted the partial frame.
+    expect(() => mp3Duration(Buffer.concat([mp3, frame.subarray(0, 7)]))).toThrow(/truncated/)
+    expect(() => mp3Duration(mp3.subarray(0, mp3.length - 1))).toThrow(/truncated/)
+  })
 })
 
 describe('cache key and manifest', () => {
@@ -266,5 +286,19 @@ describe('workspace template and the faktura example stay in sync', () => {
     expect(attributionMarkdown()).toMatch(/pl_PL-darkman-medium.*CC0/)
     expect(attributionMarkdown()).toMatch(/en_US-ljspeech-medium.*Public domain/)
     expect(attributionMarkdown()).toMatch(/never commit generated audio/)
+  })
+})
+
+describe('narration addon', () => {
+  it('states a licence (the generated workspace otherwise licenses only lessons/)', () => {
+    for (const dir of ['templates/workspace', 'examples/faktura']) {
+      const pkg = JSON.parse(
+        readFileSync(
+          path.join(__dirname, '..', dir, 'addons', 'narration', 'package.json'),
+          'utf8',
+        ),
+      ) as { license?: string }
+      expect(pkg.license, dir).toBe('MIT')
+    }
   })
 })

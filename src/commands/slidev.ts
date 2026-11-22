@@ -460,6 +460,15 @@ export function runDev(options: DevOptions): Promise<number> {
       ...slidevEnv(),
       ...(server ? { [CHAT_PORT_ENV]: String(server.port) } : {}),
     }
+    // Ctrl+C: without a handler Node dies on the spot and the `finally` below never runs, which
+    // would leave an answer in progress (and a CLI's own helper processes) running: the CLIs live in
+    // their own process groups and never see the terminal's signal. So the parent stays up, passes
+    // the signal to Slidev (the terminal already sent SIGINT to it; once more is harmless) and lets
+    // the cleanup run when Slidev has exited.
+    let forward: ((signal: NodeJS.Signals) => void) | null = null
+    const onSignal = (signal: NodeJS.Signals): void => forward?.(signal)
+    process.on('SIGINT', onSignal)
+    process.on('SIGTERM', onSignal)
     try {
       return await new Promise<number>((resolve, reject) => {
         const child = spawn(process.execPath, [bin, ...args], {
@@ -467,10 +476,13 @@ export function runDev(options: DevOptions): Promise<number> {
           stdio: 'inherit',
           env,
         })
+        forward = (signal) => child.kill(signal)
         child.on('error', reject)
         child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)))
       })
     } finally {
+      process.off('SIGINT', onSignal)
+      process.off('SIGTERM', onSignal)
       await server?.close()
     }
   })()

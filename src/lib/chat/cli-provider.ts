@@ -6,7 +6,7 @@ import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { redactUrlCredentials } from '../context-pack/redact.js'
 import { isPlainObject } from '../validate.js'
-import { SECRET_ENV_NAMES } from '../env.js'
+import { redactSecrets, SECRET_ENV_NAMES } from '../env.js'
 import type { CliProviderId, Effort } from './config.js'
 import { cursorWorkspaceDir, ensureCursorWorkspace } from './cursor-workspace.js'
 import { flattenMessages, systemText } from './prompt.js'
@@ -29,7 +29,8 @@ import {
  * - the working directory is an empty directory, never the repository or the workspace: a private
  *   temp directory, or for Cursor one stable empty directory in the user's cache (its transcripts
  *   would otherwise pile up in ~/.cursor/projects; `course clean` removes them);
- * - no tools and no permission-skipping flags; read-only / ask modes only;
+ * - no tools (Cursor: ask mode plus a deny-all project permission file) and no permission-skipping
+ *   flags; read-only / ask modes only;
  * - a hard timeout and an output cap, after which the whole process group is killed;
  * - provider keys (ANTHROPIC_*, ELEVENLABS_*) are removed from the child's environment.
  */
@@ -269,7 +270,8 @@ export const CLI_SPECS: Readonly<Record<CliProviderId, CliSpec>> = {
       model,
       '--workspace',
       workDir,
-      // Headless runs need the workspace trusted: this trusts only the one empty workspace directory.
+      // Headless runs need the workspace trusted: this trusts only the one workspace directory, which
+      // ensureCursorWorkspace() has checked to hold nothing but our deny-all .cursor/cli.json.
       '--trust',
       '--sandbox',
       'enabled',
@@ -357,6 +359,20 @@ export function cliChildEnv(
     out[name] = value
   }
   return out
+}
+
+/**
+ * The values of the credentials a CLI is deliberately given (`CLAUDE_CODE_OAUTH_TOKEN`,
+ * `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`: the token-like names in its `envNames`). A CLI's error text
+ * can echo them, and it ends up in the panel, so every CLI message is redacted with these.
+ */
+export function cliSecretValues(env: NodeJS.ProcessEnv, spec: Pick<CliSpec, 'envNames'>): string[] {
+  const names = new Set(
+    spec.envNames.filter((n) => /KEY|TOKEN|SECRET|PASSWORD/i.test(n)).map((n) => n.toUpperCase()),
+  )
+  return Object.entries(env)
+    .filter(([name, value]) => names.has(name.toUpperCase()) && value)
+    .map(([, value]) => value as string)
 }
 
 function isExecutableFile(file: string): boolean {
@@ -564,7 +580,7 @@ export async function privateWorkDir(root: string): Promise<{ dir: string; work:
   return { dir, work }
 }
 
-/** The one empty workspace of a CLI that needs a stable one; an unusable directory is "unavailable". */
+/** The one stable workspace of a CLI that needs it; an unusable or non-empty directory is "unavailable". */
 function stableWorkspace(env: NodeJS.ProcessEnv): string {
   try {
     return ensureCursorWorkspace(cursorWorkspaceDir(env))
@@ -638,6 +654,7 @@ export type CliProviderOptions = {
 export function createCliProvider(o: CliProviderOptions): AnswerProvider {
   const spec = CLI_SPECS[o.provider]
   const env = o.env ?? process.env
+  const secrets = cliSecretValues(env, spec)
   const tmpRoot = o.tmpDir ?? os.tmpdir()
   const statusTtl = o.statusTtlMs ?? 60_000
   let status: { at: number; value: Availability } | null = null
@@ -677,7 +694,7 @@ export function createCliProvider(o: CliProviderOptions): AnswerProvider {
       }
       return {
         state: 'error',
-        message: `Could not read the login status of ${spec.label}: ${firstLine(r.value.stderr) || `exit ${r.value.code}`}`,
+        message: `Could not read the login status of ${spec.label}: ${firstLine(redactSecrets(r.value.stderr, secrets)) || `exit ${r.value.code}`}`,
       }
     } catch (err) {
       const pe = err instanceof ProviderError ? err : null
@@ -765,11 +782,19 @@ export function createCliProvider(o: CliProviderOptions): AnswerProvider {
         const outcome = next.value
         if (result && !result.ok) {
           status = null
-          throw classifyCliFailure(spec, `${result.text}\n${outcome.stderr}`, outcome.code)
+          throw classifyCliFailure(
+            spec,
+            redactSecrets(`${result.text}\n${outcome.stderr}`, secrets),
+            outcome.code,
+          )
         }
         if (!result) {
           status = null
-          throw classifyCliFailure(spec, `${outcome.stderr}\n${other.join('\n')}`, outcome.code)
+          throw classifyCliFailure(
+            spec,
+            redactSecrets(`${outcome.stderr}\n${other.join('\n')}`, secrets),
+            outcome.code,
+          )
         }
         if (!streamed && result.text) yield { type: 'text', text: result.text }
         yield {

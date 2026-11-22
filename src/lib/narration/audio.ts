@@ -44,7 +44,13 @@ export function wavDuration(buf: Buffer): number {
     if (id === 'fmt ') byteRate = buf.readUInt32LE(offset + 16)
     if (id === 'data') {
       if (!byteRate) throw new Error('WAV data chunk before fmt chunk')
-      return Math.min(size, buf.length - offset - 8) / byteRate
+      const available = buf.length - offset - 8
+      // 0 and 0xFFFFFFFF are the placeholders of a WAV that was streamed (the size was not known
+      // when the header went out). Any other declared size must be there: a shorter file is cut off.
+      if (size !== 0 && size !== 0xffffffff && size > available) {
+        throw new Error(`WAV is truncated (${available} of ${size} data bytes)`)
+      }
+      return Math.min(size === 0 || size === 0xffffffff ? available : size, available) / byteRate
     }
     offset += 8 + size + (size % 2)
   }
@@ -98,6 +104,8 @@ export function mp3Duration(buf: Buffer): number {
     const padding = (b2 >> 1) & 0x01
     const length = Math.floor(((samples / 8) * kbps * 1000) / sampleRate) + padding
     if (length < 4) break
+    if (offset + length > buf.length)
+      throw new Error('MP3 is truncated (the last frame is cut off)')
     seconds += samples / sampleRate
     frames++
     offset += length

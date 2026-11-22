@@ -145,7 +145,7 @@ export const PLANTUML_COMPONENT_RE = /<\s*plant-?uml(?=[\s/>])/i
 export const WEB_FONT_HOST_RE = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.coollabs\.io/i
 
 /** An absolute (http/https) or protocol-relative URL to a host other than loopback. */
-const REMOTE_URL = String.raw`(?:https?:)?//(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
+const REMOTE_URL = String.raw`(?:https?:[\\/]*|[\\/]{2})(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
 
 /**
  * Markup that makes the browser fetch a remote resource while a slide renders: Markdown images,
@@ -262,20 +262,34 @@ export function findRemoteAssetFiles(courseDir: string): string[] {
   )
 }
 
-/** `src:` values in slide frontmatter of a Markdown file, outside fenced code blocks. */
+/**
+ * `src:` values anywhere in a Markdown file. Slidev reads slide frontmatter in more spellings than
+ * the canonical `---` block: from a ```yaml code block at the start of a slide, and its YAML parser
+ * takes a quoted key (`"src": x`), an indented mapping (`  src: x`), the flow form (`{ src: x }`)
+ * and a value on the next line. So every line is scanned, fences included: a false positive (prose
+ * that starts a line with `src:`) only matters when the path itself is refused.
+ */
 export function slideImports(text: string): string[] {
   const out: string[] = []
-  let fence: string | null = null
-  for (const line of text.split(/\r?\n/)) {
-    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
-    if (f) {
-      if (fence === null) fence = f[1]!
-      else if (f[1]![0] === fence[0] && f[1]!.length >= fence.length) fence = null
-      continue
+  const clean = (v: string): string =>
+    // A quoted value ends at its closing quote (a trailing comment may follow); `#2-3` is a slide range.
+    (/^(["'])(.*?)\1/.exec(v.trim())?.[2] ?? v).replace(/#.*$/, '').trim()
+  const lines = text.split(/\r?\n/)
+  lines.forEach((line, i) => {
+    const block = line.match(/^[ \t]*(?:-[ \t]+)?["']?src["']?[ \t]*:[ \t]*(.*?)[ \t]*$/)
+    if (block) {
+      let value = block[1]!
+      if (value === '' || /^[|>][+-]?\d?$/.test(value)) {
+        value = lines.slice(i + 1).find((l) => l.trim() !== '') ?? ''
+      }
+      if (clean(value) !== '') out.push(clean(value))
     }
-    const m = fence === null ? line.match(/^src:\s*(.+?)\s*$/) : null
-    if (m) out.push(m[1]!.replace(/^(["'])(.*)\1$/, '$2').replace(/#.*$/, ''))
-  }
+    for (const m of line.matchAll(
+      /[{,][ \t]*["']?src["']?[ \t]*:[ \t]*("[^"]*"|'[^']*'|[^,}]*)/g,
+    )) {
+      if (clean(m[1]!) !== '') out.push(clean(m[1]!))
+    }
+  })
   return out
 }
 
@@ -367,12 +381,21 @@ export function localAssetRefs(text: string): string[] {
 }
 
 /**
+ * `@/` is Slidev's `userRoot`: the directory of the entry deck, also inside a file pulled in with
+ * `src:`. The entry is not known here, so the importing file's directory and every deck directory
+ * (a `slides.md`) are all checked.
+ */
+function atTargets(file: string, rest: string, deckDirs: string[]): string[] {
+  return [path.dirname(file), ...deckDirs].map((dir) => path.resolve(dir, rest))
+}
+
+/**
  * Absolute paths a local reference can resolve to. Relative references start at the file's own
  * directory (`@/` is the deck's directory, like for snippets). A leading `/` is Vite's: the
  * `public/` directory or the root, an existing filesystem path, or `/@fs/<path>`. Query and
  * fragment are dropped; the raw, percent-decoded and backslash-normalised spellings are all tried.
  */
-function assetTargets(root: string, file: string, ref: string): string[] {
+function assetTargets(root: string, file: string, ref: string, deckDirs: string[]): string[] {
   if (NON_LOCAL_REF.test(ref)) return []
   const base = ref.replace(/^file:\/\//i, '').replace(/[?#].*$/s, '')
   if (base === '') return []
@@ -388,7 +411,7 @@ function assetTargets(root: string, file: string, ref: string): string[] {
     else if (v.startsWith('/')) {
       targets.push(path.join(root, 'public', v), path.join(root, v))
       if (existsSync(v)) targets.push(v)
-    } else if (v.startsWith('@/')) targets.push(path.resolve(path.dirname(file), v.slice(2)))
+    } else if (v.startsWith('@/')) targets.push(...atTargets(file, v.slice(2), deckDirs))
     else targets.push(path.resolve(path.dirname(file), v))
   }
   return targets
@@ -432,12 +455,16 @@ function importProblem(root: string, target: string, ref: string): string | null
 export function findOutsideImports(courseDir: string): string[] {
   const root = path.resolve(courseDir)
   const offenders: string[] = []
-  for (const file of walkFiles(root, GUARD_SKIP)) {
+  const all = [...walkFiles(root, GUARD_SKIP)]
+  const deckDirs = all.filter((f) => path.basename(f) === 'slides.md').map((f) => path.dirname(f))
+  for (const file of all) {
     if (!/\.(md|vue|css|html)$/i.test(file) || path.basename(file) === 'context-pack.md') continue
     const text = readFileSync(file, 'utf8')
     const from = path.relative(root, file).split(path.sep).join('/')
     for (const ref of localAssetRefs(text)) {
-      const bad = assetTargets(root, file, ref).some((t) => importProblem(root, t, '') !== null)
+      const bad = assetTargets(root, file, ref, deckDirs).some(
+        (t) => importProblem(root, t, '') !== null,
+      )
       if (bad) offenders.push(`${from} -> asset ${ref}`)
     }
     if (!/\.md$/i.test(file)) continue
@@ -447,13 +474,15 @@ export function findOutsideImports(courseDir: string): string[] {
       }
     }
     for (const snippet of snippetImports(text)) {
-      // `@/` is Slidev's root, which is the deck's own directory (checked against Slidev 52.20.1).
-      const ref = snippet.path.startsWith('@/') ? snippet.path.slice(2) : snippet.path
-      const target = path.resolve(path.dirname(file), ref)
+      const targets = snippet.path.startsWith('@/')
+        ? atTargets(file, snippet.path.slice(2), deckDirs)
+        : [path.resolve(path.dirname(file), snippet.path)]
       const bad =
-        importProblem(root, target, snippet.path) !== null ||
-        ['plantuml', 'puml'].includes(snippet.lang) ||
-        (snippet.lang === 'mermaid' && mentionsRemoteAsset(target))
+        targets.some(
+          (target) =>
+            importProblem(root, target, snippet.path) !== null ||
+            (snippet.lang === 'mermaid' && mentionsRemoteAsset(target)),
+        ) || ['plantuml', 'puml'].includes(snippet.lang)
       if (bad) offenders.push(`${from} -> <<< ${snippet.path}`)
     }
   }
@@ -485,6 +514,40 @@ export function findWebFontFiles(courseDir: string): string[] {
 export const EXTERNAL_URL_RE =
   /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
 
+/**
+ * XML namespace identifiers are names, not requests (`xmlns="http://www.w3.org/2000/svg"` on every
+ * inline SVG, `createElementNS("http://www.w3.org/2000/svg", …)`): they are removed before testing.
+ */
+const XML_NAMESPACE_RE =
+  /(["'`])https?:\/\/www\.w3\.org\/(?:2000\/svg|1999\/xlink|1999\/xhtml|1998\/Math\/MathML|XML\/1998\/namespace|2000\/xmlns\/?)\1/gi
+
+/** True if deck code mentions an external URL (see `EXTERNAL_URL_RE`), XML namespaces aside. */
+export function hasExternalUrl(code: string): boolean {
+  return EXTERNAL_URL_RE.test(code.replace(XML_NAMESPACE_RE, '""'))
+}
+
+/**
+ * The bodies of `<script …>…</script>` blocks in a slide's Markdown, outside fenced code blocks.
+ * Slidev compiles these into the slide's Vue component, so they run in the viewer's browser like
+ * any component's script.
+ */
+export function markdownScriptBodies(text: string): string {
+  const prose: string[] = []
+  let fence: string | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (f) {
+      if (fence === null) fence = f[1]!
+      else if (f[1]![0] === fence[0] && f[1]!.length >= fence.length) fence = null
+      continue
+    }
+    if (fence === null) prose.push(line)
+  }
+  return [...prose.join('\n').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => m[1]!)
+    .join('\n')
+}
+
 /** The top-level `scripts/` holds workspace helpers, not deck code (their comments may cite URLs). */
 const CODE_SKIP: WalkSkip = {
   anywhere: GUARD_SKIP.anywhere,
@@ -495,32 +558,30 @@ const CODE_SKIP: WalkSkip = {
 const CODE_FILE_RE = /\.(vue|[cm]?[jt]sx?)$/i
 
 /**
- * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons) and
- * that references an external URL (relative paths). Decks stay offline, so such code would make
+ * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons, and
+ * `<script>` blocks in slide Markdown) and that references an external URL (relative paths). Decks stay offline, so such code would make
  * the browser leave the machine.
  */
 export function findExternalUrlFiles(courseDir: string): string[] {
   const offenders: string[] = []
   for (const file of walkFiles(courseDir, CODE_SKIP)) {
-    if (!CODE_FILE_RE.test(file)) continue
-    if (EXTERNAL_URL_RE.test(readFileSync(file, 'utf8'))) {
+    const markdown = /\.md$/i.test(file) && path.basename(file) !== 'context-pack.md'
+    if (!CODE_FILE_RE.test(file) && !markdown) continue
+    const text = readFileSync(file, 'utf8')
+    if (hasExternalUrl(markdown ? markdownScriptBodies(text) : text)) {
       offenders.push(path.relative(courseDir, file).split(path.sep).join('/'))
     }
   }
   return offenders.sort()
 }
 
-export type BuildRef = {
-  file: string
-  what: 'PlantUML server' | 'web fonts' | 'CDN favicon' | 'provider API'
-}
-
-/** Hosts of the paid APIs: only the local backend may talk to them, never the deck. */
-export const PROVIDER_API_HOST_RE = /api\.anthropic\.com|api\.elevenlabs\.io/i
+export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | 'CDN favicon' }
 
 /**
- * Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server, a web-font CDN or a
- * provider API host (the deck must only talk to the local backend).
+ * Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or a web-font CDN.
+ * Provider API hosts are not scanned for: a lesson about a repo that talks to Anthropic may say
+ * `api.anthropic.com` in prose. Deck code cannot call them (`findExternalUrlFiles` refuses any
+ * external URL before the build) and keys are caught by `findSecretsInBuild`.
  */
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
   const hits: BuildRef[] = []
@@ -533,7 +594,6 @@ export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
     if (/\.html$/i.test(file) && /cdn\.jsdelivr\.net/i.test(text)) {
       hits.push({ file, what: 'CDN favicon' })
     }
-    if (PROVIDER_API_HOST_RE.test(text)) hits.push({ file, what: 'provider API' })
   }
   return hits.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
 }

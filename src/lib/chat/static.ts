@@ -1,6 +1,7 @@
 import { createReadStream, lstatSync, type Stats } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
+import { pipeline } from 'node:stream'
 
 /**
  * Static files from a built course (dist/: decks, narration clips, index.html) for `course serve`.
@@ -140,5 +141,12 @@ export function serveStatic(req: IncomingMessage, res: ServerResponse, root: str
     res.writeHead(200, { ...headers, 'Content-Length': st.size })
   }
   if (req.method === 'HEAD') return void res.end()
-  createReadStream(file, range ? { start: range.start, end: range.end } : {}).pipe(res)
+  // A file that cannot be opened (EACCES, or removed by a `course build` running next to us after
+  // the stat) fails after the headers went out: pipeline() destroys the response instead of
+  // leaving an unhandled stream error that would end the process.
+  pipeline(
+    createReadStream(file, range ? { start: range.start, end: range.end } : {}),
+    res,
+    () => {},
+  )
 }
