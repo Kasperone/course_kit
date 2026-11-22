@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { ffmpegEnv } from './env.js'
 
 /** Audio container formats a narration clip can have. */
 export type AudioFormat = 'mp3' | 'wav'
@@ -114,7 +115,7 @@ export function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function hasFfmpeg(bin: string): boolean {
-  const r = spawnSync(bin, ['-hide_banner', '-version'], { stdio: 'ignore' })
+  const r = spawnSync(bin, ['-hide_banner', '-version'], { stdio: 'ignore', env: ffmpegEnv() })
   return r.status === 0
 }
 
@@ -181,7 +182,7 @@ export function wavToMp3(wav: Buffer, bin: string, kbps: number): Buffer {
       'mp3',
       'pipe:1',
     ],
-    { input: wav, maxBuffer: 512 * 1024 * 1024 },
+    { input: wav, maxBuffer: 512 * 1024 * 1024, env: ffmpegEnv() },
   )
   if (r.error) throw new Error(`ffmpeg failed to start (${bin}): ${r.error.message}`)
   if (r.status !== 0) {
