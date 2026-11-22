@@ -241,6 +241,31 @@ function mentionsRemoteAsset(file) {
 const EXTERNAL_URL =
   /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
 
+// XML namespace identifiers are names, not requests (`xmlns="http://www.w3.org/2000/svg"`).
+const XML_NAMESPACE =
+  /(["'`])https?:\/\/www\.w3\.org\/(?:2000\/svg|1999\/xlink|1999\/xhtml|1998\/Math\/MathML|XML\/1998\/namespace|2000\/xmlns\/?)\1/gi
+
+const hasExternalUrl = (code) => EXTERNAL_URL.test(code.replace(XML_NAMESPACE, '""'))
+
+// Bodies of `<script …>…</script>` blocks in a slide's Markdown, outside fenced code blocks: Slidev
+// compiles them into the slide's Vue component.
+function markdownScriptBodies(text) {
+  const prose = []
+  let fence = null
+  for (const line of text.split(/\r?\n/)) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (f) {
+      if (fence === null) fence = f[1]
+      else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = null
+      continue
+    }
+    if (fence === null) prose.push(line)
+  }
+  return [...prose.join('\n').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => m[1])
+    .join('\n')
+}
+
 function* files(dir, skipTop = SKIP_TOP_LEVEL, ext = /\.(md|vue|css|html)$/i, atRoot = true) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (SKIP_ANYWHERE.has(entry.name) || (atRoot && skipTop.has(entry.name))) continue
@@ -303,8 +328,16 @@ for (const file of allFiles) {
 
 // This script and other top-level helpers are not deck code (their comments may cite URLs).
 const external = []
-for (const file of files(root, new Set([...SKIP_TOP_LEVEL, 'scripts']), /\.(vue|[cm]?[jt]sx?)$/i)) {
-  if (EXTERNAL_URL.test(readFileSync(file, 'utf8'))) external.push(path.relative(root, file))
+for (const file of files(
+  root,
+  new Set([...SKIP_TOP_LEVEL, 'scripts']),
+  /\.(md|vue|[cm]?[jt]sx?)$/i,
+)) {
+  if (path.basename(file) === 'context-pack.md') continue
+  const text = readFileSync(file, 'utf8')
+  if (hasExternalUrl(/\.md$/i.test(file) ? markdownScriptBodies(text) : text)) {
+    external.push(path.relative(root, file))
+  }
 }
 
 function headmatterProblems(text) {
@@ -366,7 +399,7 @@ if (webFonts.length > 0) {
 if (external.length > 0) {
   failed = true
   console.error('Deck code must not reference external URLs (only localhost). Offending files:')
-  for (const f of external) console.error(`  - ${f}`)
+  for (const f of external) console.error(`  - ${printable(f)}`)
 }
 if (remote.length > 0) {
   failed = true

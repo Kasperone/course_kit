@@ -514,6 +514,40 @@ export function findWebFontFiles(courseDir: string): string[] {
 export const EXTERNAL_URL_RE =
   /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
 
+/**
+ * XML namespace identifiers are names, not requests (`xmlns="http://www.w3.org/2000/svg"` on every
+ * inline SVG, `createElementNS("http://www.w3.org/2000/svg", …)`): they are removed before testing.
+ */
+const XML_NAMESPACE_RE =
+  /(["'`])https?:\/\/www\.w3\.org\/(?:2000\/svg|1999\/xlink|1999\/xhtml|1998\/Math\/MathML|XML\/1998\/namespace|2000\/xmlns\/?)\1/gi
+
+/** True if deck code mentions an external URL (see `EXTERNAL_URL_RE`), XML namespaces aside. */
+export function hasExternalUrl(code: string): boolean {
+  return EXTERNAL_URL_RE.test(code.replace(XML_NAMESPACE_RE, '""'))
+}
+
+/**
+ * The bodies of `<script …>…</script>` blocks in a slide's Markdown, outside fenced code blocks.
+ * Slidev compiles these into the slide's Vue component, so they run in the viewer's browser like
+ * any component's script.
+ */
+export function markdownScriptBodies(text: string): string {
+  const prose: string[] = []
+  let fence: string | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (f) {
+      if (fence === null) fence = f[1]!
+      else if (f[1]![0] === fence[0] && f[1]!.length >= fence.length) fence = null
+      continue
+    }
+    if (fence === null) prose.push(line)
+  }
+  return [...prose.join('\n').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => m[1]!)
+    .join('\n')
+}
+
 /** The top-level `scripts/` holds workspace helpers, not deck code (their comments may cite URLs). */
 const CODE_SKIP: WalkSkip = {
   anywhere: GUARD_SKIP.anywhere,
@@ -524,15 +558,17 @@ const CODE_SKIP: WalkSkip = {
 const CODE_FILE_RE = /\.(vue|[cm]?[jt]sx?)$/i
 
 /**
- * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons) and
- * that references an external URL (relative paths). Decks stay offline, so such code would make
+ * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons, and
+ * `<script>` blocks in slide Markdown) and that references an external URL (relative paths). Decks stay offline, so such code would make
  * the browser leave the machine.
  */
 export function findExternalUrlFiles(courseDir: string): string[] {
   const offenders: string[] = []
   for (const file of walkFiles(courseDir, CODE_SKIP)) {
-    if (!CODE_FILE_RE.test(file)) continue
-    if (EXTERNAL_URL_RE.test(readFileSync(file, 'utf8'))) {
+    const markdown = /\.md$/i.test(file) && path.basename(file) !== 'context-pack.md'
+    if (!CODE_FILE_RE.test(file) && !markdown) continue
+    const text = readFileSync(file, 'utf8')
+    if (hasExternalUrl(markdown ? markdownScriptBodies(text) : text)) {
       offenders.push(path.relative(courseDir, file).split(path.sep).join('/'))
     }
   }

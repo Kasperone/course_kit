@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { assertNoSymlinkBelow, mkdirInside, writeFileInside } from '../lib/fs-safe.js'
 import { audioDuration, type AudioFormat } from '../lib/narration/audio.js'
@@ -23,6 +23,8 @@ import {
 } from '../lib/narration/providers.js'
 import type { FetchLike } from '../lib/narration/voices.js'
 import { childEnv } from '../lib/child-env.js'
+import { escapeControls } from '../lib/context-pack/markdown.js'
+import { redactUrlCredentials } from '../lib/context-pack/redact.js'
 import { GIT_HARDENING_ARGS, GIT_TIMEOUT_MS, requireModernGit } from '../lib/git.js'
 import { validateLanguage, validateLessonId } from '../lib/validate.js'
 import { lessonDir, resolveWorkspaceConfig } from '../lib/workspace.js'
@@ -36,52 +38,111 @@ export function narrationDir(courseDir: string, lang: string, lessonId: string):
   return path.join(courseDir, AUDIO_LOCAL, lang, lessonId)
 }
 
-function git(courseDir: string, args: string[]): { status: number; stdout: string } {
+type GitResult = { status: number; stdout: string; stderr: string }
+
+/** `null` when git is not installed (nothing to commit to); an old git throws "please upgrade". */
+function git(courseDir: string, args: string[]): GitResult | null {
   try {
     requireModernGit()
+  } catch (err) {
+    if ((err as { code?: string }).code === 'ENOENT') return null
+    throw err
+  }
+  try {
     // The workspace can be a clone of someone else's: same hardening as for a target repository.
     const stdout = execFileSync(
       'git',
       ['--no-optional-locks', ...GIT_HARDENING_ARGS, '-C', courseDir, ...args],
       {
         encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: childEnv(),
         timeout: GIT_TIMEOUT_MS,
       },
     )
-    return { status: 0, stdout }
+    return { status: 0, stdout, stderr: '' }
   } catch (err) {
-    const e = err as { status?: number; stdout?: string }
-    return { status: e.status ?? 128, stdout: e.stdout ?? '' }
+    const e = err as {
+      code?: string
+      status?: number
+      stdout?: string
+      stderr?: string
+      message?: string
+    }
+    if (e.code === 'ENOENT') return null
+    return {
+      status: e.status ?? 128,
+      stdout: e.stdout ?? '',
+      stderr: String(e.stderr ?? '').trim() || (e.message ?? ''),
+    }
   }
+}
+
+/** A git failure other than the answers the guard expects: the guard must not guess. */
+function gitFailed(what: string, r: GitResult): Error {
+  const detail = escapeControls(redactUrlCredentials(r.stderr).split('\n')[0] ?? '')
+  return new Error(
+    `Could not check whether generated audio could be committed (${what}: ${detail || `exit ${r.status}`}). ` +
+      'Fix the git problem and re-run; narration is refused until the check works.',
+  )
 }
 
 /**
  * Generated audio must never be committed: when the workspace is inside a git work tree, clips
  * written to audio/local/<lang>/<lesson>/ must be ignored and nothing under audio/local/ may be
- * tracked (except .gitkeep). Outside git there is nothing to commit to.
+ * tracked (except .gitkeep). Outside git (no git binary, or "not a git repository") there is
+ * nothing to commit to; any other git failure (old git, timeout, dubious ownership) refuses.
  */
 export function assertAudioNotCommittable(courseDir: string, dir: string): void {
-  if (git(courseDir, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return
+  const inside = git(courseDir, ['rev-parse', '--is-inside-work-tree'])
+  if (inside === null) return
+  if (inside.status !== 0) {
+    if (/not a git repository/i.test(inside.stderr)) return
+    throw gitFailed('git rev-parse', inside)
+  }
+  if (inside.stdout.trim() !== 'true') return
   const rel = (p: string) => path.relative(courseDir, p).split(path.sep).join('/')
   // Every kind of file a run writes: MP3 clips, WAV clips (lossless preset, no-ffmpeg fallback) and
   // the manifest. A narrower user rule such as `audio/local/**/*.mp3` must not pass.
   for (const name of ['s01-c00-000000000000.mp3', 's01-c00-000000000000.wav', MANIFEST_FILE]) {
     const probe = rel(path.join(dir, name))
-    if (git(courseDir, ['check-ignore', '-q', '--', probe]).status !== 0) {
+    const ignored = git(courseDir, ['check-ignore', '-q', '--', probe])
+    if (ignored === null || ignored.status > 1) {
+      throw gitFailed('git check-ignore', ignored ?? { status: 128, stdout: '', stderr: '' })
+    }
+    if (ignored.status !== 0) {
       throw new Error(
         `${probe} would not be ignored by git. Add "audio/local/*" to the workspace .gitignore; generated audio must never be committed.`,
       )
     }
   }
-  const tracked = git(courseDir, ['ls-files', '-z', '--', rel(path.join(courseDir, AUDIO_LOCAL))])
-    .stdout.split('\0')
+  const listed = git(courseDir, ['ls-files', '-z', '--', rel(path.join(courseDir, AUDIO_LOCAL))])
+  if (listed === null || listed.status !== 0) {
+    throw gitFailed('git ls-files', listed ?? { status: 128, stdout: '', stderr: '' })
+  }
+  const tracked = listed.stdout
+    .split('\0')
     .filter((f) => f && !f.endsWith('/.gitkeep') && f !== '.gitkeep')
   if (tracked.length > 0) {
     throw new Error(
       `Generated audio is tracked by git: ${tracked.join(', ')}. Remove it with \`git rm --cached\`; it must never be committed.`,
     )
+  }
+}
+
+/**
+ * Write `<file>.part`, then rename it into place: an interrupted run (Ctrl-C, full disk) leaves no
+ * half-written clip under the real name for the next run to reuse. The rename replaces a symlink
+ * at `file` instead of following it.
+ */
+function writeAtomically(courseDir: string, file: string, data: string | Buffer): void {
+  const part = `${file}.part`
+  try {
+    writeFileInside(courseDir, part, data)
+    renameSync(part, file)
+  } catch (err) {
+    rmSync(part, { force: true })
+    throw err
   }
 }
 
@@ -197,6 +258,21 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
   const log = options.log ?? (() => {})
   const results: NarrateLangResult[] = []
 
+  // Everything that can refuse (the never-commit guard, a voice that does not fit a language) runs
+  // for every language before the first clip is synthesized: `--lang all --voice <pl voice>` must
+  // not narrate Polish and only then fail on English (a paid provider would bill the first half).
+  const providers = new Map<string, TtsProvider>()
+  if (!options.dryRun) {
+    for (const lang of langs) {
+      const deck = path.join(root, lang, 'slides.md')
+      if (!existsSync(deck)) continue
+      assertNoSymlinkBelow(courseDir, deck, 'Deck')
+      if (deckSteps(readFileSync(deck, 'utf8')).length === 0) continue
+      assertAudioNotCommittable(courseDir, narrationDir(courseDir, lang, options.lessonId))
+      providers.set(lang, makeProvider(lang, quality))
+    }
+  }
+
   for (const lang of langs) {
     const deck = path.join(root, lang, 'slides.md')
     if (!existsSync(deck)) throw new Error(`No deck for ${options.lessonId}/${lang}: ${deck}`)
@@ -229,9 +305,12 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
       continue
     }
 
-    assertAudioNotCommittable(courseDir, dir)
-    const provider = makeProvider(lang, quality)
+    const provider = providers.get(lang)!
     mkdirInside(courseDir, dir)
+    // Left by an interrupted run (see writeAtomically): never valid, always safe to drop.
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith('.part')) rmSync(path.join(dir, e.name), { force: true })
+    }
     const clips: NarrationClip[] = []
     let generated = 0
     let reused = 0
@@ -272,7 +351,7 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
             `The ${provider.id} response for ${at} is not valid ${format} audio (${errorText(err)}); nothing was cached for ${file}`,
           )
         }
-        writeFileInside(courseDir, abs, audio)
+        writeAtomically(courseDir, abs, audio)
         generated++
         charsSent += step.text.length
       }
@@ -299,7 +378,7 @@ export async function runNarrate(options: NarrateOptions): Promise<NarrateResult
       clips,
     }
     const manifestPath = path.join(dir, MANIFEST_FILE)
-    writeFileInside(courseDir, manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+    writeAtomically(courseDir, manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
     // Clips from earlier runs (other text/voice/provider) are kept unless --prune: switching
     // providers back and forth must not cost a paid provider twice.

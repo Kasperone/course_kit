@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { runNarrate, narrationDir } from '../src/commands/narrate.js'
 import { runBuild } from '../src/commands/slidev.js'
 import { pcm16ToWav, wavDuration } from '../src/lib/narration/audio.js'
@@ -19,6 +20,7 @@ import { findExternalUrlFiles } from '../src/lib/slidev.js'
 import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { commitAll, git, initRepo } from './helpers/git.js'
+import { makeTempDir } from './helpers/tmp.js'
 
 const DECK = `---
 theme: default
@@ -331,6 +333,116 @@ describe('generated audio is never committable', () => {
     ).rejects.toThrow(/tracked by git: audio\/local\/en\/01-placeholder\/old\.mp3/)
   })
 
+  describe('when git cannot answer (the guard must not turn itself off)', () => {
+    /** A `git` first on PATH: runs `script` for matching calls, otherwise the real git. */
+    async function withGit(script: string, run: () => Promise<void>): Promise<void> {
+      const bin = makeTempDir('narrate-git-wrapper')
+      writeFileSync(
+        path.join(bin, 'git'),
+        `#!/bin/sh\n${script}\nPATH="\${PATH#*:}" exec git "$@"\n`,
+      )
+      chmodSync(path.join(bin, 'git'), 0o755)
+      const saved = process.env.PATH
+      process.env.PATH = `${bin}${path.delimiter}${saved}`
+      try {
+        await run()
+      } finally {
+        process.env.PATH = saved
+      }
+    }
+    /** A fresh module: the git version check is cached per process once it has passed. */
+    async function freshNarrate() {
+      vi.resetModules()
+      return (await import('../src/commands/narrate.js')).runNarrate
+    }
+    async function unignoredWorkspace() {
+      const { workspace } = await narratedWorkspace()
+      const ignore = path.join(workspace, '.gitignore')
+      writeFileSync(ignore, readFileSync(ignore, 'utf8').replace(/^audio\/local\/\*$/m, ''))
+      initRepo(workspace)
+      return workspace
+    }
+
+    it('git older than 2.38: refuses with the upgrade message instead of skipping the guard', async () => {
+      const workspace = await unignoredWorkspace()
+      const runNarrateFresh = await freshNarrate()
+      const { provider, calls } = fakeProvider()
+      await withGit('[ "$1" = --version ] && { echo "git version 2.34.1"; exit 0; }', async () => {
+        await expect(
+          runNarrateFresh({
+            lessonId: '01-placeholder',
+            cwd: workspace,
+            makeProvider: () => provider,
+          }),
+        ).rejects.toThrow(/needs git >= 2\.38/)
+      })
+      expect(calls).toEqual([])
+      expect(existsSync(path.join(workspace, 'audio', 'local', 'en'))).toBe(false)
+    })
+
+    it.each([
+      [
+        'rev-parse fails (dubious ownership)',
+        'rev-parse',
+        'detected dubious ownership in repository',
+      ],
+      ['check-ignore fails', 'check-ignore', 'fatal: unable to read the index'],
+      ['ls-files fails', 'ls-files', 'fatal: index file corrupt'],
+    ])('%s: refuses instead of passing', async (_what, verb, message) => {
+      // An ignored workspace: the verbs before the failing one succeed, the guard has to ask git.
+      const { workspace } = await narratedWorkspace()
+      initRepo(workspace)
+      const runNarrateFresh = await freshNarrate()
+      const { provider, calls } = fakeProvider()
+      await withGit(
+        `for a in "$@"; do [ "$a" = ${verb} ] && { echo "${message}" >&2; exit 128; }; done`,
+        async () => {
+          await expect(
+            runNarrateFresh({
+              lessonId: '01-placeholder',
+              cwd: workspace,
+              makeProvider: () => provider,
+            }),
+          ).rejects.toThrow(
+            new RegExp(`Could not check .*${message.split(' ').slice(-2).join(' ')}`),
+          )
+        },
+      )
+      expect(calls).toEqual([])
+    })
+
+    it('not a git repository, or no git at all: nothing to commit to, the run goes on', async () => {
+      const { workspace } = await narratedWorkspace()
+      const runNarrateFresh = await freshNarrate()
+      const { provider } = fakeProvider()
+      await withGit(
+        'for a in "$@"; do [ "$a" = rev-parse ] && { echo "fatal: not a git repository (or any of the parent directories): .git" >&2; exit 128; }; done',
+        async () => {
+          await runNarrateFresh({
+            lessonId: '01-placeholder',
+            cwd: workspace,
+            makeProvider: () => provider,
+          })
+        },
+      )
+      expect(existsSync(path.join(workspace, 'audio', 'local', 'en', '01-placeholder'))).toBe(true)
+
+      const second = await narratedWorkspace()
+      const runAgain = await freshNarrate()
+      const saved = process.env.PATH
+      process.env.PATH = makeTempDir('narrate-no-git')
+      try {
+        await runAgain({
+          lessonId: '01-placeholder',
+          cwd: second.workspace,
+          makeProvider: () => fakeProvider().provider,
+        })
+      } finally {
+        process.env.PATH = saved
+      }
+    })
+  })
+
   it('course_kit itself tracks no audio files', () => {
     const repo = path.join(__dirname, '..')
     const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8' })
@@ -341,6 +453,96 @@ describe('generated audio is never committable', () => {
           /(^|\/)audio\/local\/(?!\.gitkeep$)./.test(f),
       )
     expect(tracked).toEqual([])
+  })
+})
+
+describe('course narrate: all providers are built before the first synthesis', () => {
+  it('--lang all with a voice that fits only one language fails before any clip is synthesized', async () => {
+    const { workspace } = await narratedWorkspace()
+    const { provider, calls } = fakeProvider()
+    const built: string[] = []
+    await expect(
+      runNarrate({
+        lessonId: '01-placeholder',
+        cwd: workspace,
+        makeProvider: (lang) => {
+          built.push(lang)
+          // What createPiperProvider does for `--voice pl_PL-darkman-medium` on the English deck.
+          if (lang === 'en') throw new Error('Voice pl_PL-darkman-medium is Polish, not en')
+          return provider
+        },
+      }),
+    ).rejects.toThrow(/is Polish, not en/)
+    expect(built).toEqual(['en'])
+    expect(calls).toEqual([])
+    expect(existsSync(path.join(workspace, 'audio', 'local', 'pl'))).toBe(false)
+    // The second language failing is caught as early as the first.
+    await expect(
+      runNarrate({
+        lessonId: '01-placeholder',
+        cwd: workspace,
+        makeProvider: (lang) => {
+          if (lang === 'pl') throw new Error('no pl voice installed')
+          return provider
+        },
+      }),
+    ).rejects.toThrow(/no pl voice/)
+    expect(calls).toEqual([])
+    expect(existsSync(path.join(workspace, 'audio', 'local', 'en'))).toBe(false)
+  })
+})
+
+describe('course narrate: interrupted and truncated clips', () => {
+  it('regenerates a cached clip that was cut short (an interrupted run) instead of reusing it', async () => {
+    const { workspace } = await narratedWorkspace()
+    const { provider, calls } = fakeProvider()
+    const run = () =>
+      runNarrate({
+        lessonId: '01-placeholder',
+        lang: 'en',
+        cwd: workspace,
+        makeProvider: () => provider,
+        log: () => {},
+      })
+    await run()
+    const dir = narrationDir(workspace, 'en', '01-placeholder')
+    const [first] = clipsIn(dir)
+    const file = path.join(dir, first!)
+    const whole = readFileSync(file)
+    // What a Ctrl-C in the middle of a write used to leave under the real name: a header that
+    // declares more audio than the file holds.
+    writeFileSync(file, whole.subarray(0, Math.floor(whole.length * 0.1)))
+    calls.length = 0
+    const result = await run()
+    expect(calls).toHaveLength(1)
+    expect(result.langs[0]).toMatchObject({ generated: 1, reused: 2 })
+    expect(readFileSync(file).equals(whole)).toBe(true)
+  })
+
+  it('writes through <file>.part: none is left behind, a stale one is dropped, a failed rename cleans up', async () => {
+    const { workspace } = await narratedWorkspace()
+    const { provider } = fakeProvider()
+    const run = () =>
+      runNarrate({
+        lessonId: '01-placeholder',
+        lang: 'en',
+        cwd: workspace,
+        makeProvider: () => provider,
+        log: () => {},
+      })
+    const dir = narrationDir(workspace, 'en', '01-placeholder')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 's01-c00-deadbeefdead.wav.part'), 'half a clip')
+    await run()
+    expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
+
+    // The rename cannot replace a directory: the run fails and its .part file is removed.
+    const [first] = clipsIn(dir)
+    rmSync(path.join(dir, first!))
+    mkdirSync(path.join(dir, first!))
+    writeFileSync(path.join(dir, first!, 'x'), 'x')
+    await expect(run()).rejects.toThrow()
+    expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
   })
 })
 
@@ -471,6 +673,97 @@ describe('offline policy for deck code', () => {
         {
           stdio: 'pipe',
         },
+      )
+    } catch {
+      failed = true
+    }
+    expect(failed).toBe(flagged)
+  })
+
+  it.each([
+    [
+      'a <script setup> block in a slide (the beacon from the review)',
+      'lessons/extra.md',
+      "# s\n\n<script setup>fetch('https://tracker.example.com/beacon')</script>\n",
+      true,
+    ],
+    [
+      'a multi-line <script setup lang="ts"> block',
+      'lessons/extra.md',
+      '# s\n\n<script setup lang="ts">\nconst u = "https://cdn.example.com/a.mp3"\nnew Audio(u)\n</script>\n',
+      true,
+    ],
+    [
+      'a protocol-relative URL in a slide script',
+      'lessons/extra.md',
+      '<script>const u = "//tracker.example.net/p.gif"</script>\n',
+      true,
+    ],
+    [
+      'a <script> example in a code fence',
+      'lessons/extra.md',
+      '```html\n<script>fetch("https://tracker.example.com/beacon")</script>\n```\n',
+      false,
+    ],
+    [
+      'a <script> example in a tilde fence',
+      'lessons/extra.md',
+      '~~~vue\n<script setup>fetch("https://tracker.example.com/beacon")</script>\n~~~\n',
+      false,
+    ],
+    [
+      'a slide script that only uses localhost',
+      'lessons/extra.md',
+      '<script setup>fetch("http://localhost:3030/x")</script>\n',
+      false,
+    ],
+    [
+      'a plain link in prose (makes no request until clicked)',
+      'lessons/extra.md',
+      'See [the docs](https://example.com/docs) and https://example.org/x.\n',
+      false,
+    ],
+    [
+      'a script in a context pack (data quoted from the target)',
+      'lessons/01-placeholder/context-pack.md',
+      '<script>fetch("https://tracker.example.com/beacon")</script>\n',
+      false,
+    ],
+    [
+      'an inline SVG icon with its xmlns (a name, not a request)',
+      'components/Icon.vue',
+      '<template><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1"><use xlink:href="#a"/></svg></template>\n',
+      false,
+    ],
+    [
+      'createElementNS with the SVG namespace',
+      'components/Draw.ts',
+      "export const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg')\n",
+      false,
+    ],
+    [
+      'an SVG with xmlns that also loads a remote image',
+      'components/Icon.vue',
+      '<template><svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.example.com/x.png"/></svg></template>\n',
+      true,
+    ],
+    [
+      'another w3.org URL (only the namespace identifiers are exempt)',
+      'components/Draw.ts',
+      "export const u = 'https://www.w3.org/evil.js'\n",
+      true,
+    ],
+  ])('scans slide scripts and ignores XML namespaces: %s', async (_what, file, body, flagged) => {
+    const { workspace } = await makeWorkspace()
+    mkdirSync(path.dirname(path.join(workspace, file)), { recursive: true })
+    writeFileSync(path.join(workspace, file), body)
+    expect(findExternalUrlFiles(workspace).length > 0).toBe(flagged)
+    let failed = false
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(workspace, 'scripts', 'check-deck.mjs'), workspace],
+        { stdio: 'pipe' },
       )
     } catch {
       failed = true

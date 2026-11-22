@@ -1,4 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer, type IncomingHttpHeaders } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runNarrate } from '../src/commands/narrate.js'
@@ -353,6 +355,53 @@ describe('ElevenLabs provider (mocked HTTP, no key, no live calls)', () => {
     expect(err.message).toMatch(/ElevenLabs HTTP 401/)
     expect(err.message).not.toContain(KEY.slice(0, 8))
     expect(err.message).toContain('‹redacted›')
+  })
+
+  it('never follows a redirect: the key does not reach another host (real loopback servers)', async () => {
+    // fetch forwards custom headers such as xi-api-key across origins on a 307; the request must
+    // fail instead. Server A plays the API and redirects, server B is the "other host".
+    const seen: IncomingHttpHeaders[] = []
+    const other = createServer((req, res) => {
+      seen.push(req.headers)
+      res.end('audio')
+    })
+    await new Promise<void>((r) => other.listen(0, '127.0.0.1', r))
+    const otherPort = (other.address() as AddressInfo).port
+    const api = createServer((_req, res) => {
+      res.writeHead(307, { location: `http://127.0.0.1:${otherPort}/steal` })
+      res.end()
+    })
+    await new Promise<void>((r) => api.listen(0, '127.0.0.1', r))
+    const apiPort = (api.address() as AddressInfo).port
+    try {
+      const calls: RequestInit[] = []
+      const p = createElevenLabsProvider({
+        voice: 'Voice123',
+        apiKey: KEY,
+        // Real fetch, aimed at server A instead of api.elevenlabs.io (tests/setup.ts allows loopback).
+        fetch: (_url, init) => {
+          calls.push(init ?? {})
+          return fetch(`http://127.0.0.1:${apiPort}/v1/text-to-speech/Voice123`, init)
+        },
+      })
+      const err = (await p.synthesize('x').catch((e: unknown) => e)) as Error
+      expect(err.message).toMatch(/ElevenLabs request failed/)
+      expect(err.message).not.toContain(KEY)
+      expect(calls[0]?.redirect).toBe('error')
+      expect(seen).toEqual([])
+    } finally {
+      api.close()
+      other.close()
+    }
+  })
+
+  it('escapes control characters in the error body (no forged lines)', async () => {
+    const { fetch } = mockFetch([() => new Response('bad\nforged: line\x1b[31m', { status: 400 })])
+    const p = createElevenLabsProvider({ voice: 'Voice123', apiKey: KEY, fetch })
+    const err = (await p.synthesize('x').catch((e: unknown) => e)) as Error
+    // eslint-disable-next-line no-control-regex -- the point is that no control character survives
+    expect(err.message).not.toMatch(/[\n\x1b]/)
+    expect(err.message).toContain('ElevenLabs HTTP 400: bad')
   })
 
   it('times out a stalled request, retries it, and gives up with a clear error', async () => {
