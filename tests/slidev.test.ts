@@ -13,7 +13,9 @@ import {
   findRemoteAssetFiles,
   findWebFontFiles,
   offlineHeadmatterProblems,
+  snippetImports,
 } from '../src/lib/slidev.js'
+import { sensitiveReason } from '../src/lib/context-pack/sensitive.js'
 import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { makeTempDir } from './helpers/tmp.js'
@@ -35,9 +37,21 @@ describe('Slidev child process environment', () => {
     ANTHROPIC_API_KEY: 'fake-an-key',
     GITHUB_TOKEN: 'fake-gh-token',
     VITE_API_KEY: 'fake-vite-key',
+    // Passed by the VITE_*/SLIDEV_* wildcards unless the name is recognised as a secret.
+    VITE_ELEVENLABS_KEY: 'fake-vite-key-2',
+    SLIDEV_SECRET_KEY: 'fake-vite-key-3',
+    SLIDEV_PRIVATE_KEY: 'fake-vite-key-4',
+    VITE_DB_PASS: 'fake-vite-key-5',
+    VITE_TOKEN_VALUE: 'fake-vite-key-6',
     SOME_UNRELATED: 'x',
   }
-  const allowed = { VITE_PUBLIC_FLAG: '1', SLIDEV_FLAG: '2', DEBUG: 'none' }
+  const allowed = {
+    VITE_PUBLIC_FLAG: '1',
+    SLIDEV_FLAG: '2',
+    VITE_API_URL: 'http://localhost:8787',
+    SLIDEV_KEYMAP: 'vim',
+    DEBUG: 'none',
+  }
 
   const envSeen = (ws: string): Array<Record<string, string>> =>
     readFileSync(path.join(ws, 'slidev-env.log'), 'utf8')
@@ -412,6 +426,9 @@ const PLANTUML_CASES: Array<[string, string, boolean]> = [
     true,
   ],
   ['kebab-case component', '<plant-uml :code="x" />\n', true],
+  ['self-closing component', '<PlantUml/>\n', true],
+  ['component with content', '<PlantUml>A -> B</PlantUml>\n', true],
+  ['quoted pom property', '<plantuml.version>1.2024.5</plantuml.version>\n', false],
   [
     'plain fence starting with "plantuml" on the next line',
     '```\nplantuml is a tool\n```\n',
@@ -429,6 +446,59 @@ describe('PlantUML policy', () => {
     expect(findPlantUmlFiles(dir)).toEqual(flagged ? ['lessons/x.md'] : [])
   })
 })
+
+/** Files the snippet cases point at, relative to the workspace root. */
+function writeSnippetFixtures(workspace: string): void {
+  const put = (rel: string, text: string) => {
+    mkdirSync(path.dirname(path.join(workspace, rel)), { recursive: true })
+    writeFileSync(path.join(workspace, rel), text)
+  }
+  put('snippets/code.ts', 'export const a = 1\n')
+  put('snippets/diagram.puml', '@startuml\nA -> B\n@enduml\n')
+  put('snippets/remote.txt', 'flowchart LR\n  A@{ img: "https://example.com/x.png" }\n')
+  put('snippets/local.txt', 'flowchart LR\n  A --> B\n')
+  put('snippets/key.pem', 'not a real key\n')
+  put('.env', 'API_KEY=dummy-value\n')
+  put('course.local.json', '{"targetRepo": "/x"}\n')
+  put('target-repo/a.ts', 'x\n')
+  put('node_modules/pkg/x.ts', 'x\n')
+  put('lessons/01-placeholder/context-pack.md', '# Context pack\n')
+  put('lessons/01-placeholder/en/local.ts', 'export const b = 2\n')
+  const outside = makeTempDir('snippet-outside')
+  writeFileSync(path.join(outside, 'x.txt'), 'x\n')
+  symlinkSync(outside, path.join(workspace, 'linked'))
+}
+
+/** Markdown placed in lessons/01-placeholder/en/extra.md (so `../../../` is the workspace root). */
+const SNIPPET_CASES: Array<[string, string, boolean]> = [
+  ['a snippet next to the workspace root', '<<< ../../../snippets/code.ts\n', false],
+  ['with region, language and meta', '<<< ../../../snippets/code.ts#r ts {1,2}\n', false],
+  ['relative to the deck', '<<< ./local.ts\n', false],
+  ['`@/` is the deck directory', '<<< @/local.ts\n', false],
+  ['a local Mermaid snippet', '<<< ../../../snippets/local.txt mermaid\n', false],
+  ['`<<<` in the middle of a line', 'a <<< ../../../.env text\n', false],
+  ['the workspace .env', '<<< ../../../.env text\n', true],
+  ['the workspace .env without a language', '<<< ../../../.env\n', true],
+  ['the workspace .env through `@/`', '<<< @/../../../.env text\n', true],
+  ['an indented import', '  <<< ../../../.env text\n', true],
+  ['an import in a block quote', '> <<< ../../../.env text\n', true],
+  ['an import in a list', '- <<< ../../../.env text\n', true],
+  ['an import inside a magic-move block', '````md magic-move\n<<< ../../../.env\n````\n', true],
+  ['course.local.json', '<<< ../../../course.local.json json\n', true],
+  ['a key file', '<<< ../../../snippets/key.pem\n', true],
+  ['an absolute path', '<<< /etc/hostname text\n', true],
+  ['outside the workspace', '<<< ../../../../outside.txt\n', true],
+  ['into target-repo/', '<<< ../../../target-repo/a.ts\n', true],
+  ['into node_modules/', '<<< ../../../node_modules/pkg/x.ts\n', true],
+  ['through a symlink', '<<< ../../../linked/x.txt\n', true],
+  ['a context pack', '<<< ../context-pack.md text\n', true],
+  ['a PlantUML language', '<<< ../../../snippets/code.ts plantuml\n', true],
+  ['a .puml file', '<<< ../../../snippets/diagram.puml\n', true],
+  ['a Mermaid snippet with a remote image', '<<< ../../../snippets/remote.txt mermaid\n', true],
+  ['a src: import of a context pack', '---\nsrc: ../context-pack.md\n---\n', true],
+  ['a src: import of .env', '---\nsrc: ../../../.env\n---\n', true],
+  ['a src: import of a deck', '---\nsrc: ./local.md\n---\n', false],
+]
 
 describe('remote assets and slide imports', () => {
   it.each(REMOTE_CASES)('%s -> flagged: %s', (_what, text, flagged) => {
@@ -477,6 +547,96 @@ describe('remote assets and slide imports', () => {
     ])
   })
 
+  it('parses Slidev snippet imports like Slidev does', () => {
+    expect(snippetImports('<<< ../a.ts#region ts {1,2}\n')).toEqual([
+      { path: '../a.ts', lang: 'ts' },
+    ])
+    expect(snippetImports('<<< @/b.vue\n<<< ./c.json json')).toEqual([
+      { path: '@/b.vue', lang: 'vue' },
+      { path: './c.json', lang: 'json' },
+    ])
+    expect(snippetImports('text <<< ../a.ts\n<<<\n')).toEqual([])
+  })
+
+  it.each(SNIPPET_CASES)('%s -> flagged: %s', (_what, body, flagged) => {
+    const dir = makeTempDir('snippets')
+    writeSnippetFixtures(dir)
+    const deckDir = path.join(dir, 'lessons', '01-placeholder', 'en')
+    writeFileSync(path.join(deckDir, 'extra.md'), body)
+    writeFileSync(path.join(deckDir, 'local.md'), '# local\n')
+    const found = findOutsideImports(dir)
+    expect(found.length > 0, found.join('\n')).toBe(flagged)
+  })
+
+  it('names the import that was refused', () => {
+    const dir = makeTempDir('snippets-names')
+    writeSnippetFixtures(dir)
+    writeFileSync(
+      path.join(dir, 'lessons', '01-placeholder', 'en', 'extra.md'),
+      '<<< ../../../.env text\n',
+    )
+    expect(findOutsideImports(dir)).toEqual([
+      'lessons/01-placeholder/en/extra.md -> <<< ../../../.env',
+    ])
+  })
+
+  it('skips context packs for the PlantUML and web-font scans: they quote the target repo', () => {
+    const dir = makeTempDir('pack-scans')
+    mkdirSync(path.join(dir, 'lessons', '01'), { recursive: true })
+    const pack = path.join(dir, 'lessons', '01', 'context-pack.md')
+    writeFileSync(
+      pack,
+      [
+        '     1|<link href="https://fonts.googleapis.com/css2?family=Inter" rel="stylesheet">',
+        '     2|<plantuml.version>1.2024</plantuml.version>',
+        '     3|<PlantUml code="A -> B" />',
+        '     4|```plantuml',
+      ].join('\n'),
+    )
+    expect(findWebFontFiles(dir)).toEqual([])
+    expect(findPlantUmlFiles(dir)).toEqual([])
+    // Other Markdown files are still scanned.
+    writeFileSync(path.join(dir, 'lessons', '01', 'notes.md'), '<PlantUml code="x" />\n')
+    expect(findPlantUmlFiles(dir)).toEqual(['lessons/01/notes.md'])
+  })
+
+  it('`course build` works with a pack that quotes web fonts and PlantUML, and refuses to import it', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    writeFileSync(
+      path.join(workspace, 'lessons', '01-placeholder', 'context-pack.md'),
+      '     1|<link href="https://fonts.googleapis.com/css2?family=Inter" rel="stylesheet">\n' +
+        '     2|<plantuml.version>1.2024</plantuml.version>\n',
+    )
+    expect(() => runBuild({ cwd: workspace })).not.toThrow()
+    const file = deck(workspace, '01-placeholder', 'en')
+    const original = readFileSync(file, 'utf8')
+    writeFileSync(file, `${original}\n---\nsrc: ../context-pack.md\n---\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Slide imports.*context-pack\.md/s)
+    writeFileSync(file, `${original}\n<<< ../context-pack.md text\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Slide imports.*<<< \.\.\/context-pack\.md/s)
+  })
+
+  it('`course build` refuses a snippet import of the workspace .env before Slidev starts', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const log = installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, '.env'), 'ELEVENLABS_API_KEY=dummy-key-value\n')
+    const file = deck(workspace, '01-placeholder', 'en')
+    writeFileSync(file, `${readFileSync(file, 'utf8')}\n<<< ../../../.env text\n`)
+    expect(() => runBuild({ cwd: workspace })).toThrow(
+      /Slide imports.*<<< \.\.\/\.\.\/\.\.\/\.env/s,
+    )
+    expect(calls(log)).toHaveLength(0)
+    expect(existsSync(path.join(workspace, 'dist'))).toBe(false)
+  })
+
+  it('stops a Slidev build that does not finish', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    installFakeSlidev(workspace)
+    writeFileSync(path.join(workspace, 'slidev-hang'), '')
+    expect(() => runBuild({ cwd: workspace, timeoutMs: 400 })).toThrow(/did not finish within/)
+  })
+
   it('course build refuses a deck with a remote image or an outside import', async () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     const log = installFakeSlidev(workspace)
@@ -485,7 +645,7 @@ describe('remote assets and slide imports', () => {
     writeFileSync(file, `${original}\n![logo](https://example.com/logo.png)\n`)
     expect(() => runBuild({ cwd: workspace })).toThrow(/Remote images.*lessons\/01-placeholder/)
     writeFileSync(file, `${original}\n---\nsrc: ../../../../elsewhere.md\n---\n`)
-    expect(() => runBuild({ cwd: workspace })).toThrow(/Slide imports \(src:\)/)
+    expect(() => runBuild({ cwd: workspace })).toThrow(/Slide imports \(src: and <<< snippets\)/)
     writeFileSync(file, `${original}\n[a link](https://example.com) is fine\n`)
     expect(() => runBuild({ cwd: workspace })).not.toThrow()
     expect(calls(log)).toHaveLength(1)
@@ -548,5 +708,79 @@ describe('check-deck.mjs agrees with the TypeScript policy', () => {
     const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
     writeFileSync(path.join(workspace, 'lessons', 'extra.md'), body)
     expect(guardFails(workspace)).toBe(findRemoteAssetFiles(workspace).length > 0)
+  })
+
+  it.each(SNIPPET_CASES)('slide imports: %s', async (_what, body) => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    writeSnippetFixtures(workspace)
+    const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
+    writeFileSync(path.join(deckDir, 'extra.md'), body)
+    writeFileSync(path.join(deckDir, 'local.md'), '# local\n')
+    expect(guardFails(workspace)).toBe(findOutsideImports(workspace).length > 0)
+  })
+
+  it('skips context packs for the PlantUML and web-font checks, and refuses to import one', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const pack = path.join(workspace, 'lessons', '01-placeholder', 'context-pack.md')
+    writeFileSync(
+      pack,
+      '<link href="https://fonts.googleapis.com/css2?family=Inter" rel="stylesheet">\n<PlantUml code="x" />\n',
+    )
+    expect(guardFails(workspace)).toBe(false)
+    const extra = path.join(workspace, 'lessons', '01-placeholder', 'en', 'extra.md')
+    writeFileSync(extra, '---\nsrc: ../context-pack.md\n---\n')
+    expect(guardFails(workspace)).toBe(true)
+  })
+
+  it('refuses the same secret-looking files as the context-pack denylist', async () => {
+    const { workspace } = await makeWorkspace(undefined, { languages: ['en'] })
+    const denied = [
+      '.env',
+      'src/.env',
+      'config/.env.production',
+      'a/prod.env',
+      'a/.envrc',
+      'src/id_ed25519',
+      'home/.ssh/id_rsa.pub',
+      'certs/server.pem',
+      'deploy/tls.KEY',
+      'keys/deploy.ppk',
+      'src/main/resources/keystore.jks',
+      '.npmrc',
+      'a/.git-credentials',
+      '.docker/config.json',
+      '.kube/config',
+      'deploy/kubeconfig',
+      'ci/prod.kubeconfig',
+      'gcp/credentials.json',
+      'gcp/my-credentials.json',
+      'gcp/prod-credentials.yaml',
+      'config/secrets.yml',
+      'a/secret.txt',
+      'infra/secrets/db.txt',
+      'infra/terraform.tfstate',
+      'infra/prod.tfvars',
+      'x/service-account-prod.json',
+      'src/main/resources/application-prod.yml',
+    ]
+    const allowed = [
+      '.env.example',
+      'backend/.env.sample',
+      'src/main/resources/application.yml',
+      'src/main/java/com/example/KeyService.java',
+      'docs/environment.md',
+      'docs/kubeconfig-howto.md',
+      'README.md',
+    ]
+    const deckDir = path.join(workspace, 'lessons', '01-placeholder', 'en')
+    for (const file of [...denied, ...allowed]) {
+      mkdirSync(path.dirname(path.join(workspace, 'dl', file)), { recursive: true })
+      writeFileSync(path.join(workspace, 'dl', file), 'x\n')
+      writeFileSync(path.join(deckDir, 'extra.md'), `<<< ../../../dl/${file} text\n`)
+      const expected = sensitiveReason(file) !== null
+      expect(expected, `${file} in the context-pack denylist`).toBe(denied.includes(file))
+      expect(guardFails(workspace), file).toBe(expected)
+      expect(findOutsideImports(workspace).length > 0, file).toBe(expected)
+    }
   })
 })

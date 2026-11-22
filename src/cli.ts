@@ -102,7 +102,7 @@ program
 
 function fail(command: string, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
-  console.error(`course ${command} failed: ${message}`)
+  console.error(terminalSafe(`course ${command} failed: ${message}`))
   process.exitCode = 1
 }
 
@@ -114,7 +114,7 @@ program
   .action((commit: string | undefined, opts: { cwd?: string }) => {
     try {
       const result = runPin({ commit, cwd: opts.cwd })
-      for (const warning of result.warnings) console.error(`warning: ${warning}`)
+      for (const warning of result.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(
         result.changed
           ? `pinnedCommit: ${result.previous} -> ${result.pinned}`

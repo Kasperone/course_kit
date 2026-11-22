@@ -48,8 +48,38 @@ const ALLOWED_NAMES = new Set([
 
 const ALLOWED_PREFIXES = ['LC_', 'XDG_']
 
-/** Names that look like credentials are dropped even when an `extra` entry would allow them. */
+/**
+ * Names that look like credentials are dropped even when an `extra` entry would allow them: a
+ * known suffix (`GITHUB_TOKEN`, `DBPASSWORD`), or a whole `_`-separated word that names a secret
+ * (`SLIDEV_SECRET_KEY`, `VITE_DB_PASS`, `VITE_TOKEN_VALUE`, `X_PRIVATE_KEY`).
+ */
 const SECRET_NAME_RE = /(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$/i
+const SECRET_WORDS = new Set([
+  'KEY',
+  'KEYS',
+  'PASS',
+  'PASSWORD',
+  'PASSWD',
+  'PWD',
+  'SECRET',
+  'SECRETS',
+  'TOKEN',
+  'TOKENS',
+  'CREDENTIAL',
+  'CREDENTIALS',
+  'PRIVATE',
+  'APIKEY',
+])
+
+function looksSecret(name: string): boolean {
+  return (
+    SECRET_NAME_RE.test(name) ||
+    name
+      .toUpperCase()
+      .split('_')
+      .some((w) => SECRET_WORDS.has(w))
+  )
+}
 
 export type ChildEnvOptions = {
   /** Source environment; defaults to process.env. */
@@ -75,7 +105,7 @@ export function childEnv(options: ChildEnvOptions = {}): NodeJS.ProcessEnv {
     const allowed =
       ALLOWED_NAMES.has(key) || names.has(key) || prefixes.some((p) => key.startsWith(p))
     // Proxy variables are also read in lower case (`https_proxy`), and are not credentials.
-    if (allowed && !SECRET_NAME_RE.test(name)) out[name] = value
+    if (allowed && !looksSecret(name)) out[name] = value
   }
   out.GIT_TERMINAL_PROMPT = '0'
   return out

@@ -96,9 +96,11 @@ Decks are Mermaid-only, fully offline and export-free (ADR 0001, 0003). Every de
 `provider: "none"`, `browserExporter: false`, `mcp: false` and `download: false`. `course build`/`course dev` refuse to start Slidev otherwise, or if
 any workspace file has a PlantUML fence or `<PlantUml>` component, references a web-font CDN or loads a remote
 resource (images, embeds, scripts, styles, `url:` iframe layouts, reference-style images, Mermaid `img:` nodes; inline
-plain links are fine), or if a slide `src:` import leaves the checked
-files. `course dev` checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with
-`childEnv()` plus `NODE_*`/`VITE_*`/`SLIDEV_*`. The template's
+plain links are fine), or if a slide `src:` import or `<<<` snippet
+leaves the checked files, targets a context pack or a secret-looking file (`.env*`, keys) or is a PlantUML snippet.
+Context packs are skipped by every scan. `course dev` checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with
+`childEnv()` plus `NODE_*`/`VITE_*`/`SLIDEV_*` (secret-looking names are dropped even under those wildcards) and a
+10-minute build timeout. The template's
 `scripts/check-deck.mjs` applies the same rules for `npm run dev/build`. `course build` fails if the built output
 mentions plantuml.com, a font CDN or (in HTML) cdn.jsdelivr.net. Never remove these keys when editing a deck's headmatter.
 

@@ -283,6 +283,38 @@ describe('built CLI (dist/cli.js)', () => {
     ])
   })
 
+  it('never prints raw terminal escapes from `course pin` warnings or `course build` errors', () => {
+    const root = makeTempDir('cli-pin-escapes')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    runCli(['init', target, '--out', './ws', '--lang', 'en'], root)
+    const ws = path.join(root, 'ws')
+    // eslint-disable-next-line no-control-regex -- asserting that none are present
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/
+
+    // `pin` warns about uncommitted files; one is named like an OSC title change plus screen clear.
+    writeFileSync(path.join(target, 'evil\x1b]0;PWNED\x07\x1b[2Jname'), 'x\n')
+    const pin = spawnSync(process.execPath, [distCli, 'pin'], { cwd: ws, encoding: 'utf8' })
+    expect(pin.status).toBe(0)
+    expect(pin.stderr).toMatch(/^warning: Target repo has 1 uncommitted/)
+    expect(pin.stderr).toContain('evil\\x1b]0;PWNED\\x07\\x1b[2Jname')
+    expect(pin.stderr + pin.stdout).not.toMatch(controls)
+
+    // `build` errors quote slide imports and file names.
+    const deck = path.join(ws, 'lessons', '01-placeholder', 'en', 'slides.md')
+    writeFileSync(
+      deck,
+      `${readFileSync(deck, 'utf8')}\n---\nsrc: "../../../../\x1b]0;PWNED\x07x.md"\n---\n`,
+    )
+    writeFileSync(path.join(ws, 'lessons', 'bad\x1b[2J.md'), '<PlantUml code="x" />\n')
+    const build = spawnSync(process.execPath, [distCli, 'build'], { cwd: ws, encoding: 'utf8' })
+    expect(build.status).toBe(1)
+    expect(build.stderr).toContain('course build failed')
+    expect(build.stderr).toContain('\\x1b]0;PWNED\\x07x.md')
+    expect(build.stderr).toContain('bad\\x1b[2J.md')
+    expect(build.stderr + build.stdout).not.toMatch(controls)
+  })
+
   it('exits non-zero with a clear message on bad input', () => {
     const root = makeTempDir('cli-bad')
     let failed = false

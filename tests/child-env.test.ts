@@ -61,6 +61,28 @@ describe('childEnv', () => {
     ])
   })
 
+  it('drops credential-looking extras whatever their position in the name', () => {
+    const secret = [
+      'VITE_ELEVENLABS_KEY',
+      'SLIDEV_SECRET_KEY',
+      'SLIDEV_PRIVATE_KEY',
+      'VITE_DB_PASS',
+      'VITE_TOKEN_VALUE',
+      'VITE_CREDENTIALS_FILE',
+      'SLIDEV_PWD',
+      'VITE_APIKEY',
+      'VITE_API_KEY',
+      'VITE_DBPASSWORD',
+    ]
+    const fine = ['VITE_API_URL', 'SLIDEV_KEYMAP', 'VITE_PUBLIC_FLAG', 'VITE_BASE', 'SLIDEV_PORT']
+    const env = childEnv({
+      env: Object.fromEntries([...secret, ...fine].map((n) => [n, KEY])),
+      extra: ['VITE_*', 'SLIDEV_*'],
+    })
+    for (const name of secret) expect(env, name).not.toHaveProperty(name)
+    for (const name of fine) expect(env, name).toHaveProperty(name)
+  })
+
   it('matches names case-insensitively (Windows) and keeps the original spelling', () => {
     expect(childEnv({ env: { Path: 'C:\\bin', SystemRoot: 'C:\\Windows' } })).toMatchObject({
       Path: 'C:\\bin',

@@ -26,7 +26,11 @@ source leaves the machine" guarantee as ADR 0001, and a first real lesson (faktu
   stays a workspace dependency, never a course_kit dependency. Slidev, its theme and addons and
   the workspace code it loads (`vite.config.*`, `setup/*`) get an allowlisted environment
   (`childEnv()` plus `NODE_*`, `VITE_*`, `SLIDEV_*`, `DEBUG`, `BROWSER`), so an exported API key
-  never reaches them.
+  never reaches them. Names that look like a secret are dropped even under those wildcards: a
+  known suffix or a whole `_`-separated word (`KEY`, `PASS`, `SECRET`, `TOKEN`, `PRIVATE`, …, so
+  `VITE_ELEVENLABS_KEY` and `SLIDEV_SECRET_KEY` do not pass, while `VITE_API_URL` does). Vite
+  exposes `VITE_*` to client code, so a secret under that prefix would reach the browser. A build
+  that does not finish within 10 minutes is stopped (`course dev` is interactive and has no limit).
 - `course dev` checks the deck policy **when the server starts**. Slidev hot-reloads edits, so a
   remote image or embed added during a session renders until the next `course build` (or restart)
   refuses it; the guard is not a live watcher.
@@ -62,10 +66,17 @@ images, `src`/`href`/`poster`/… on loading tags (`img`, `iframe`, `script`, `l
 `background:`/`url:` frontmatter (`url:` feeds Slidev's `iframe` layouts) pointing at another host
 (loopback is allowed), reference-style link definitions (`[label]: https://…`, which also flags
 reference-style plain links) and Mermaid image nodes (`A@{ img: "https://…" }`). Inline plain links
-are fine: they make no request until clicked. Context packs are skipped (they quote the target as data). Slide
-imports (`src: ./other.md`) must stay inside the scanned files: no absolute paths, paths outside the
-workspace, skipped directories (`node_modules/`, `dist/`, `audio/`, `target-repo/`) or symlinks, so
-everything Slidev renders has passed the checks above. This is pattern matching, not a sandbox: a
+are fine: they make no request until clicked. Context packs are skipped by every scan (they quote the target
+as data: a Google Fonts `<link>` or a pom's `<plantuml.version>` in a pack must not stop a build), and for that
+reason no deck may import one. Slide imports must stay inside the scanned files: `src: ./other.md` and Slidev's
+code snippets (`<<< ../code.ts`, resolved against the deck's own directory, `@/` included; `<<<` is scanned on
+every line, also in fences, block quotes and lists, because Slidev resolves it there too). Refused: absolute paths,
+paths outside the workspace, skipped directories (`node_modules/`, `dist/`, `audio/`, `target-repo/`), symlinks,
+context packs and secret-looking files (the context-pack denylist: `.env*`, keys, kubeconfigs, …, plus
+`course.local.json`), snippets in a PlantUML language (Slidev renders them as a PlantUML request) and Mermaid
+snippets that load a remote image. Without this, `<<< ../../../.env text` puts the workspace `.env` into the
+built deck (reproduced with Slidev 52.20.1; an e2e test keeps the negative control). So everything Slidev
+renders has passed the checks above. This is pattern matching, not a sandbox: a
 deck author who wants to load something remote can still find a way; the guard catches mistakes and
 the common forms.
 The template's `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) applies the same rules to
