@@ -608,7 +608,12 @@ describe('course init', () => {
 
     // Control: a plain `git status` does run both drivers once the files' stat data changed.
     touchFiles()
-    git(repoDir, ['status', '--porcelain'])
+    try {
+      git(repoDir, ['status', '--porcelain'])
+    } catch {
+      // git 2.43 dies when a non-required `process` filter fails (newer git carries on); both drivers
+      // have run by then, which is all the control needs.
+    }
     expect(existsSync(cleanMarker)).toBe(true)
     expect(existsSync(procMarker)).toBe(true)
     rmSync(cleanMarker)
