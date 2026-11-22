@@ -76,8 +76,22 @@ paths outside the workspace, skipped directories (`node_modules/`, `dist/`, `aud
 context packs and secret-looking files (the context-pack denylist: `.env*`, keys, kubeconfigs, …, plus
 `course.local.json`), snippets in a PlantUML language (Slidev renders them as a PlantUML request) and Mermaid
 snippets that load a remote image. Without this, `<<< ../../../.env text` puts the workspace `.env` into the
-built deck (reproduced with Slidev 52.20.1; an e2e test keeps the negative control). So everything Slidev
-renders has passed the checks above. This is pattern matching, not a sandbox: a
+built deck (reproduced with Slidev 52.20.1; an e2e test keeps the negative control).
+
+Local asset paths follow the same rules. Slidev (Vite) turns every local file reference into an asset import,
+whatever the extension: Markdown images and reference definitions, `src`/`srcset`/`poster`/`href`
+attributes (also Vue `:src` string literals), CSS `url()` and `@import`, slide `image:`/`background:`
+frontmatter and `import`/`import()`/`new URL()` in Vue code. Checked empirically on 52.20.1: the file lands in the
+build (`?raw` and `?url` put a `.env` into the bundle; JSON, text, SVG and PNG are emitted or inlined), and
+Slidev's own `slidev:slide-import-guard` only refuses paths outside the Vite root, and only for Markdown/HTML
+images (CSS `url()`, `image:`/`background:` frontmatter and symlinks reach files outside the workspace).
+The guard therefore resolves each reference the way Vite does (relative to the file, `@/` = the deck's directory,
+a leading `/` = `public/`, the root, an existing absolute path or `/@fs/`; query, fragment and percent-encoding are
+ignored) and applies the import rules above: nothing outside the workspace, no skipped directory, symlink,
+context pack or secret-looking file. The boundary is the workspace, like for `src:`, so shared images in the
+workspace keep working. Remote, `data:` and `#fragment` references are not local; plain links (`[x](path)`,
+`<a href>`) import nothing and are not checked. Every line is scanned, fences included, so a false positive needs a
+path that is itself refused. So everything Slidev renders has passed the checks above. This is pattern matching, not a sandbox: a
 deck author who wants to load something remote can still find a way; the guard catches mistakes and
 the common forms.
 The template's `scripts/check-deck.mjs` (formerly `check-no-plantuml.mjs`) applies the same rules to

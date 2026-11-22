@@ -149,7 +149,7 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
   const imports = findOutsideImports(courseDir)
   if (imports.length > 0) {
     errors.push(
-      `Slide imports (src: and <<< snippets) must stay inside the workspace's scanned files: no absolute paths, symlinks, node_modules/, dist/, audio/ or target-repo/, no context packs or secret-looking files (.env*, keys), no PlantUML snippets: ${list(imports)}`,
+      `Slide imports (src: and <<< snippets) and asset paths (images, url(), image:/background: frontmatter, Vue imports) must stay inside the workspace's scanned files: no absolute paths, symlinks, node_modules/, dist/, audio/ or target-repo/, no context packs or secret-looking files (.env*, keys), no PlantUML snippets: ${list(imports)}`,
     )
   }
   for (const deck of decks) {
