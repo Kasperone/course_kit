@@ -36,18 +36,26 @@ All target-repo content is read via the git object database, never the working t
 repository is `COURSE_TARGET_REPO` if set, the checked-out submodule in submodule mode, otherwise
 `course.local.json` or `course.json` `targetRepo` resolved against the workspace. Those two files
 come with a shared workspace, so a target they name must lie outside the workspace: otherwise a
-cloned workspace could commit a bare repository's files and make them the target.
+cloned workspace could commit a bare repository's files and make them the target. The check
+compares paths and also walks up from the target's real path looking for the workspace's device
+and inode, so a case-insensitive filesystem (`../MY-COURSE/evil` for a workspace `my-course/`)
+cannot make the two spellings differ.
 
 Every call pins, on the command line (which overrides repository config), the settings that could
 make git run a program: `safe.bareRepository=explicit` (no implicit bare repos),
-`log.showSignature=false` (no `gpg.program`) and `core.fsmonitor=false`. Calls time out after
-120 s, `jdeps` after 60 s. `course lesson new` reads only `course.json`, so it works in a fresh
+`log.showSignature=false` (no `gpg.program`) and `core.fsmonitor=false`
+(`GIT_HARDENING_ARGS`, shared with `course init`). `safe.bareRepository` exists since git 2.38 and
+older git silently ignores it, so course_kit refuses to run on older git. Calls time out after
+120 s, `jdeps` after 60 s. git and `jdeps` run with an allowlisted environment (`childEnv()`; for
+jdeps also `JAVA_HOME`), so an exported API key never reaches them. `course lesson new` reads only `course.json`, so it works in a fresh
 clone without the target.
 
 - Commit check: `git cat-file -e --end-of-options <sha>^{commit}` (clear error if it is gone)
 - File list and sizes: one `git ls-tree -r -z -l --full-tree --end-of-options <sha>`
 - Contents: one `git cat-file --batch` for all embedded blobs (by object id)
-- History: `git --literal-pathspecs log -n N --end-of-options <sha> -- <paths>`
+- History: `git --literal-pathspecs log -n N --end-of-options <sha> -- <paths>`. A failure of this
+  call (timeout, a path list too long for the command line) is reported as a warning and in the
+  History section, never as "No log entries".
 
 NUL-separated output keeps non-ASCII and unusual paths intact. Symlinks are never followed (the
 blob is the link text) and are skipped, as are gitlinks; both are listed in the selection report,
@@ -63,8 +71,10 @@ Packs go to LLMs and may be shared, so:
    credentials files, `secrets/`, Terraform state/vars, service-account keys, and Spring
    `application-{prod,production,local,secret}*` profiles.
 2. Everything embedded passes through line-preserving **redaction** (`redact.ts`): known token
-   formats, JWTs, private key blocks, URL passwords, literal assignments to secret-looking names,
-   and secret-looking keys in config files (`${VAR:default}` keeps `VAR`, hides the default).
+   formats (including `sk_…` keys), JWTs, private key blocks, URL passwords, literal assignments
+   to secret-looking names, unquoted `NAME=value` assignments to upper-snake secret-looking names in
+   any file (`export DB_PASSWORD=…`, `ENV API_TOKEN=…`; `$VAR` references stay), and
+   secret-looking keys in config files (`${VAR:default}` keeps `VAR`, hides the default).
    That includes the git log (author names and subjects), reported as `(git log)`.
 
 Both are listed in the pack, the JSON and as CLI warnings. This is a safety net, not a secret
@@ -102,11 +112,20 @@ the embedded (redacted) text of selected files plus any matched `.jar`/`.class` 
 artifacts (at most 5, 20 MB each). Step 2 ships **Java only**:
 
 - `jdeps -summary` on the artifacts when `jdeps -version` works (graph of artifact → module).
+  jdeps is probed before any artifact is read, and temp files are named `<index><extension>`, never
+  after the repository's file names.
 - Otherwise a **package-import graph** from `.java` sources (wildcard, static and nested-class
   imports map to packages) → Mermaid `flowchart` with generated node ids and quoted labels.
 
 Compiled classes are rarely committed; pointing jdeps at a local build of the pinned commit is a
 later step.
+
+### Terminal output
+
+Warnings and errors quote repository content (file names, globs, git output), and the target can be
+any third-party repo. The CLI prints them through `terminalSafe()` (`src/lib/terminal.ts`): line
+breaks stay, every other control character (ESC, C1 controls, bidirectional overrides) becomes a
+visible escape such as `\x1b`. `context-pack.json` keeps the raw names (JSON escapes them itself).
 
 ### Lesson layout
 

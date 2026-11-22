@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
+import { terminalSafe } from './lib/terminal.js'
 import { runLessonNew } from './commands/lesson-new.js'
 import { packageVersion } from './lib/paths.js'
 
@@ -33,13 +34,13 @@ program
         submodule: opts.submodule,
       })
       const { outDir, course, notices } = await runInit(options)
-      console.log(`Course workspace created at ${outDir}`)
+      console.log(terminalSafe(`Course workspace created at ${outDir}`))
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
-      for (const notice of notices) console.warn(`Note: ${notice}`)
+      for (const notice of notices) console.warn(terminalSafe(`Note: ${notice}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course init failed: ${message}`)
+      console.error(terminalSafe(`course init failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -53,10 +54,10 @@ lesson
   .action((lessonId: string) => {
     try {
       const { lessonRoot } = runLessonNew({ lessonId })
-      console.log(`Lesson created at ${lessonRoot}`)
+      console.log(terminalSafe(`Lesson created at ${lessonRoot}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course lesson new failed: ${message}`)
+      console.error(terminalSafe(`course lesson new failed: ${message}`))
       process.exitCode = 1
     }
   })
@@ -79,7 +80,7 @@ program
         out: opts.out,
         json: Boolean(opts.json),
       })
-      for (const warning of meta.warnings) console.error(`warning: ${warning}`)
+      for (const warning of meta.warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(`Wrote context pack for ${lessonId}`)
       console.log(
         `Files: ${meta.selectedFiles.length}, ~${meta.tokenEstimate} tokens, analyzers: ${
@@ -88,7 +89,7 @@ program
       )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course context failed: ${message}`)
+      console.error(terminalSafe(`course context failed: ${message}`))
       process.exitCode = 1
     }
   })

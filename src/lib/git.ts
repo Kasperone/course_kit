@@ -44,7 +44,7 @@ export function assertGitVersion(output: string): void {
 
 let gitVersionChecked = false
 
-function requireModernGit(): void {
+export function requireModernGit(): void {
   if (gitVersionChecked) return
   assertGitVersion(
     execFileSync('git', ['--version'], {

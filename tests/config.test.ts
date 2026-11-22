@@ -6,6 +6,7 @@ import { parse as parseYaml } from 'yaml'
 import { runContext } from '../src/commands/context.js'
 import { PLANTUML_DISABLED_SERVER, TARGET_REPO_ENV } from '../src/commands/init.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
+import { assertTargetOutsideWorkspace, targetIsInsideByIdentity } from '../src/lib/workspace.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
 import { git } from './helpers/git.js'
 
@@ -260,5 +261,37 @@ describe('hostile workspace', () => {
     await expect(runContext({ lessonId: '01-placeholder', cwd: fx.workspace })).rejects.toThrow(
       /inside the course workspace/,
     )
+  })
+})
+
+describe('target inside the workspace, by identity', () => {
+  // A case-insensitive filesystem (macOS, Windows) resolves `../MY-COURSE/evil` into the workspace
+  // `my-course/`, but the two spellings differ as strings. Simulated with a stat that treats
+  // directories whose names match case-insensitively as the same inode.
+  const caseInsensitiveStat = (p: string) => {
+    const key = path.resolve(p).toLowerCase()
+    let h = 0
+    for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0
+    return { dev: 1, ino: h }
+  }
+
+  it('refuses a target whose path differs from the workspace only by case', async () => {
+    const fx = await makeWorkspace()
+    const spoofed = path.join(path.dirname(fx.workspace), 'COURSE', 'evil')
+    // The string comparison alone calls this outside the workspace ...
+    expect(() => assertTargetOutsideWorkspace(fx.workspace, spoofed)).not.toThrow()
+    // ... the identity walk does not.
+    expect(() => assertTargetOutsideWorkspace(fx.workspace, spoofed, caseInsensitiveStat)).toThrow(
+      /inside the course workspace/,
+    )
+    expect(targetIsInsideByIdentity(fx.workspace, spoofed, caseInsensitiveStat)).toBe(true)
+    expect(targetIsInsideByIdentity(fx.workspace, fx.repoDir, caseInsensitiveStat)).toBe(false)
+  })
+
+  it('walks up from the real path of the target', async () => {
+    const fx = await makeWorkspace()
+    expect(targetIsInsideByIdentity(fx.workspace, path.join(fx.workspace, 'a', 'b'))).toBe(true)
+    expect(targetIsInsideByIdentity(fx.workspace, fx.workspace)).toBe(true)
+    expect(targetIsInsideByIdentity(fx.workspace, fx.repoDir)).toBe(false)
   })
 })

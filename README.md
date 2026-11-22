@@ -40,4 +40,5 @@ set `COURSE_TARGET_REPO=/path/to/clone`.
 ## Docs
 
 - [ADR 0001 — stack & repo reference](docs/adr/0001-node-typescript-cli-and-repo-reference.md)
+- [ADR 0002 — context pack format](docs/adr/0002-context-pack-format.md)
 - [AGENTS.md](AGENTS.md) — conventions for coding agents in this repo

@@ -32,6 +32,9 @@ course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 - `tests/context.test.ts` — pinned-commit packs, Unicode paths, literal files, caps report, fence safety, Java/jdeps.
 - `tests/config.test.ts` — lesson id / course.json / lesson.json validation, submodule mode, `COURSE_TARGET_REPO`.
 - `tests/secrets.test.ts` — denylist and redaction against a hostile fixture repo.
+- `tests/fs-safe.test.ts` — no workspace write follows a symlink.
+- `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
+  the git >= 2.38 check.
 
 Always run lint and tests before pushing.
 
@@ -74,5 +77,6 @@ Build with `course context <id>`. Packs read the target repo through `src/lib/gi
 `cat-file --batch`, full SHAs after `--end-of-options`, `safe.bareRepository=explicit` and no signature checks) —
 never the working tree, never `git show`/shell. A `targetRepo` inside the workspace is refused. Validate
 any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content must go through
-`redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Extend `src/analyzers/` for
+`redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Anything the CLI prints that
+quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`). Extend `src/analyzers/` for
 language-specific graphs.
