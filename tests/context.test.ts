@@ -432,11 +432,33 @@ describe('partial clones', () => {
     // The blob is still absent: git did not run `git fetch` against the clone's origin.
     const oid = git(fx.repoDir, ['rev-parse', `${fx.pinned}:README.md`]).trim()
     expect(() =>
-      execFileSync('git', ['-C', fx.repoDir, 'cat-file', '-e', oid], {
+      // GIT_NO_LAZY_FETCH needs git 2.44; protocol.allow=never stops the lazy fetch on older git too.
+      execFileSync('git', ['-c', 'protocol.allow=never', '-C', fx.repoDir, 'cat-file', '-e', oid], {
         stdio: 'pipe',
         env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
       }),
     ).toThrow()
+  })
+
+  it('also reports old git that fails on the blocked fetch while listing the tree (ls-tree -l)', async () => {
+    const fx = await makeWorkspace()
+    setLesson(fx.workspace, { files: ['README.md'] })
+    const bin = makeTempDir('git-old-promisor-lstree')
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = ls-tree ]; then echo "fatal: unable to read abc: transport \'file\' not allowed" >&2; exit 128; fi\ndone\n' +
+        'PATH="${PATH#*:}" exec git "$@"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${savedPath}`
+    try {
+      await expect(runContext({ lessonId: LESSON, cwd: fx.workspace })).rejects.toThrow(
+        /partial clone.*COURSE_TARGET_REPO/s,
+      )
+    } finally {
+      process.env.PATH = savedPath
+    }
   })
 
   it('also reports git versions that fail on the blocked fetch instead of printing "missing"', async () => {
