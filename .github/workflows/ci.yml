@@ -64,6 +64,12 @@ jobs:
   git-oldest:
     runs-on: ubuntu-latest
     container: ubuntu:24.04
+    env:
+      # The container user does not own the mounted checkout, and tests/setup.ts points git's global config
+      # at /dev/null, so trust it through command-line config (a test runs `git ls-files` in this repo).
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
     steps:
       - name: Install git
         run: |
@@ -79,10 +85,6 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-
-      # The container user does not own the mounted checkout; tests that run git in the repo itself need this.
-      - name: Trust the workspace
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
