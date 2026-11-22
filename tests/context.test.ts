@@ -326,6 +326,40 @@ describe('control characters', () => {
     const out = terminalSafe('warning: a\x1b[2Jb\r\nsecond line\rspoof\nthird\x07')
     expect(out).toBe('warning: a\\x1b[2Jb\nsecond line\\rspoof\nthird\\x07')
   })
+
+  it.each([
+    [
+      'fatal: unable to access via proxy http://user:s3cret@proxy.example:3128/',
+      'fatal: unable to access via proxy http://user:‹redacted›@proxy.example:3128/',
+    ],
+    ['HTTPS_PROXY=HTTPS://u:pw@h:8080', 'HTTPS_PROXY=HTTPS://u:‹redacted›@h:8080'],
+    ['socks5h://u:pw@127.0.0.1:1080', 'socks5h://u:‹redacted›@127.0.0.1:1080'],
+    ['http://u:p@ss@proxy:3128/', 'http://u:‹redacted›@proxy:3128/'],
+    ['http://u:p:w@proxy:3128', 'http://u:‹redacted›@proxy:3128'],
+    ['http://dom%5Cu:p%40ss@proxy:3128', 'http://dom%5Cu:‹redacted›@proxy:3128'],
+    ['ALL_PROXY=user:s3cret@proxy.example:3128', 'ALL_PROXY=user:‹redacted›@proxy.example:3128'],
+    [
+      'a http://x:1@h1:1 and https://y:2@h2/p b',
+      'a http://x:‹redacted›@h1:1 and https://y:‹redacted›@h2/p b',
+    ],
+    [
+      'line one\nvia http://u:pw@h:1\nline three',
+      'line one\nvia http://u:‹redacted›@h:1\nline three',
+    ],
+    // Nothing to redact: no password, ports, emails, ssh remotes, query strings.
+    ['http://proxy:3128/', 'http://proxy:3128/'],
+    ['http://token@proxy:3128/', 'http://token@proxy:3128/'],
+    ['jdbc:postgresql://db:5432/app', 'jdbc:postgresql://db:5432/app'],
+    ['git@github.com:org/repo.git', 'git@github.com:org/repo.git'],
+    ['mail a@b.example, ratio 3:2@5pm', 'mail a@b.example, ratio 3:2@5pm'],
+    ['https://example.com/a?next=http://h:80/x@y', 'https://example.com/a?next=http://h:80/x@y'],
+  ])('terminalSafe drops proxy/URL passwords: %j', (input, expected) => {
+    expect(terminalSafe(input)).toBe(expected)
+  })
+
+  it('terminalSafe drops the password and still escapes control characters', () => {
+    expect(terminalSafe('http://u:s3cret@h:1 \x1b[2J')).toBe('http://u:‹redacted›@h:1 \\x1b[2J')
+  })
 })
 
 describe('--out', () => {

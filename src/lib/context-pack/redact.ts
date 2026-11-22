@@ -29,8 +29,26 @@ const TOKEN_PATTERNS: Array<[kind: string, re: RegExp]> = [
  */
 const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/-]{20,}=*/g
 
-/** user:password@ in URLs (keep the user, drop the password). */
-const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):([^\s@/]+)@/gi
+/**
+ * user:password@ in URLs (keep the user, drop the password). The password runs up to the last `@`
+ * before the host, so an unencoded `@` or `:` inside it is covered too.
+ */
+const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):([^\s/]+)@/gi
+
+/** `user:password@host:port` without a scheme, which proxy variables accept (`HTTPS_PROXY=u:p@h:3128`). */
+const SCHEMELESS_CREDENTIALS =
+  /(?<![\w:/.@%-])([\w.%+-]+):([^\s/@]+(?:@[^\s/@]+)*)@(?=[\w.-]+:\d{2,5}\b)/g
+
+/**
+ * Drop the password of every `user:password@` in free text (proxy URLs such as
+ * `http://user:secret@proxy:3128` in a tool's error output, log lines, environment dumps). Keeps
+ * the rest of the line, so the message stays useful. Unlike `redactSecrets` it works on any text.
+ */
+export function redactUrlCredentials(text: string): string {
+  return text
+    .replace(URL_CREDENTIALS, (_m, prefix: string) => `${prefix}:${REDACTED}@`)
+    .replace(SCHEMELESS_CREDENTIALS, (_m, user: string) => `${user}:${REDACTED}@`)
+}
 
 const SECRET_NAME =
   '[A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|client[_-]?key|credentials?)[A-Za-z0-9_.-]*'
@@ -115,6 +133,10 @@ export function redactSecrets(text: string, filePath: string): RedactionResult {
     out = out.replace(URL_CREDENTIALS, (_m, prefix: string) => {
       redactions.push({ line: lineNo, kind: 'url-credentials' })
       return `${prefix}:${REDACTED}@`
+    })
+    out = out.replace(SCHEMELESS_CREDENTIALS, (_m, user: string) => {
+      redactions.push({ line: lineNo, kind: 'url-credentials' })
+      return `${user}:${REDACTED}@`
     })
     out = out.replace(LITERAL_ASSIGNMENT, (m, name: string, sep: string, q: string, value) => {
       if (String(value).startsWith(REDACTED)) return m
