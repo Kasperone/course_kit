@@ -119,14 +119,16 @@ describe('git child processes', () => {
   it.each([
     ['git version 2.34.1', false],
     ['git version 2.37.9', false],
-    ['git version 2.38.0', true],
+    ['git version 2.38.0', false],
+    ['git version 2.42.9', false],
+    ['git version 2.43.0', true],
     ['git version 2.43.0 (Apple Git-146)', true],
     ['git version 3.0.0', true],
     ['', false],
     ['something else', false],
-  ])('git >= 2.38 check: %j -> %s', (output, ok) => {
+  ])('git >= 2.43 check: %j -> %s', (output, ok) => {
     if (ok) expect(() => assertGitVersion(output)).not.toThrow()
-    else expect(() => assertGitVersion(output)).toThrow(/needs git >= 2\.38/)
+    else expect(() => assertGitVersion(output)).toThrow(/needs git >= 2\.43/)
   })
 
   it('parses git version output', () => {
