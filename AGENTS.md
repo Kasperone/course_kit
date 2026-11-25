@@ -50,7 +50,7 @@ course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
 - `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: snippet and asset-path leaks, PlantUML, fonts, favicon, the dev
   server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job runs it).
 - `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
-  the git >= 2.38 check.
+  the git >= 2.43 check.
 
 Always run lint and tests before pushing.
 
@@ -80,9 +80,9 @@ Always run lint and tests before pushing.
   for names a tool needs to run.
 - Git calls on a target repository go through `gitRead` in `src/lib/git.ts`: `GIT_HARDENING_ARGS`
   (`safe.bareRepository=explicit`, no fsmonitor, no signature checks), `--no-optional-locks`, a timeout, and a
-  once-per-process check for git >= 2.38 (older git ignores `safe.bareRepository`). Reuse these constants
+  once-per-process check for git >= 2.43 (`MIN_GIT_VERSION`; `safe.bareRepository` needs 2.38, but 2.43 is the oldest git CI tests). Reuse these constants
   for any new git call on a target. The CI job `git-oldest` (ubuntu:24.04, git 2.43) runs the git-dependent test
-  files; add a test file to its list when it starts using git. 2.43 is the oldest git actually tested.
+  files; add a test file to its list when it starts using git. The floor equals the version that job tests.
 - `--submodule` needs a network `origin` on the target (a relative `.gitmodules` URL resolves against the
   course's own remote); never fall back to a relative path.
 
