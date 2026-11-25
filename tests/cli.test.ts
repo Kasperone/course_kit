@@ -115,7 +115,7 @@ describe('built CLI (dist/cli.js)', () => {
     initRepoWithCommit(target)
     const bin = path.join(root, 'bin')
     mkdirSync(bin)
-    // git >= 2.38 for the version check; every other call fails the way git does behind a proxy.
+    // git >= 2.43 for the version check; every other call fails the way git does behind a proxy.
     writeFileSync(
       path.join(bin, 'git'),
       '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.45.0"; exit 0; fi\n' +
