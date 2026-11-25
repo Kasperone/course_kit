@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+*.tgz
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Course workspaces created by `course init` with the default --out (<cwd>/<repo>-course)
+*-course/
+audio/local/

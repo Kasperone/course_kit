@@ -1,0 +1,813 @@
+import { execFileSync } from 'node:child_process'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { parse as parseYaml } from 'yaml'
+import {
+  parseInitArgs,
+  LOCAL_CONFIG_FILE,
+  PLANTUML_DISABLED_SERVER,
+  portableRelativePath,
+  resolveCourseTargetRepo,
+  runInit,
+  SUBMODULE_PATH,
+} from '../src/commands/init.js'
+import { uncommittedChanges } from '../src/lib/git.js'
+import { commitAll, git, initRepo, initRepoWithCommit, writeFiles } from './helpers/git.js'
+import { makeTempDir } from './helpers/tmp.js'
+
+/** Every file in the workspace (skipping .git internals) whose content contains `needle`. */
+function filesContaining(dir: string, needle: string): string[] {
+  const hits: string[] = []
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d)) {
+      if (entry === '.git') continue
+      const abs = path.join(d, entry)
+      if (statSync(abs).isDirectory()) walk(abs)
+      else if (readFileSync(abs, 'utf8').includes(needle)) hits.push(path.relative(dir, abs))
+    }
+  }
+  walk(dir)
+  return hits
+}
+
+const ORIGIN = 'https://git.example/acme/app.git'
+
+function frontmatter(file: string): Record<string, unknown> {
+  const text = readFileSync(file, 'utf8')
+  const m = text.match(/^---\n([\s\S]*?)\n---/)
+  if (!m) throw new Error(`No frontmatter in ${file}`)
+  return parseYaml(m[1]!) as Record<string, unknown>
+}
+
+async function initWorkspace(opts: { languages?: string[]; submodule?: boolean } = {}) {
+  const root = makeTempDir('init')
+  const repoDir = path.join(root, 'target')
+  const pinned = initRepoWithCommit(repoDir, opts.submodule ? 'app.txt' : 'README.md')
+  if (opts.submodule) {
+    // --submodule needs a network origin; a tracking ref marks the pinned commit as pushed.
+    git(repoDir, ['remote', 'add', 'origin', ORIGIN])
+    git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
+  }
+  const outDir = path.join(root, 'out-course')
+  const { course, notices } = await runInit({
+    targetRepo: repoDir,
+    outDir,
+    languages: opts.languages ?? ['pl', 'en'],
+    submodule: opts.submodule ?? false,
+    cwd: root,
+  })
+  return { root, repoDir, pinned, outDir, course, notices }
+}
+
+describe('course init', () => {
+  it('creates workspace files and pins HEAD commit', async () => {
+    const { pinned, outDir, course } = await initWorkspace()
+
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(course.referenceMode).toBe('pinned-path')
+    expect(course.languages).toEqual(['pl', 'en'])
+
+    expect(existsSync(path.join(outDir, 'course.json'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, '.env.example'))).toBe(true)
+    const notice = readFileSync(path.join(outDir, 'LICENSE-CONTENT'), 'utf8')
+    expect(notice).toContain('CC BY 4.0')
+    // The workspace's lessons belong to the course author, not to course_kit's author.
+    expect(notice).not.toMatch(/Copyright.*Kasperone/)
+    expect(notice).toMatch(/^Copyright \(c\) <year> <course author>$/m)
+    expect(notice).toContain('https://github.com/Kasperone/course_kit/blob/main/LICENSE')
+    expect(existsSync(path.join(outDir, 'LICENSE'))).toBe(false)
+    // The notice is the author's own, not "course workspaces created with course_kit" in general.
+    expect(notice).toContain('in this workspace')
+    expect(existsSync(path.join(outDir, 'lessons', 'pl', '01-placeholder', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'audio', 'ATTRIBUTION.md'))).toBe(true)
+    expect(existsSync(path.join(outDir, 'audio', 'local', '.gitkeep'))).toBe(true)
+
+    const onDisk = JSON.parse(readFileSync(path.join(outDir, 'course.json'), 'utf8'))
+    expect(onDisk.pinnedCommit).toBe(pinned)
+  })
+
+  it('disables PlantUML via headmatter and ships a guard that blocks plantuml fences', async () => {
+    const { outDir } = await initWorkspace()
+
+    expect(existsSync(path.join(outDir, 'slidev.config.ts'))).toBe(false)
+    const decks = [
+      path.join(outDir, 'slides.md'),
+      ...['pl', 'en'].map((lang) =>
+        path.join(outDir, 'lessons', lang, '01-placeholder', 'slides.md'),
+      ),
+    ]
+    for (const deck of decks) {
+      const fm = frontmatter(deck)
+      expect(fm.plantUmlServer, deck).toBe(PLANTUML_DISABLED_SERVER)
+      // Slidev defaults: Google Fonts and a cdn.jsdelivr.net favicon. Both must be overridden.
+      expect(fm.fonts, deck).toMatchObject({ provider: 'none' })
+      expect(fm.favicon, deck).toBe('data:,')
+      expect(readFileSync(deck, 'utf8'), deck).not.toMatch(/https?:\/\/(?!creativecommons)/)
+    }
+    for (const lang of ['pl', 'en']) {
+      const fm = frontmatter(path.join(outDir, 'lessons', lang, '01-placeholder', 'slides.md'))
+      expect(fm.lang).toBe(lang)
+      expect(typeof fm.title).toBe('string')
+    }
+
+    const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
+    expect(pkg.scripts.predev).toContain('check:diagrams')
+    expect(pkg.scripts.prebuild).toContain('check:diagrams')
+    expect(pkg.scripts.preexport).toContain('check:diagrams')
+
+    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    // Clean workspace passes.
+    execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe' })
+    // A plantuml block anywhere in lessons fails.
+    writeFileSync(
+      path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md'),
+      '# x\n\n```plantuml\n@startuml\nA -> B\n@enduml\n```\n',
+      'utf8',
+    )
+    let stderr = ''
+    try {
+      execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
+    } catch (err) {
+      stderr = String((err as { stderr?: string }).stderr)
+    }
+    expect(stderr).toMatch(/PlantUML blocks .* are not allowed/)
+    expect(stderr).toContain('lessons')
+  })
+
+  it('the PlantUML guard blocks <PlantUml> components but not plain fences named like it', async () => {
+    const { outDir } = await initWorkspace()
+    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const deck = path.join(outDir, 'lessons', 'en', '01-placeholder', 'slides.md')
+    const run = () => {
+      try {
+        execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
+        return null
+      } catch (err) {
+        return String((err as { stderr?: string }).stderr)
+      }
+    }
+    // A plain fence whose first line merely starts with "plantuml" is ordinary code.
+    writeFileSync(deck, '# x\n\n```\nplantuml is a tool\n```\n', 'utf8')
+    expect(run()).toBeNull()
+    // Slidev's component uses its own `server` prop and ignores plantUmlServer.
+    writeFileSync(deck, '# x\n\n<PlantUml server="https://evil.example" code="A -> B" />\n', 'utf8')
+    expect(run()).toContain('lessons')
+    // Slidev registers components/*.vue automatically; a component brings its own server prop.
+    rmSync(deck)
+    mkdirSync(path.join(outDir, 'components'))
+    const vue = path.join(outDir, 'components', 'Arch.vue')
+    writeFileSync(
+      vue,
+      '<template><PlantUml server="https://www.plantuml.com/plantuml" code="A -> B" /></template>\n',
+      'utf8',
+    )
+    expect(run()).toContain('components')
+    writeFileSync(vue, '<template><div>ok</div></template>\n', 'utf8')
+    expect(run()).toBeNull()
+    // Generated context packs quote the target repo and are not decks.
+    writeFileSync(
+      path.join(outDir, 'lessons', 'en', 'context-pack.md'),
+      '<PlantUml code="x"/>\n',
+      'utf8',
+    )
+    expect(run()).toBeNull()
+  })
+
+  it('pins Slidev and its theme to exact versions', async () => {
+    const { outDir } = await initWorkspace()
+    const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
+    for (const [name, version] of Object.entries(pkg.devDependencies)) {
+      expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
+    }
+  })
+
+  it('the PlantUML guard never follows symlinks (loops, links outside the workspace)', async () => {
+    const { root, outDir } = await initWorkspace()
+    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const outside = path.join(root, 'outside-docs')
+    mkdirSync(outside)
+    writeFileSync(path.join(outside, 'arch.md'), '```plantuml\nA -> B\n```\n', 'utf8')
+    symlinkSync('..', path.join(outDir, 'lessons', 'en', 'loop'))
+    symlinkSync(outside, path.join(outDir, 'lessons', 'docs'))
+    symlinkSync(path.join(outside, 'arch.md'), path.join(outDir, 'lessons', 'arch.md'))
+    execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe' })
+  })
+
+  it('gitignores .env, .env.* and local audio but keeps .env.example', async () => {
+    const { outDir } = await initWorkspace()
+    execFileSync('git', ['init', '-q'], { cwd: outDir })
+    const ignored = (rel: string) => {
+      try {
+        execFileSync('git', ['check-ignore', '-q', rel], { cwd: outDir, stdio: 'pipe' })
+        return true
+      } catch {
+        return false
+      }
+    }
+    for (const rel of [
+      '.env',
+      '.env.local',
+      '.env.production',
+      'keys/server.pem',
+      'audio/local/clip.mp3',
+    ]) {
+      expect(ignored(rel), rel).toBe(true)
+    }
+    for (const rel of ['.env.example', 'audio/local/.gitkeep', 'slides.md', 'course.json']) {
+      expect(ignored(rel), rel).toBe(false)
+    }
+    expect(existsSync(path.join(outDir, 'gitignore'))).toBe(false)
+  })
+
+  it('stores a workspace-relative target path, never an absolute one', async () => {
+    const { root, repoDir, outDir, course } = await initWorkspace()
+    expect(course.targetRepo).toBe('../target')
+    expect(course.targetRemote).toBeNull()
+    expect(realpathSync(resolveCourseTargetRepo(outDir, course.targetRepo))).toBe(
+      realpathSync(repoDir),
+    )
+    expect(filesContaining(outDir, root)).toEqual([])
+  })
+
+  it.each([
+    ['/home/u/courses/ws', '/home/u/projects/repo', '../../projects/repo'],
+    ['/home/u/repo/course', '/home/u/repo', '..'],
+    ['/tmp/a/ws', '/tmp/b/repo', '../../b/repo'],
+    ['/tmp/ws', '/home/u/repo', null],
+    ['/opt/ws', '/srv/repo', null],
+    ['/home/other/ws', '/home/u/repo', null],
+  ])('portableRelativePath(%s -> %s) = %s', (from, to, expected) => {
+    expect(portableRelativePath(from, to, '/home/u')).toBe(expected)
+  })
+
+  it('treats a sibling named like "..cache" as inside the home directory', () => {
+    expect(portableRelativePath('/data/ws', '/data/u/..cache/repo', '/data/u')).toBeNull()
+    expect(portableRelativePath('/data/u/ws', '/data/u/..cache/repo', '/data/u')).toBe(
+      '../..cache/repo',
+    )
+  })
+
+  it('computes the relative path from the physical workspace dir when reached via a symlink', async () => {
+    const root = realpathSync(makeTempDir('init-linked-out'))
+    const repoDir = path.join(root, 'x', 'target')
+    initRepoWithCommit(repoDir)
+    mkdirSync(path.join(root, 'x', 'real'))
+    mkdirSync(path.join(root, 'x', 'a', 'b'), { recursive: true })
+    symlinkSync(path.join(root, 'x', 'real'), path.join(root, 'x', 'a', 'b', 'link'))
+    const outDir = path.join(root, 'x', 'a', 'b', 'link', 'ws')
+
+    const { course } = await runInit({
+      targetRepo: repoDir,
+      outDir,
+      languages: ['en'],
+      submodule: false,
+    })
+
+    // Relative to x/real/ws (where the files are), not to the lexical x/a/b/link/ws.
+    expect(course.targetRepo).toBe('../../target')
+    for (const spelling of [outDir, path.join(root, 'x', 'real', 'ws')]) {
+      const resolved = resolveCourseTargetRepo(spelling, course.targetRepo)
+      expect(resolved).toBe(repoDir)
+      expect(git(resolved, ['rev-parse', '--show-toplevel']).trim()).toBe(repoDir)
+    }
+  })
+
+  it('never encodes the home directory when $HOME is a symlink to the real home', async () => {
+    const root = realpathSync(makeTempDir('init-linked-home'))
+    const realHome = path.join(root, 'data', 'users', 'alice')
+    const repoDir = path.join(realHome, 'repo')
+    initRepoWithCommit(repoDir)
+    symlinkSync(realHome, path.join(root, 'home-alice'))
+    const previousHome = process.env.HOME
+    process.env.HOME = path.join(root, 'home-alice')
+    try {
+      const outDir = path.join(root, 'data', 'tmp', 'ws')
+      const { course, notices } = await runInit({
+        targetRepo: path.join(root, 'home-alice', 'repo'),
+        outDir,
+        languages: ['en'],
+        submodule: false,
+      })
+      // Without the realpath check this was "../../users/alice/repo".
+      expect(course.targetRepo).toBeNull()
+      expect(readFileSync(path.join(outDir, 'course.json'), 'utf8')).not.toContain('alice')
+      expect(resolveCourseTargetRepo(outDir, course.targetRepo)).toBe(repoDir)
+      expect(notices.join('\n')).toContain(LOCAL_CONFIG_FILE)
+    } finally {
+      process.env.HOME = previousHome
+    }
+  })
+
+  it('keeps the path in a gitignored course.local.json when no portable path exists', async () => {
+    const root = makeTempDir('init-local')
+    const fakeHome = path.join(root, 'home-u')
+    const repoDir = path.join(fakeHome, 'projects', 'target')
+    initRepoWithCommit(repoDir)
+    const previousHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const outDir = path.join(root, 'elsewhere', 'ws')
+      const { course, notices } = await runInit({
+        targetRepo: repoDir,
+        outDir,
+        languages: ['en'],
+        submodule: false,
+      })
+      expect(course.targetRepo).toBeNull()
+      expect(notices).toEqual([expect.stringContaining('COURSE_TARGET_REPO')])
+      const local = JSON.parse(readFileSync(path.join(outDir, LOCAL_CONFIG_FILE), 'utf8'))
+      expect(local.targetRepo).toBe(repoDir)
+      expect(resolveCourseTargetRepo(outDir, course.targetRepo)).toBe(repoDir)
+      expect(filesContaining(outDir, fakeHome)).toEqual([LOCAL_CONFIG_FILE])
+      git(outDir, ['init', '-q'])
+      expect(git(outDir, ['check-ignore', LOCAL_CONFIG_FILE]).trim()).toBe(LOCAL_CONFIG_FILE)
+    } finally {
+      process.env.HOME = previousHome
+    }
+  })
+
+  it('records a credential-free network origin and ignores local-path origins', async () => {
+    const root = makeTempDir('init-remote')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    git(repoDir, ['remote', 'add', 'origin', 'https://user:s3cret@github.com/acme/app.git'])
+    const { course } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.targetRemote).toBe('https://github.com/acme/app.git')
+
+    const shared = async (url: string, out: string) => {
+      git(repoDir, ['remote', 'set-url', 'origin', url])
+      const r = await runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: false,
+      })
+      return r.course.targetRemote
+    }
+    // ssh:// keeps its login (without it ssh uses the local user name); a password never stays.
+    expect(await shared('ssh://git@github.com/acme/app.git', 'ws-ssh')).toBe(
+      'ssh://git@github.com/acme/app.git',
+    )
+    expect(await shared('ssh://git:pw@host.example/acme/app.git', 'ws-ssh-pw')).toBe(
+      'ssh://git@host.example/acme/app.git',
+    )
+    expect(await shared('git@github.com:acme/app.git', 'ws-scp')).toBe(
+      'git@github.com:acme/app.git',
+    )
+    // scp syntax with an absolute path on a self-hosted server is still a network remote.
+    expect(await shared('git@server.example:/srv/git/app.git', 'ws-scp-abs')).toBe(
+      'git@server.example:/srv/git/app.git',
+    )
+    // Query-string and fragment tokens are dropped (GitLab-style ?private_token=).
+    expect(
+      await shared(
+        'https://oauth2@gitlab.example/acme/app.git?private_token=glpat-XYZ#t=1',
+        'ws-q',
+      ),
+    ).toBe('https://gitlab.example/acme/app.git')
+    expect(filesContaining(path.join(root, 'ws-q'), 'glpat')).toEqual([])
+
+    git(repoDir, ['remote', 'set-url', 'origin', path.join(root, 'elsewhere')])
+    const second = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws2'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(second.course.targetRemote).toBeNull()
+  })
+
+  it('accepts a subdirectory of the target and pins its repository root', async () => {
+    const root = makeTempDir('init-subdir')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    const sub = path.join(repoDir, 'nested')
+    mkdirSync(sub)
+    const { course } = await runInit({
+      targetRepo: sub,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(course.targetRepo).toBe('../target')
+  })
+
+  it('adds optional git submodule at pinned commit', async () => {
+    const { root, pinned, outDir, course, notices } = await initWorkspace({
+      languages: ['en'],
+      submodule: true,
+    })
+    expect(readFileSync(path.join(outDir, '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
+    expect(notices).toEqual([])
+    expect(filesContaining(outDir, root)).toEqual([])
+    const staged = git(outDir, ['ls-files', '-s', SUBMODULE_PATH])
+    expect(staged).toContain(pinned)
+
+    expect(course.referenceMode).toBe('submodule')
+    expect(course.submodulePath).toBe(SUBMODULE_PATH)
+    expect(existsSync(path.join(outDir, SUBMODULE_PATH, 'app.txt'))).toBe(true)
+    const subHead = execFileSync(
+      'git',
+      ['-C', path.join(outDir, SUBMODULE_PATH), 'rev-parse', 'HEAD'],
+      { encoding: 'utf8' },
+    ).trim()
+    expect(subHead).toBe(pinned)
+  })
+
+  it('warns when --submodule records a network URL for a commit that was never pushed', async () => {
+    const root = makeTempDir('init-unpushed')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    git(repoDir, ['remote', 'add', 'origin', ORIGIN])
+    const init = (out: string) =>
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: true,
+      })
+
+    const unpushed = await init('ws1')
+    expect(readFileSync(path.join(root, 'ws1', '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
+    expect(unpushed.notices).toEqual([expect.stringContaining(`${pinned} is on no \`origin\``)])
+
+    // A commit that only another remote has is still unpushed: .gitmodules records origin.
+    git(repoDir, ['update-ref', 'refs/remotes/upstream/main', pinned])
+    expect((await init('ws2')).notices).toEqual([expect.stringContaining('is on no `origin`')])
+
+    // Once an origin tracking branch contains it (as after a push), there is nothing to warn about.
+    git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
+    expect((await init('ws3')).notices).toEqual([])
+  })
+
+  it('--submodule requires a network origin: a relative .gitmodules URL would break clones', async () => {
+    const root = makeTempDir('init-submodule-no-origin')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const init = (out: string) =>
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: true,
+      })
+
+    // No origin at all, and a local-path origin: neither can be recorded without a machine path.
+    await expect(init('ws-none')).rejects.toThrow(/network `origin` remote/)
+    git(repoDir, ['remote', 'add', 'origin', path.join(root, 'elsewhere.git')])
+    await expect(init('ws-local')).rejects.toThrow(/pinned-path mode/)
+
+    // A new output directory is removed again; a pre-existing empty one is left empty.
+    expect(existsSync(path.join(root, 'ws-none'))).toBe(false)
+    expect(existsSync(path.join(root, 'ws-local'))).toBe(false)
+    const existing = path.join(root, 'existing-out')
+    mkdirSync(existing)
+    await expect(init('existing-out')).rejects.toThrow(/network `origin` remote/)
+    expect(readdirSync(existing)).toEqual([])
+  })
+
+  it('refuses an output directory inside the target repository', async () => {
+    const root = makeTempDir('init-out-inside')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const base = { targetRepo: repoDir, languages: ['en'], submodule: false }
+
+    // `course init .` from inside the repo: the default output is <cwd>/<name>-course.
+    await expect(runInit({ ...base, cwd: repoDir })).rejects.toThrow(
+      /inside the target repository.*--out \.\.\/target-course/s,
+    )
+    await expect(runInit({ ...base, outDir: path.join(repoDir, 'nested', 'ws') })).rejects.toThrow(
+      /inside the target repository/,
+    )
+    // ... also when reached through a symlink, and for the repo root itself.
+    const link = path.join(root, 'link-to-target')
+    symlinkSync(repoDir, link)
+    await expect(runInit({ ...base, outDir: path.join(link, 'ws') })).rejects.toThrow(
+      /inside the target repository/,
+    )
+    await expect(runInit({ ...base, outDir: repoDir })).rejects.toThrow(/inside the target/)
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('')
+
+    // A sibling whose name merely starts like the target is fine.
+    await runInit({ ...base, outDir: path.join(root, 'target-course') })
+  })
+
+  it('notices uncommitted changes in the target', async () => {
+    const root = makeTempDir('init-dirty')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    const init = (out: string) =>
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, out),
+        languages: ['en'],
+        submodule: false,
+      })
+
+    expect((await init('clean')).notices).toEqual([])
+
+    writeFileSync(path.join(repoDir, 'README.md'), '# edited\n')
+    writeFileSync(path.join(repoDir, 'new.txt'), 'untracked\n')
+    const { notices, course } = await init('dirty')
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(notices).toEqual([
+      expect.stringMatching(/2 uncommitted change\(s\).*README\.md, new\.txt/),
+    ])
+    // Reading the status must not touch the target.
+    expect(git(repoDir, ['status', '--porcelain']).split('\n').filter(Boolean)).toHaveLength(2)
+  })
+
+  it('never runs programs configured in the target repository (fsmonitor)', async () => {
+    const root = makeTempDir('init-fsmonitor')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const marker = path.join(root, 'fsmonitor-ran')
+    const hook = path.join(root, 'hook.sh')
+    writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nprintf '\\0'\n`, {
+      mode: 0o755,
+    })
+    git(repoDir, ['config', 'core.fsmonitor', hook])
+
+    // Control: without the pinned override, `git status` does run the configured program.
+    git(repoDir, ['status', '--porcelain'])
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker)
+
+    await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('never runs filter drivers configured in the target repository', async () => {
+    const root = makeTempDir('init-filter')
+    const repoDir = path.join(root, 'target')
+    initRepo(repoDir)
+    writeFiles(repoDir, { 'clean.txt': 'a\n', 'proc.txt': 'b\n' })
+    commitAll(repoDir, 'initial')
+    const cleanMarker = path.join(root, 'clean-ran')
+    const procMarker = path.join(root, 'process-ran')
+    // Driver and attributes both live inside .git/: nothing in the tracked tree shows them.
+    writeFileSync(
+      path.join(repoDir, '.git', 'info', 'attributes'),
+      'clean.txt filter=evilclean\nproc.txt filter=evilproc\n',
+    )
+    git(repoDir, [
+      'config',
+      'filter.evilclean.clean',
+      `sh -c 'touch ${JSON.stringify(cleanMarker)}; cat'`,
+    ])
+    git(repoDir, [
+      'config',
+      'filter.evilproc.process',
+      `sh -c 'touch ${JSON.stringify(procMarker)}; exit 1'`,
+    ])
+    // A dotted driver name, a mixed-case one and one marked required must be handled too.
+    git(repoDir, [
+      'config',
+      'filter.a.b.clean',
+      `sh -c 'touch ${JSON.stringify(cleanMarker)}; cat'`,
+    ])
+    git(repoDir, ['config', 'filter.evilclean.required', 'true'])
+    const touchFiles = () => {
+      const t = new Date(Date.now() - 60_000 * Math.ceil(Math.random() * 1000))
+      for (const f of ['clean.txt', 'proc.txt']) utimesSync(path.join(repoDir, f), t, t)
+    }
+
+    // Control: a plain `git status` does run both drivers once the files' stat data changed.
+    touchFiles()
+    try {
+      git(repoDir, ['status', '--porcelain'])
+    } catch {
+      // git 2.43 dies when a non-required `process` filter fails (newer git carries on); both drivers
+      // have run by then, which is all the control needs.
+    }
+    expect(existsSync(cleanMarker)).toBe(true)
+    expect(existsSync(procMarker)).toBe(true)
+    rmSync(cleanMarker)
+    rmSync(procMarker)
+
+    touchFiles()
+    const { notices } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(existsSync(cleanMarker)).toBe(false)
+    expect(existsSync(procMarker)).toBe(false)
+    expect(notices).toEqual([])
+  })
+
+  it("never runs a submodule's filter drivers either (git status descends into submodules)", () => {
+    const root = makeTempDir('init-filter-sub')
+    const inner = path.join(root, 'inner')
+    initRepoWithCommit(inner, 'f.txt')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    git(repoDir, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', inner, 'sm'])
+    commitAll(repoDir, 'add submodule')
+    const marker = path.join(root, 'submodule-driver-ran')
+    const subGitDir = git(path.join(repoDir, 'sm'), ['rev-parse', '--absolute-git-dir']).trim()
+    mkdirSync(path.join(subGitDir, 'info'), { recursive: true })
+    writeFileSync(path.join(subGitDir, 'info', 'attributes'), 'f.txt filter=evil\n')
+    git(path.join(repoDir, 'sm'), [
+      'config',
+      'filter.evil.clean',
+      `sh -c 'touch ${JSON.stringify(marker)}; cat'`,
+    ])
+    const touchFile = () => {
+      const t = new Date(Date.now() - 60_000 * Math.ceil(Math.random() * 1000))
+      utimesSync(path.join(repoDir, 'sm', 'f.txt'), t, t)
+    }
+
+    touchFile()
+    git(repoDir, ['status', '--porcelain'])
+    expect(existsSync(marker), 'control: plain git status runs it').toBe(true)
+    rmSync(marker)
+
+    touchFile()
+    expect(uncommittedChanges(repoDir)).toEqual([])
+    expect(existsSync(marker)).toBe(false)
+    // A new commit in the submodule is still reported.
+    writeFileSync(path.join(repoDir, 'sm', 'g.txt'), 'g\n')
+    commitAll(path.join(repoDir, 'sm'), 'move submodule')
+    expect(uncommittedChanges(repoDir)).toEqual(['sm'])
+  })
+
+  it("keeps filter drivers from the user's own git config", () => {
+    const root = makeTempDir('init-filter-global')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const marker = path.join(root, 'global-driver-ran')
+    const globalConfig = path.join(root, 'gitconfig')
+    // Through `git config`, which quotes the `;` (a hand-written value would start a comment).
+    git(repoDir, [
+      'config',
+      '--file',
+      globalConfig,
+      'filter.mine.clean',
+      `sh -c 'touch ${JSON.stringify(marker)}; cat'`,
+    ])
+    writeFileSync(path.join(repoDir, '.git', 'info', 'attributes'), 'README.md filter=mine\n')
+    // A driver the repository defines as well as one that is only in the global config.
+    git(repoDir, ['config', 'filter.local.clean', 'cat'])
+    const t = new Date(Date.now() - 3_600_000)
+    utimesSync(path.join(repoDir, 'README.md'), t, t)
+    writeFileSync(path.join(repoDir, 'new.txt'), 'x\n')
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    try {
+      expect(uncommittedChanges(repoDir)).toEqual(['new.txt'])
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = previous
+    }
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('reports a huge status instead of treating the target as clean', async () => {
+    const root = makeTempDir('init-huge')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    // ~1.3 MB of `status -z` output: over execFileSync's default 1 MiB buffer.
+    const names: Record<string, string> = {}
+    for (let i = 0; i < 6000; i++) names[`${String(i).padStart(5, '0')}-${'x'.repeat(200)}`] = ''
+    writeFiles(repoDir, names)
+    const { notices } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(notices).toEqual([expect.stringMatching(/6000 uncommitted change\(s\)/)])
+  })
+
+  it('says so when the uncommitted-changes check cannot run', async () => {
+    const root = makeTempDir('init-status-fails')
+    const repoDir = path.join(root, 'target')
+    const pinned = initRepoWithCommit(repoDir)
+    writeFileSync(path.join(repoDir, '.git', 'index'), 'not an index')
+    const { notices, course } = await runInit({
+      targetRepo: repoDir,
+      outDir: path.join(root, 'ws'),
+      languages: ['en'],
+      submodule: false,
+    })
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(notices).toEqual([expect.stringMatching(/Could not check .* uncommitted changes/)])
+  })
+
+  it('treats a git directory (no work tree) as having no uncommitted changes', () => {
+    const root = makeTempDir('init-no-worktree')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    expect(uncommittedChanges(path.join(repoDir, '.git'))).toEqual([])
+  })
+
+  it('git < 2.45 refuses a .git directory under safe.bareRepository=explicit: still no changes, other errors still throw', () => {
+    const root = makeTempDir('init-old-git-dotgit')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    const bin = makeTempDir('init-old-git-bin')
+    // Stand-in for git 2.43: it refuses `rev-parse --is-inside-work-tree` like an implicit bare
+    // repository (the real message), or fails differently when a `fail` file is next to it (git runs with an allowlisted env).
+    writeFileSync(
+      path.join(bin, 'git'),
+      '#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = --is-inside-work-tree ]; then\n' +
+        '    if [ -e "$(dirname "$0")/fail" ]; then echo "fatal: something else broke" >&2; exit 128; fi\n' +
+        "    echo \"fatal: cannot use bare repository '$PWD' (safe.bareRepository is 'explicit')\" >&2; exit 128\n" +
+        '  fi\ndone\nPATH="${PATH#*:}" exec git "$@"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    const saved = process.env.PATH
+    process.env.PATH = `${bin}${path.delimiter}${saved}`
+    try {
+      expect(uncommittedChanges(path.join(repoDir, '.git'))).toEqual([])
+      writeFileSync(path.join(bin, 'fail'), '')
+      expect(() => uncommittedChanges(path.join(repoDir, '.git'))).toThrow(/something else broke/)
+    } finally {
+      process.env.PATH = saved
+    }
+  })
+
+  it('resolves relative paths against options.cwd, not the process directory', async () => {
+    const root = makeTempDir('init-cwd')
+    const pinned = initRepoWithCommit(path.join(root, 'target'))
+    expect(process.cwd()).not.toBe(root)
+    const { outDir, course } = await runInit({
+      targetRepo: 'target',
+      outDir: 'relative-out',
+      languages: ['en'],
+      submodule: false,
+      cwd: root,
+    })
+    expect(outDir).toBe(path.join(root, 'relative-out'))
+    expect(course.pinnedCommit).toBe(pinned)
+    expect(existsSync(path.join(root, 'relative-out', 'course.json'))).toBe(true)
+    // The default output directory is next to the caller's directory too.
+    const second = await runInit({
+      targetRepo: 'target',
+      languages: ['en'],
+      submodule: false,
+      cwd: root,
+    })
+    expect(second.outDir).toBe(path.join(root, 'target-course'))
+  })
+})
+
+describe('course init input validation', () => {
+  it.each([['en,../../../escaped-lang'], ['en/x'], ['EN\ntitle: injected'], ['e'], [',']])(
+    'rejects --lang %j',
+    (lang) => {
+      expect(() => parseInitArgs({ target: '/tmp/x', lang })).toThrow(/language/)
+    },
+  )
+
+  it('accepts and normalises valid language codes', () => {
+    expect(parseInitArgs({ target: '/tmp/x', lang: ' PL, en ,pt-BR,en' }).languages).toEqual([
+      'pl',
+      'en',
+      'pt-br',
+    ])
+  })
+
+  it('runInit rejects traversal in languages and writes nothing outside the workspace', async () => {
+    const root = makeTempDir('init-lang')
+    const repoDir = path.join(root, 'target')
+    initRepoWithCommit(repoDir)
+    await expect(
+      runInit({
+        targetRepo: repoDir,
+        outDir: path.join(root, 'ws'),
+        languages: ['en', '../../escaped'],
+        submodule: false,
+      }),
+    ).rejects.toThrow(/Invalid language code/)
+    expect(existsSync(path.join(root, 'escaped'))).toBe(false)
+    expect(existsSync(path.join(root, 'ws'))).toBe(false)
+  })
+})
