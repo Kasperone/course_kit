@@ -27,8 +27,11 @@ export const GIT_HARDENING_ARGS = [
 /** A hung git (e.g. a lock on NFS) must not hang the CLI. */
 export const GIT_TIMEOUT_MS = 120_000
 
-/** `safe.bareRepository` exists since git 2.38; older git silently ignores the unknown key. */
-export const MIN_GIT_VERSION = [2, 38] as const
+/**
+ * The oldest git we support is the oldest one CI tests (the `git-oldest` job, ubuntu:24.04). `safe.bareRepository`
+ * exists since 2.38 (older git silently ignores the unknown key), but nothing below 2.43 is tested.
+ */
+export const MIN_GIT_VERSION = [2, 43] as const
 
 export function parseGitVersion(output: string): [number, number] | null {
   const m = output.match(/git version (\d+)\.(\d+)/)
@@ -41,7 +44,7 @@ export function assertGitVersion(output: string): void {
   if (v && (v[0] > major || (v[0] === major && v[1] >= minor))) return
   throw new Error(
     `course_kit needs git >= ${major}.${minor} (found ${output.trim() || 'no version'}): older ` +
-      'versions ignore the safe.bareRepository protection it relies on. Please upgrade git.',
+      'versions are not supported (they may also ignore the safe.bareRepository protection it relies on). Please upgrade git.',
   )
 }
 
