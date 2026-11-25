@@ -1,12 +1,16 @@
 import { Command } from 'commander'
+import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
+import { terminalSafe } from './lib/terminal.js'
+import { runLessonNew } from './commands/lesson-new.js'
+import { packageVersion } from './lib/paths.js'
 
 const program = new Command()
 
 program
   .name('course')
   .description('Create and manage browser courses from code repositories')
-  .version('0.1.0')
+  .version(packageVersion())
 
 program
   .command('init')
@@ -30,13 +34,66 @@ program
         submodule: opts.submodule,
       })
       const { outDir, course, notices } = await runInit(options)
-      console.log(`Course workspace created at ${outDir}`)
+      console.log(terminalSafe(`Course workspace created at ${outDir}`))
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
-      for (const notice of notices) console.warn(`Note: ${notice}`)
+      for (const notice of notices) console.warn(terminalSafe(`Note: ${notice}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`course init failed: ${message}`)
+      console.error(terminalSafe(`course init failed: ${message}`))
+      process.exitCode = 1
+    }
+  })
+
+const lesson = program.command('lesson').description('Manage lessons in the current workspace')
+
+lesson
+  .command('new')
+  .description('Create a lesson folder with lesson.json and placeholder slides')
+  .argument('<lesson-id>', 'Lesson identifier (e.g. 02-invoices)')
+  .action((lessonId: string) => {
+    try {
+      const { lessonRoot } = runLessonNew({ lessonId })
+      console.log(terminalSafe(`Lesson created at ${lessonRoot}`))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(terminalSafe(`course lesson new failed: ${message}`))
+      process.exitCode = 1
+    }
+  })
+
+program
+  .command('context')
+  .description('Build a context pack for a lesson from the pinned target commit')
+  .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
+  .option(
+    '--files <glob...>',
+    'Additional globs matched against the target repo (quote them; put <lesson-id> first)',
+  )
+  .option('--out <file>', 'Output Markdown path (default: lessons/<id>/context-pack.md)')
+  .option(
+    '--json',
+    'Also write the JSON metadata next to the pack (lessons/<id>/context-pack.json, or <out>.json)',
+    false,
+  )
+  .action(async (lessonId: string, opts: { files?: string[]; out?: string; json?: boolean }) => {
+    try {
+      const meta = await runContext({
+        lessonId,
+        files: opts.files ?? [],
+        out: opts.out,
+        json: Boolean(opts.json),
+      })
+      for (const warning of meta.warnings) console.error(terminalSafe(`warning: ${warning}`))
+      console.log(`Wrote context pack for ${lessonId}`)
+      console.log(
+        `Files: ${meta.selectedFiles.length}, ~${meta.tokenEstimate} tokens, analyzers: ${
+          meta.analyzers.join(', ') || 'none'
+        }`,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(terminalSafe(`course context failed: ${message}`))
       process.exitCode = 1
     }
   })

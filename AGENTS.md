@@ -2,8 +2,8 @@
 
 ## Purpose
 
-This repository hosts the `course` CLI and templates. Agents scaffold and later generate lesson content;
-step 1 only implements `course init`.
+This repository hosts the `course` CLI and templates. Step 2 adds per-lesson **context packs** for drafting
+lesson scripts (Slidev generation remains a later step).
 
 ## Commands
 
@@ -17,18 +17,24 @@ npm run format:check
 npm run typecheck
 ```
 
-CLI:
+CLI (run from a **course workspace** for context/lesson commands):
 
 ```bash
-course --help
 course init <path-to-target-repo> [--out <dir>] [--lang pl,en] [--submodule]
+course lesson new <lesson-id>
+course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 ```
 
 ## Tests
 
-- `tests/init.test.ts` — creates temp git repos, runs `runInit`, asserts `course.json`, Slidev skeleton, lessons, audio tree, PlantUML guard.
-- `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it.
-- `tests/child-env.test.ts` — `childEnv()` allowlist; git runs without API keys (wrapper script on PATH); the git >= 2.43 check.
+- `tests/init.test.ts` — workspace scaffold, input validation, gitignore, portable paths, submodule mode, PlantUML guard.
+- `tests/cli.test.ts` — builds `dist/cli.js` and runs the README quickstart against it; checks `npm pack` contents.
+- `tests/context.test.ts` — pinned-commit packs, Unicode paths, literal files, caps report, fence safety, Java/jdeps.
+- `tests/config.test.ts` — lesson id / course.json / lesson.json validation, submodule mode, `COURSE_TARGET_REPO`.
+- `tests/secrets.test.ts` — denylist and redaction against a hostile fixture repo.
+- `tests/fs-safe.test.ts` — no workspace write follows a symlink.
+- `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
+  the git >= 2.43 check.
 
 Always run lint and tests before pushing.
 
@@ -36,13 +42,15 @@ Always run lint and tests before pushing.
 
 - English for code, docs, and commit messages; conventional commits (`feat:`, `fix:`, `chore:`, …).
 - Minimal dependencies; Slidev deps belong in generated workspaces, not necessarily in the root package.
-- Follow [ADR 0001](docs/adr/0001-node-typescript-cli-and-repo-reference.md) for stack and repo reference modes.
+- Follow ADR [0001](docs/adr/0001-node-typescript-cli-and-repo-reference.md) and [0002](docs/adr/0002-context-pack-format.md).
 
 ## Never commit
 
 - `.env` or real API keys (ElevenLabs, etc.)
 - Files under `audio/local/` or other generated narration
 - Secrets in `course.json` or lesson content
+- Generated context packs: gitignored in workspaces; force-add one only after reviewing it (secrets are
+  denylisted and redacted, but that is a safety net)
 
 ## Child processes and git
 
@@ -59,6 +67,21 @@ Always run lint and tests before pushing.
 
 ## Generated course workspaces
 
-Templates live in `templates/workspace/`. After changing templates, run tests. Mermaid only: Slidev cannot disable
-PlantUML, so every deck sets `plantUmlServer` to a `data:` URL and `scripts/check-no-plantuml.mjs` fails
-`dev`/`build`/`export` on any PlantUML block (see ADR 0001).
+Templates live in `templates/workspace/`. Lessons use `lessons/<id>/lesson.json` plus per-language `slides.md`.
+Context packs are written next to the lesson. Mermaid only: Slidev cannot disable PlantUML, so every deck
+sets `plantUmlServer` to a `data:` URL and `scripts/check-no-plantuml.mjs` fails `dev`/`build`/`export` on any
+PlantUML block (see ADR 0001).
+
+## Context packs
+
+Build with `course context <id>`. Packs read the target repo through `src/lib/git-commit.ts` only (`ls-tree -z`,
+`cat-file --batch`, full SHAs after `--end-of-options`, `safe.bareRepository=explicit` and no signature checks) —
+never the working tree, never `git show`/shell. A `targetRepo` inside the workspace is refused. Validate
+any new config field in `src/lib/validate.ts`/`workspace.ts`/`lesson.ts`. New embedded content must go through
+`redactSecrets` and `fence()` (or `inlineCode()`, which escapes control characters). Anything the CLI prints that
+quotes repository or lesson content goes through `terminalSafe()` (`src/lib/terminal.ts`), and each such fragment is
+escaped where it enters the message (`escapeControls()`, or `JSON.stringify()` for a rejected value): `terminalSafe`
+keeps line breaks for git's multi-line errors, so a newline in a file name would otherwise forge a line. It also drops the
+password of any `user:password@host` URL (`redactUrlCredentials()` in `redact.ts`): tools echo proxy URLs such as
+`HTTPS_PROXY=http://user:secret@proxy:3128` in their errors, and the proxy variables stay in the child-env allowlists. Extend `src/analyzers/` for
+language-specific graphs.

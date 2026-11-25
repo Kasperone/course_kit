@@ -1,9 +1,12 @@
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { createJavaAnalyzer } from '../src/analyzers/java.js'
+import { runContext } from '../src/commands/context.js'
 import { runInit } from '../src/commands/init.js'
 import { childEnv } from '../src/lib/child-env.js'
 import { assertGitVersion, parseGitVersion } from '../src/lib/git.js'
+import { makeWorkspace } from './helpers/fixture-repo.js'
 import { git, initRepoWithCommit } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
@@ -113,6 +116,49 @@ describe('git child processes', () => {
     for (const [name, value] of Object.entries(keys)) {
       expect(seen).not.toContain(name)
       expect(seen).not.toContain(value)
+    }
+  })
+
+  it('course context reads the target without provider keys in git or jdeps environments', async () => {
+    const bin = makeTempDir('tool-wrappers')
+    const gitLog = path.join(bin, 'git-env.log')
+    const jdepsLog = path.join(bin, 'jdeps-env.log')
+    writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\nenv >> ${JSON.stringify(gitLog)}\nPATH="\${PATH#*:}" exec git "$@"\n`,
+    )
+    writeFileSync(
+      path.join(bin, 'jdeps'),
+      `#!/bin/sh\n[ "$1" = "-version" ] && exit 0\nenv >> ${JSON.stringify(jdepsLog)}\n` +
+        'echo "$(basename "$3") -> java.base"\n',
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    chmodSync(path.join(bin, 'jdeps'), 0o755)
+
+    const fx = await makeWorkspace()
+    const keys = { ELEVENLABS_API_KEY: KEY, ANTHROPIC_API_KEY: `${KEY}-a`, NPM_TOKEN: `${KEY}-b` }
+    const savedPath = process.env.PATH
+    Object.assign(process.env, keys, { PATH: `${bin}${path.delimiter}${savedPath}` })
+    try {
+      await runContext({ lessonId: '01-placeholder', cwd: fx.workspace })
+      // jdeps is only started for committed jars/classes: run the analyzer on one directly.
+      await createJavaAnalyzer().analyze({
+        pinnedCommit: 'x',
+        selectedPaths: [],
+        readText: () => null,
+        artifacts: [{ path: 'lib/a.jar', size: 1, read: () => Buffer.from([1]) }],
+      })
+    } finally {
+      process.env.PATH = savedPath
+      for (const k of Object.keys(keys)) delete process.env[k]
+    }
+    for (const log of [gitLog, jdepsLog]) {
+      const seen = readFileSync(log, 'utf8')
+      expect(seen, log).toContain('PATH=')
+      for (const [name, value] of Object.entries(keys)) {
+        expect(seen, log).not.toContain(name)
+        expect(seen, log).not.toContain(value)
+      }
     }
   })
 

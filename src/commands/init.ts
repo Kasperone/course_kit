@@ -7,7 +7,6 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -21,30 +20,14 @@ import {
   resolveTargetRepo,
   uncommittedWarning,
 } from '../lib/git.js'
+import { writeFileInside } from '../lib/fs-safe.js'
+import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
 import { validateLanguages } from '../lib/validate.js'
 
 export const SUBMODULE_PATH = 'target-repo'
 
-/**
- * Slidev renders ```plantuml blocks as `<img src="${plantUmlServer}/svg/...">` (default server:
- * plantuml.com). A data: URL turns that into a local no-op, so diagram source never leaves the
- * machine. The workspace also ships scripts/check-no-plantuml.mjs, which fails dev/build/export.
- */
-export const PLANTUML_DISABLED_SERVER = 'data:text/plain,plantuml-disabled'
-
-/**
- * Offline headmatter besides PlantUML. Slidev's font provider defaults to Google Fonts and its
- * default favicon is hosted on cdn.jsdelivr.net, so every deck would make third-party requests on
- * load. System font stacks with provider "none" emit no font `<link>`, and an empty data: URL
- * favicon emits no request (a /favicon.svg path would break under `slidev build --base`).
- */
-export const OFFLINE_HEADMATTER = `fonts:
-  sans: 'system-ui'
-  serif: 'ui-serif'
-  mono: 'ui-monospace'
-  provider: 'none'
-favicon: 'data:,'`
+export { PLANTUML_DISABLED_SERVER } from '../lib/slidev.js'
 
 export type CourseJson = {
   schemaVersion: 1
@@ -99,56 +82,28 @@ export function parseInitArgs(opts: {
   }
 }
 
-function writeCourseJson(outDir: string, data: CourseJson): void {
-  writeFileSync(path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n', 'utf8')
+/** Write course.json in a workspace (symlink-safe). */
+export function writeCourseJson(outDir: string, data: CourseJson): void {
+  writeFileInside(outDir, path.join(outDir, 'course.json'), JSON.stringify(data, null, 2) + '\n')
 }
 
 function writeLessonPlaceholders(outDir: string, languages: string[]): void {
-  for (const lang of languages) {
-    const lessonDir = path.join(outDir, 'lessons', lang, '01-placeholder')
-    mkdirSync(lessonDir, { recursive: true })
-    const title = lang === 'pl' ? 'Lekcja placeholder' : 'Placeholder lesson'
-    const body =
-      lang === 'pl'
-        ? '## Cel\n\nTreść lekcji zostanie wygenerowana przez agenta.\n'
-        : '## Goal\n\nLesson content will be drafted by the coding agent.\n'
-    writeFileSync(
-      path.join(lessonDir, 'slides.md'),
-      `---
-theme: default
-title: ${JSON.stringify(title)}
-lang: ${lang}
-plantUmlServer: ${JSON.stringify(PLANTUML_DISABLED_SERVER)}
-${OFFLINE_HEADMATTER}
----
-
-# ${title}
-
-${body}
-
-\`\`\`mermaid
-flowchart LR
-  repo[Repo] --> course[course_kit]
-  course --> lesson[Lesson]
-\`\`\`
-`,
-      'utf8',
-    )
-  }
+  const id = '01-placeholder'
+  const lessonRoot = path.join(outDir, 'lessons', id)
+  writeLessonJson(lessonRoot, defaultLessonJson(id))
+  writePlaceholderSlides(lessonRoot, id, languages)
 }
 
 function writeAudioTree(outDir: string): void {
-  const localDir = path.join(outDir, 'audio', 'local')
-  mkdirSync(localDir, { recursive: true })
-  writeFileSync(path.join(outDir, 'audio', 'local', '.gitkeep'), '', 'utf8')
-  writeFileSync(
+  writeFileInside(outDir, path.join(outDir, 'audio', 'local', '.gitkeep'), '')
+  writeFileInside(
+    outDir,
     path.join(outDir, 'audio', 'ATTRIBUTION.md'),
     `# Audio attribution
 
 Generated narration clips belong in \`audio/local/\` (gitignored).
 Do not commit provider-generated audio or API keys.
 `,
-    'utf8',
   )
 }
 
@@ -274,10 +229,10 @@ export async function runInit(
         `course.json has no portable target path; this machine's path is in ${LOCAL_CONFIG_FILE} (gitignored). ` +
           `Collaborators set ${TARGET_REPO_ENV} or create their own ${LOCAL_CONFIG_FILE}.`,
       )
-      writeFileSync(
+      writeFileInside(
+        outDir,
         path.join(outDir, LOCAL_CONFIG_FILE),
         JSON.stringify({ targetRepo }, null, 2) + '\n',
-        'utf8',
       )
     }
     const course: CourseJson = {
