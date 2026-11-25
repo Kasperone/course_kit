@@ -83,7 +83,7 @@ describe('built CLI (dist/cli.js)', () => {
     expect(help).not.toMatch(/--submodule.*\(default: false\)/s)
   })
 
-  it('refuses git older than 2.38, which ignores safe.bareRepository', () => {
+  it('refuses git older than 2.43, the oldest version CI tests', () => {
     const root = makeTempDir('cli-old-git')
     const target = path.join(root, 'my-repo')
     initRepoWithCommit(target)
@@ -105,7 +105,7 @@ describe('built CLI (dist/cli.js)', () => {
       stderr = String((err as { stderr?: string }).stderr)
     }
     expect(stderr).toContain('course init failed')
-    expect(stderr).toContain('needs git >= 2.38 (found git version 2.34.1)')
+    expect(stderr).toContain('needs git >= 2.43 (found git version 2.34.1)')
     expect(existsSync(path.join(root, 'ws'))).toBe(false)
   })
 
@@ -115,7 +115,7 @@ describe('built CLI (dist/cli.js)', () => {
     initRepoWithCommit(target)
     const bin = path.join(root, 'bin')
     mkdirSync(bin)
-    // git >= 2.38 for the version check; every other call fails the way git does behind a proxy.
+    // git >= 2.43 for the version check; every other call fails the way git does behind a proxy.
     writeFileSync(
       path.join(bin, 'git'),
       '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.45.0"; exit 0; fi\n' +
