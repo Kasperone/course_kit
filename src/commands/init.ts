@@ -22,6 +22,7 @@ import {
 } from '../lib/git.js'
 import { writeFileInside } from '../lib/fs-safe.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
+import type { ChatSettings } from '../lib/chat/config.js'
 import type { AudioQuality } from '../lib/narration/quality.js'
 import { attributionMarkdown } from '../lib/narration/voices.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
@@ -46,6 +47,8 @@ export type CourseJson = {
   languages: string[]
   /** Default `course narrate --audio-quality` preset for this course (optional; CLI overrides). */
   audioQuality?: AudioQuality
+  /** Q&A chat backend settings (optional; see ADR 0005). */
+  chat?: ChatSettings
   referenceMode: 'pinned-path' | 'submodule'
   submodulePath: string | null
 }

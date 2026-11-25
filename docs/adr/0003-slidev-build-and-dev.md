@@ -18,7 +18,8 @@ source leaves the machine" guarantee as ADR 0001, and a first real lesson (faktu
 - `course build [-C dir] [--lesson <id>] [--lang <code>]`: one `slidev build` per deck into
   `dist/<id>/<lang>/` with `--base /<id>/<lang>/` and `--router-mode hash`, then
   `dist/index.html` linking every deck present in `dist/`. Serve `dist/` from its root (e.g.
-  `npx vite preview --outDir dist`); hash routing means no server-side fallback is needed.
+  `course serve`, step 5, or `npx vite preview --outDir dist`); hash routing means no server-side
+  fallback is needed.
 - `course dev <id> [--lang] [--port] [-C dir]`: `slidev <entry>` dev server for one deck
   (localhost only; default language is the first in `course.json`).
 - Both run the **workspace's own** Slidev (`node_modules/@slidev/cli`, `bin` from its
@@ -192,3 +193,16 @@ fences (Slidev compiles them into the slide's component). XML namespace identifi
 `dist`, `target-repo`, `audio` and `scripts` are skipped only as top-level workspace directories,
 because Slidev loads `components/**` at any depth, so a nested `components/scripts/` or
 `components/audio/` is deck code.
+
+## Addendum (step 5)
+
+Lesson decks also load the chat addon (`addons/chat`, see
+[ADR 0005](0005-local-qa-backend-and-chat.md)). It calls only the same-origin path
+`/@course-chat/v1/`: `course serve` serves the built decks and that API from one origin on
+127.0.0.1, and `course dev` proxies it to the in-process backend. `course serve` is now the
+recommended way to view `dist/` (the deck links work under `vite preview` too, but the chat then
+says the backend is not running). The post-build scan also fails on any API key from the
+workspace's `.env`, and Slidev runs without provider keys in its environment. Provider hosts are not
+scanned for in the output: a lesson about a repo that talks to Anthropic may mention
+`api.anthropic.com` in prose, and deck code cannot call it because any external URL in deck code is
+refused before the build.

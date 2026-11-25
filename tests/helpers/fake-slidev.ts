@@ -3,8 +3,10 @@ import path from 'node:path'
 
 /**
  * A stand-in for @slidev/cli in the workspace's node_modules. It logs its argv to
- * slidev-calls.log and its environment to slidev-env.log (one JSON object per call) in its cwd and, for `build`, writes <out>/index.html containing the deck source,
- * so tests can see what reached "Slidev" without installing it. A `slidev-hang` file in the workspace makes it hang.
+ * slidev-calls.log in its cwd and, for `build`, writes <out>/index.html containing the deck source,
+ * so tests can see what reached "Slidev" without installing it. It also logs to slidev-env.log
+ * (one JSON object per call) which provider keys it can see, its whole environment and, when `course dev` passes COURSE_CHAT_PORT, the HTTP status
+ * of the chat backend's status route while it runs. A `slidev-hang` file in the workspace makes it hang.
  */
 export function installFakeSlidev(workspace: string): string {
   const pkgDir = path.join(workspace, 'node_modules', '@slidev', 'cli')
@@ -19,7 +21,17 @@ export function installFakeSlidev(workspace: string): string {
 import path from 'node:path'
 const args = process.argv.slice(2)
 appendFileSync(path.join(process.cwd(), 'slidev-calls.log'), JSON.stringify(args) + '\\n')
-appendFileSync(path.join(process.cwd(), 'slidev-env.log'), JSON.stringify(process.env) + '\\n')
+const secrets = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ELEVENLABS_API_KEY'].filter((k) => process.env[k])
+const port = process.env.COURSE_CHAT_PORT
+let status = null
+if (port && args[0] !== 'build') {
+  const parts = args[0].split(path.sep)
+  const lang = parts.at(-2)
+  const lesson = parts.at(-3)
+  const res = await fetch('http://127.0.0.1:' + port + '/@course-chat/v1/status?lesson=' + lesson + '&lang=' + lang)
+  status = res.status
+}
+appendFileSync(path.join(process.cwd(), 'slidev-env.log'), JSON.stringify({ pid: process.pid, port: port ?? null, secrets, status, env: process.env }) + '\\n')
 // A file named slidev-hang in the workspace makes the stand-in hang (build timeout test).
 if (existsSync(path.join(process.cwd(), 'slidev-hang'))) setInterval(() => {}, 1000)
 if (args[0] === 'build' && !existsSync(path.join(process.cwd(), 'slidev-hang'))) {

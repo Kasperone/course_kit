@@ -60,7 +60,7 @@ describe('Slidev child process environment', () => {
     readFileSync(path.join(ws, 'slidev-env.log'), 'utf8')
       .trim()
       .split('\n')
-      .map((l) => JSON.parse(l) as Record<string, string>)
+      .map((l) => (JSON.parse(l) as { env: Record<string, string> }).env)
 
   async function withEnv<T>(fn: () => Promise<T> | T): Promise<T> {
     Object.assign(process.env, keys, allowed)

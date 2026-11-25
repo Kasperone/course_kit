@@ -80,7 +80,7 @@ export function splitSlides(markdown: string): string[] {
 }
 
 /** Drop a leading `---\n…\n---` frontmatter block. */
-function stripFrontmatter(raw: string): string {
+export function stripFrontmatter(raw: string): string {
   const m = raw.match(/^---[^\n]*\n([\s\S]*?\n)?---[ \t]*(?:\n|$)/)
   return m ? raw.slice(m[0].length) : raw
 }

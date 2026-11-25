@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { resolveCourseTargetRepo, TARGET_REPO_ENV, type CourseJson } from '../commands/init.js'
+import { parseChatSettings } from './chat/config.js'
 import { FULL_SHA_RE } from './git.js'
 import { validateAudioQuality } from './narration/quality.js'
 import {
@@ -65,6 +66,7 @@ export function parseCourseJson(raw: unknown, file: string): CourseJson {
   if (raw.audioQuality !== undefined) {
     course.audioQuality = validateAudioQuality(raw.audioQuality, `${file}: "audioQuality"`)
   }
+  if (raw.chat !== undefined) course.chat = parseChatSettings(raw.chat, `${file}: "chat"`)
   return course
 }
 

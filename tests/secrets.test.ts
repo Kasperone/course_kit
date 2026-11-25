@@ -1,12 +1,15 @@
-import { readFileSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runContext } from '../src/commands/context.js'
+import { runInit } from '../src/commands/init.js'
+import { runPin } from '../src/commands/pin.js'
 import { REDACTED, redactSecrets } from '../src/lib/context-pack/redact.js'
 import { sensitiveReason } from '../src/lib/context-pack/sensitive.js'
 import { readLessonJson, writeLessonJson } from '../src/lib/lesson.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
-import { commitAll, initRepo, writeFiles } from './helpers/git.js'
+import { commitAll, git, initRepo, writeFiles } from './helpers/git.js'
+import { makeTempDir } from './helpers/tmp.js'
 
 // Fake secrets, assembled at runtime so the repo itself never contains token-shaped strings.
 const SK = ['sk', 'live', 'SECRET123'].join('-')
@@ -331,5 +334,45 @@ describe('context packs and secrets (review fixture)', () => {
     expect(md).toContain('| sensitive | 7 |')
     expect(md).toContain('request.getPassword()')
     expect(md).toContain('server.port=8080')
+  })
+})
+
+describe('child processes never see provider keys', () => {
+  it('course init, context and pin run git without ANTHROPIC_*/ELEVENLABS_* keys', async () => {
+    const bin = makeTempDir('git-wrapper')
+    const log = path.join(bin, 'env.log')
+    // Records each git call's environment, then runs the real git (next on PATH).
+    writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\nenv >> ${JSON.stringify(log)}\nPATH="\${PATH#*:}" exec git "$@"\n`,
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    // The fixture is built first: the test helpers run git with the full environment.
+    const fx = await makeWorkspace()
+    // --submodule needs a network origin.
+    git(fx.repoDir, ['remote', 'add', 'origin', 'https://git.example/acme/app.git'])
+    git(fx.repoDir, ['update-ref', 'refs/remotes/origin/main', fx.pinned])
+    const keys = { ANTHROPIC_API_KEY: SK, ELEVENLABS_API_KEY: GHP, ANTHROPIC_AUTH_TOKEN: AWS }
+    const savedPath = process.env.PATH
+    Object.assign(process.env, keys, { PATH: `${bin}${path.delimiter}${savedPath}` })
+    try {
+      await runInit({
+        targetRepo: fx.repoDir,
+        outDir: path.join(fx.root, 'second-course'),
+        languages: ['en'],
+        submodule: true,
+      })
+      await runContext({ lessonId: '01-placeholder', cwd: fx.workspace })
+      runPin({ cwd: fx.workspace })
+    } finally {
+      process.env.PATH = savedPath
+      for (const k of Object.keys(keys)) delete process.env[k]
+    }
+    const seen = readFileSync(log, 'utf8')
+    expect(seen).toContain('PATH=')
+    for (const [name, value] of Object.entries(keys)) {
+      expect(seen).not.toContain(name)
+      expect(seen).not.toContain(value)
+    }
   })
 })

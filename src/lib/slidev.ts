@@ -577,7 +577,12 @@ export function findExternalUrlFiles(courseDir: string): string[] {
 
 export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | 'CDN favicon' }
 
-/** Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or web-font CDN. */
+/**
+ * Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or a web-font CDN.
+ * Provider API hosts are not scanned for: a lesson about a repo that talks to Anthropic may say
+ * `api.anthropic.com` in prose. Deck code cannot call them (`findExternalUrlFiles` refuses any
+ * external URL before the build) and keys are caught by `findSecretsInBuild`.
+ */
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
   const hits: BuildRef[] = []
   if (!existsSync(distDir)) return hits

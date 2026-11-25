@@ -5,7 +5,11 @@
 This repository hosts the `course` CLI and templates. Step 2 added per-lesson **context packs**;
 step 3 added `course pin`, Slidev `course build`/`course dev` and the first real lesson
 (`examples/faktura`, lesson `01-architecture`). Step 4 adds narration: `course narrate` (Piper or
-ElevenLabs), `course voices`, the in-deck player addon and the Polish version of that lesson.
+ElevenLabs), `course voices`, the in-deck player addon and the Polish version of that lesson. Step 5
+adds the Q&A chat: a local backend on 127.0.0.1 (`course serve`, and inside `course dev`), `course ask`
+and the in-deck chat panel addon, answered by Claude and grounded in the lesson's pack and slides.
+Answers come from the Anthropic API (default) or, with `--provider claude-cli|cursor-cli`, from the
+user's Claude Code / Cursor subscription through their headless CLIs.
 
 ## Commands
 
@@ -17,7 +21,7 @@ npm test               # vitest (the Slidev e2e test runs only if examples/faktu
 npm run lint
 npm run format:check
 npm run typecheck
-npm ci --prefix examples/faktura   # optional: real Slidev for the e2e test and example build
+npm ci --prefix examples/faktura   # optional: real Slidev for the e2e tests and example build
 ```
 
 CLI (run from a **course workspace**, or pass `-C <dir>` to pin/build/dev):
@@ -28,10 +32,14 @@ course lesson new <lesson-id>
 course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 course pin [-C dir] [<commit>]                 # default: target HEAD; prints old -> new
 course build [-C dir] [--lesson <id>] [--lang <code>]   # dist/<id>/<lang>/ + dist/index.html
-course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
+course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>] [--provider <id>] [--model <id>] [--no-chat]
+course serve [-C dir] [--port 8787] [--provider <id>] [--model <id>] [--no-chat]   # dist/ + Q&A API, 127.0.0.1 only
+course ask <lesson-id> [question] [-C dir] [--lang <code>] [--slide <n>] [--provider <id>] [--model <id>] [--dry-run]
+               # providers: anthropic-api (default, key) | claude-cli | cursor-cli (subscription, no key)
 course narrate <lesson-id> [-C dir] [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
                [--model <id>] [--audio-quality compact|standard|high|lossless] [--force] [--prune] [--dry-run]
                # audio/local/<lang>/<id>/ + manifest.json; course.json "audioQuality" sets the default
+course clean [--dry-run]                      # remove Cursor's transcript folder for the cursor-cli workspace
 course voices install piper <voice>             # pinned, sha256-checked, into ~/.cache/course_kit/piper-voices
 course voices list
 ```
@@ -67,6 +75,24 @@ course voices list
 - `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: snippet and asset-path leaks, PlantUML, fonts, favicon, the dev
   server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job
   runs it).
+- `tests/chat-config.test.ts` — `course.json` `chat` validation, model precedence, `course pin` keeps it,
+  workspace secrets.
+- `tests/chat-prompt.test.ts` — materials (pack states, symlinks, steps like narration), prompt layout and cache
+  breakpoint, frame-tag escaping (hostile pack), ask validation, `SourceSplitter` markers.
+- `tests/chat-cli-provider.test.ts` — `claude-cli` / `cursor-cli` against fake CLIs on PATH
+  (`tests/helpers/fake-claude.mjs`, `fake-cursor-agent.mjs`): argument lists (no shell, no permission-skipping
+  flags), stdin / system-prompt file, empty temp cwd (Cursor: one stable workspace), allowlisted env for runs and status (GITHUB_TOKEN etc. do not reach the child; the fakes read `fake-cli.json`, not variables), stream-json parsing, not installed / not
+  logged in, timeout and abort kill the process group, output cap, leftovers, status, markers, cost label.
+- `tests/chat-clean.test.ts` — `course clean`: slug and cache-dir paths, `--dry-run`, only our folder removed, symlink and
+  foreign-workspace refusal.
+- `tests/chat-provider.test.ts` — the real Anthropic SDK against `tests/helpers/fake-anthropic.ts` (local mock
+  Messages API): request shape, streaming, refusal, error codes, abort, key redaction.
+- `tests/chat-server.test.ts` — Host/Origin guards, limits, SSE, abort, no-key/no-pack states, static `dist/`.
+- `tests/chat-cli.test.ts` — `course serve`, `course ask`, the backend in `course dev` (keys stripped from Slidev),
+  build scan for keys (provider hosts in prose are fine).
+- `tests/chat-client.test.ts` — the addon's `chat-client.ts` (SSE parser, safe Markdown subset, states, strings).
+- `tests/chat-e2e.test.ts` — real Slidev build + `course serve` + the dev-server proxy (streaming), with a negative
+  control (skipped unless installed; the CI `deck` job runs it).
 - `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
   the git >= 2.43 check.
 
@@ -84,6 +110,20 @@ Always run lint and tests before pushing.
   install it from course_kit. Voices are downloaded only by `course voices install`, into the user cache.
 - ElevenLabs: the key comes only from `ELEVENLABS_API_KEY` (env or the workspace `.env`); never print, log or
   write it. Tests use mocked HTTP only; never make live API calls.
+- Chat CLI providers (`src/lib/chat/cli-provider.ts`): the CLIs run only as external processes via `spawn` with
+  an argument array (no shell), prompt on stdin (or a 0600 file in a private temp dir), in an empty cwd (Cursor: the one stable `cursor-ws` in the cache dir, never with course files; `--trust` only for it, and the
+  provider is `unavailable` unless that directory holds nothing but our deny-all `.cursor/cli.json`), with
+  no tools (Cursor: read-only ask mode, not tool-free, plus that deny-all project permission file), a timeout, an output cap and an allowlisted env (`cliChildEnv()`: base, proxy/CA and the CLI's own `CliSpec.envNames`; `ANTHROPIC_*`/`ELEVENLABS_*` never pass; a variable a CLI needs goes into its `envNames` with a test; proxy URLs may hold `user:password@`, so CLI output in messages goes through `redactUrlCredentials`). Never add
+  `--dangerously-skip-permissions`, `--force`, `--yolo` or any other permission-skipping flag. Tests use the fake
+  CLIs only; never run the real `claude` / `cursor-agent` from a test.
+- Anthropic (Q&A chat): the key comes only from `ANTHROPIC_API_KEY` (env or the workspace `.env`, via
+  `readWorkspaceSecret` in `src/lib/env.ts`); it never reaches the browser, logs, files or errors. Tests use the
+  fake provider or the local mock API; `tests/setup.ts` refuses any non-loopback `fetch`. Never make live calls.
+- Child processes course_kit starts (git, jdeps, Slidev, the narration audio guard) get `childEnv()` from
+  `src/lib/child-env.ts` (an allowlist): provider keys never reach them or anything they spawn. The chat CLI
+  providers build their own allowlisted environment (`cliChildEnv()` in `cli-provider.ts`).
+- Agents never read, print or edit a workspace `.env` (e.g. `examples/faktura/.env`); only the program reads it.
+- Test workers are capped at 4 (`vitest.config.ts`); run heavy suites with `nice -n 10 ionice -c3`.
 - Write files inside a workspace only through `src/lib/fs-safe.ts` (`writeFileInside`, `mkdirInside`): they refuse
   symlinked path components.
 
@@ -96,6 +136,7 @@ Always run lint and tests before pushing.
   fails if this repo tracks any audio file). Context packs are gitignored in workspaces; force-add one only after reviewing it (secrets are
   denylisted and redacted, but that is a safety net)
 - `dist/` or `node_modules/` of a workspace (including `examples/faktura`)
+- Chat questions or answers (the backend stores none; keep it that way)
 
 ## Child processes and git
 
@@ -145,7 +186,7 @@ headmatter.
 - Keep the EN and PL decks of a lesson in lockstep: same slides, same reveals, same `[click]` steps (tests check
   the example), so narration clips line up across languages. Polish keeps code identifiers, paths and the
   English terms Polish developers use.
-- Verify with `course build`; view with `npx vite preview --outDir dist`.
+- Verify with `course build`; view with `course serve` (decks and the Q&A chat on 127.0.0.1).
 
 ## Narration
 
@@ -173,3 +214,25 @@ fragment is escaped where it enters the message (`escapeControls()`, or `JSON.st
 line. It also drops the password of any `user:password@host` URL (`redactUrlCredentials()` in `redact.ts`): tools echo
 proxy URLs such as `HTTPS_PROXY=http://user:secret@proxy:3128` in their errors, and the proxy variables stay in the
 child-env allowlists. Extend `src/analyzers/` for language-specific graphs.
+
+## Q&A chat
+
+- Backend: `src/lib/chat/` (`config`, `materials`, `prompt`, `provider`, `server`, `static`); commands
+  `src/commands/serve.ts`, `ask.ts` and the chat part of `runDev`. ADR 0005 has the design.
+- It binds to 127.0.0.1 only and the deck calls only the same-origin path `/@course-chat/v1/`. Keep the Host
+  (loopback) and Origin checks, the body and rate limits, and the no-CORS rule; never add a host option.
+- Answers are grounded in the lesson's context pack plus the deck-language slides and notes (no RAG). Repository
+  text stays inside `<lesson_materials>` with frame tags escaped (`escapeFrameTags`); instructions change only with
+  `PROMPT_VERSION`. Related topics are answered; unbacked parts are marked `[[general]]`, unrelated questions
+  `[[off-topic]]`.
+- The panel lives in `templates/workspace/addons/chat` (copied into `examples/faktura/addons/chat`; a test keeps
+  them identical). Its logic is in `chat-client.ts`; it renders answers as text only (no `v-html`, links or
+  images) and may only fetch same-origin relative paths.
+- New config fields go into `src/lib/chat/config.ts` (validated, unknown fields rejected).
+- Providers: `anthropic-api` (default; the only one with the cached prefix), `claude-cli`, `cursor-cli`
+  (`src/lib/chat/providers.ts`, `cli-provider.ts`; ADR 0005 "Providers"). Precedence `--provider` >
+  `COURSE_CHAT_PROVIDER` > `chat.provider`; `--model`/`COURSE_CHAT_MODEL` apply to the selected provider,
+  `chat.model` is the API model and `chat.claudeCli`/`chat.cursorCli` hold the CLI models. A new provider
+  implements `AnswerProvider` (with `billing` and, if it can be unavailable, `check()`).
+- Voice input (whisper.cpp / ElevenLabs Scribe) is designed in ADR 0005 but not implemented; never download,
+  build or install whisper.cpp or models from course_kit.
