@@ -45,7 +45,7 @@ Every call pins, on the command line (which overrides repository config), the se
 make git run a program: `safe.bareRepository=explicit` (no implicit bare repos),
 `log.showSignature=false` (no `gpg.program`) and `core.fsmonitor=false`
 (`GIT_HARDENING_ARGS`, shared with `course init`). `safe.bareRepository` exists since git 2.38 and
-older git silently ignores it, so course_kit refuses to run on older git. Pack reads never touch
+older git silently ignores it; course_kit refuses to run on git older than 2.43, the oldest version CI tests. Pack reads never touch
 the network either: in a partial clone (`--filter=blob:none`) git would otherwise run `git fetch`
 against the target's own remote config to fill in a missing blob, so they set `GIT_NO_LAZY_FETCH=1`
 (git 2.44+) and `protocol.allow=never` (older versions) and fail with "partial clone: fetch the
