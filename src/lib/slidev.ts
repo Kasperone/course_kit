@@ -169,17 +169,34 @@ export const REMOTE_ASSET_RE = new RegExp(
   'im',
 )
 
-/** Workspace directories the guard never scans (dependencies, output, vendored target). */
-const GUARD_SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
+/**
+ * Directories a scan skips. `anywhere`: installed dependencies and git internals, at any depth.
+ * `topLevel`: workspace-level directories only (build output, the vendored target, local audio, and
+ * for code scans the helper `scripts/`): Slidev loads `components/**` at any depth, so a nested
+ * `components/audio/` or `components/scripts/` is deck code and must be scanned.
+ */
+export type WalkSkip = { anywhere: Set<string>; topLevel: Set<string> }
 
-function* walkFiles(dir: string, skip: Set<string>): Generator<string> {
+const GUARD_SKIP: WalkSkip = {
+  anywhere: new Set(['node_modules', '.git']),
+  topLevel: new Set(['dist', 'target-repo', 'audio']),
+}
+const NO_SKIP: WalkSkip = { anywhere: new Set(), topLevel: new Set() }
+
+function* walkFiles(dir: string, skip: WalkSkip, atRoot = true): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (skip.has(entry.name)) continue
+    if (skip.anywhere.has(entry.name) || (atRoot && skip.topLevel.has(entry.name))) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are never followed: a link could point anywhere on the machine.
-    if (entry.isDirectory()) yield* walkFiles(abs, skip)
+    if (entry.isDirectory()) yield* walkFiles(abs, skip, false)
     else if (entry.isFile()) yield abs
   }
+}
+
+/** True if a workspace-relative path lies in a directory the scans skip. */
+function isSkippedPath(rel: string): boolean {
+  const segments = rel.split(path.sep)
+  return segments.some((s) => GUARD_SKIP.anywhere.has(s)) || GUARD_SKIP.topLevel.has(segments[0]!)
 }
 
 function isSymlink(p: string): boolean {
@@ -412,7 +429,7 @@ function importProblem(root: string, target: string, ref: string): string | null
   ) {
     return 'outside the workspace'
   }
-  if (GUARD_SKIP.has(rel.split(path.sep)[0]!)) return 'a directory the guard does not scan'
+  if (isSkippedPath(rel)) return 'a directory the guard does not scan'
   if (goesThroughSymlink(root, rel)) return 'a symlink'
   // A pack is data quoted from the target repository and is not scanned; secret files must never
   // be rendered or shown as code.
@@ -490,13 +507,81 @@ export function findWebFontFiles(courseDir: string): string[] {
   )
 }
 
+/**
+ * An absolute or protocol-relative URL to another host in deck code: http(s)/ws(s) URLs and
+ * `"//host…"` / `url(//host…)`. Loopback hosts (localhost, 127.0.0.1, [::1]) are allowed.
+ */
+export const EXTERNAL_URL_RE =
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
+
+/**
+ * XML namespace identifiers are names, not requests (`xmlns="http://www.w3.org/2000/svg"` on every
+ * inline SVG, `createElementNS("http://www.w3.org/2000/svg", …)`): they are removed before testing.
+ */
+const XML_NAMESPACE_RE =
+  /(["'`])https?:\/\/www\.w3\.org\/(?:2000\/svg|1999\/xlink|1999\/xhtml|1998\/Math\/MathML|XML\/1998\/namespace|2000\/xmlns\/?)\1/gi
+
+/** True if deck code mentions an external URL (see `EXTERNAL_URL_RE`), XML namespaces aside. */
+export function hasExternalUrl(code: string): boolean {
+  return EXTERNAL_URL_RE.test(code.replace(XML_NAMESPACE_RE, '""'))
+}
+
+/**
+ * The bodies of `<script …>…</script>` blocks in a slide's Markdown, outside fenced code blocks.
+ * Slidev compiles these into the slide's Vue component, so they run in the viewer's browser like
+ * any component's script.
+ */
+export function markdownScriptBodies(text: string): string {
+  const prose: string[] = []
+  let fence: string | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (f) {
+      if (fence === null) fence = f[1]!
+      else if (f[1]![0] === fence[0] && f[1]!.length >= fence.length) fence = null
+      continue
+    }
+    if (fence === null) prose.push(line)
+  }
+  return [...prose.join('\n').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => m[1]!)
+    .join('\n')
+}
+
+/** The top-level `scripts/` holds workspace helpers, not deck code (their comments may cite URLs). */
+const CODE_SKIP: WalkSkip = {
+  anywhere: GUARD_SKIP.anywhere,
+  topLevel: new Set([...GUARD_SKIP.topLevel, 'scripts']),
+}
+
+/** Files Slidev loads as code: Vue components and JS/TS (also JSX/TSX, which it registers too). */
+const CODE_FILE_RE = /\.(vue|[cm]?[jt]sx?)$/i
+
+/**
+ * Workspace code that a deck can load (Vue/TS/JS: components, layouts, setup files, addons, and
+ * `<script>` blocks in slide Markdown) and that references an external URL (relative paths). Decks stay offline, so such code would make
+ * the browser leave the machine.
+ */
+export function findExternalUrlFiles(courseDir: string): string[] {
+  const offenders: string[] = []
+  for (const file of walkFiles(courseDir, CODE_SKIP)) {
+    const markdown = /\.md$/i.test(file) && path.basename(file) !== 'context-pack.md'
+    if (!CODE_FILE_RE.test(file) && !markdown) continue
+    const text = readFileSync(file, 'utf8')
+    if (hasExternalUrl(markdown ? markdownScriptBodies(text) : text)) {
+      offenders.push(path.relative(courseDir, file).split(path.sep).join('/'))
+    }
+  }
+  return offenders.sort()
+}
+
 export type BuildRef = { file: string; what: 'PlantUML server' | 'web fonts' | 'CDN favicon' }
 
 /** Built files (HTML/JS/CSS/JSON/text) that mention a public PlantUML server or web-font CDN. */
 export function findForbiddenBuildRefs(distDir: string): BuildRef[] {
   const hits: BuildRef[] = []
   if (!existsSync(distDir)) return hits
-  for (const file of walkFiles(distDir, new Set())) {
+  for (const file of walkFiles(distDir, NO_SKIP)) {
     if (!/\.(html|m?js|css|json|txt|svg|map)$|_redirects$/i.test(file)) continue
     const text = readFileSync(file, 'utf8')
     if (/plantuml\.com/i.test(text)) hits.push({ file, what: 'PlantUML server' })

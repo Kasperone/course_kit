@@ -4,6 +4,8 @@
 // - no PlantUML: Slidev renders ```plantuml blocks and <PlantUml> as <img> requests to
 //   `plantUmlServer` (default https://www.plantuml.com), sending the diagram source off-machine;
 // - no web fonts from a CDN (Google Fonts, coollabs): decks use system fonts;
+// - no external URLs in deck code (Vue/TS/JS: components, setup files, addons such as the
+//   narration player); only localhost is allowed;
 // - no remote images, embeds, scripts or styles (Markdown images, src/href on loading tags, CSS
 //   url()/@import, <Tweet>/<Youtube>, image:/background:/url: frontmatter, reference-style link
 //   definitions, Mermaid `img:` nodes); inline plain links are fine;
@@ -19,7 +21,11 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
-const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
+// Skipped at any depth: installed dependencies and git internals. Skipped only at the workspace top
+// level: build output, the vendored target, local audio (and `scripts/` for code): Slidev loads
+// components/** at any depth, so a nested components/audio/ or components/scripts/ is deck code.
+const SKIP_ANYWHERE = new Set(['node_modules', '.git'])
+const SKIP_TOP_LEVEL = new Set(['dist', 'target-repo', 'audio'])
 // [ \t]*, not \s*: a plain fence whose first line starts with "plantuml" is ordinary code.
 const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
 // The name must end at whitespace, `/` or `>`: a quoted `<plantuml.version>` is not the component.
@@ -123,7 +129,8 @@ function importLeavesTree(target, ref) {
   if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
     return true
   }
-  if (SKIP.has(rel.split(path.sep)[0])) return true
+  const segments = rel.split(path.sep)
+  if (segments.some((s) => SKIP_ANYWHERE.has(s)) || SKIP_TOP_LEVEL.has(segments[0])) return true
   let current = root
   for (const segment of rel.split(path.sep)) {
     current = path.join(current, segment)
@@ -231,13 +238,41 @@ function mentionsRemoteAsset(file) {
   }
 }
 
-function* files(dir) {
+const EXTERNAL_URL =
+  /\b(?:https?|wss?):\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[^\s'"`)]+|["'`(]\s*\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/'"`\s]|$))[a-z0-9-]+\.[a-z0-9.-]+/i
+
+// XML namespace identifiers are names, not requests (`xmlns="http://www.w3.org/2000/svg"`).
+const XML_NAMESPACE =
+  /(["'`])https?:\/\/www\.w3\.org\/(?:2000\/svg|1999\/xlink|1999\/xhtml|1998\/Math\/MathML|XML\/1998\/namespace|2000\/xmlns\/?)\1/gi
+
+const hasExternalUrl = (code) => EXTERNAL_URL.test(code.replace(XML_NAMESPACE, '""'))
+
+// Bodies of `<script …>…</script>` blocks in a slide's Markdown, outside fenced code blocks: Slidev
+// compiles them into the slide's Vue component.
+function markdownScriptBodies(text) {
+  const prose = []
+  let fence = null
+  for (const line of text.split(/\r?\n/)) {
+    const f = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (f) {
+      if (fence === null) fence = f[1]
+      else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = null
+      continue
+    }
+    if (fence === null) prose.push(line)
+  }
+  return [...prose.join('\n').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map((m) => m[1])
+    .join('\n')
+}
+
+function* files(dir, skipTop = SKIP_TOP_LEVEL, ext = /\.(md|vue|css|html)$/i, atRoot = true) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP.has(entry.name)) continue
+    if (SKIP_ANYWHERE.has(entry.name) || (atRoot && skipTop.has(entry.name))) continue
     const abs = path.join(dir, entry.name)
     // Symlinks are not followed.
-    if (entry.isDirectory()) yield* files(abs)
-    else if (entry.isFile() && /\.(md|vue|css|html)$/i.test(entry.name)) yield abs
+    if (entry.isDirectory()) yield* files(abs, skipTop, ext, false)
+    else if (entry.isFile() && ext.test(entry.name)) yield abs
   }
 }
 
@@ -288,6 +323,20 @@ for (const file of allFiles) {
         ) || ['plantuml', 'puml'].includes(snippet.lang)
       if (bad) imports.push(`${rel} -> <<< ${snippet.path}`)
     }
+  }
+}
+
+// This script and other top-level helpers are not deck code (their comments may cite URLs).
+const external = []
+for (const file of files(
+  root,
+  new Set([...SKIP_TOP_LEVEL, 'scripts']),
+  /\.(md|vue|[cm]?[jt]sx?)$/i,
+)) {
+  if (path.basename(file) === 'context-pack.md') continue
+  const text = readFileSync(file, 'utf8')
+  if (hasExternalUrl(/\.md$/i.test(file) ? markdownScriptBodies(text) : text)) {
+    external.push(path.relative(root, file))
   }
 }
 
@@ -346,6 +395,11 @@ if (webFonts.length > 0) {
   failed = true
   console.error('Web fonts from a CDN are not allowed (decks use system fonts). Offending files:')
   for (const f of webFonts) console.error(`  - ${printable(f)}`)
+}
+if (external.length > 0) {
+  failed = true
+  console.error('Deck code must not reference external URLs (only localhost). Offending files:')
+  for (const f of external) console.error(`  - ${printable(f)}`)
 }
 if (remote.length > 0) {
   failed = true

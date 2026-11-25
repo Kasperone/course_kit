@@ -5,7 +5,9 @@ import type { CourseJson } from './init.js'
 import { childEnv } from '../lib/child-env.js'
 import { escapeControls } from '../lib/context-pack/markdown.js'
 import { assertNoSymlinkBelow, writeFileInside } from '../lib/fs-safe.js'
+import { MANIFEST_FILE, parseManifest } from '../lib/narration/manifest.js'
 import {
+  findExternalUrlFiles,
   findForbiddenBuildRefs,
   findPlantUmlFiles,
   findOutsideImports,
@@ -127,6 +129,12 @@ export function assertDeckPolicy(courseDir: string, decks: Deck[]): void {
       `Web fonts from a CDN are not allowed (decks use system fonts and stay offline). Offending files: ${list(fonts)}`,
     )
   }
+  const external = findExternalUrlFiles(courseDir)
+  if (external.length > 0) {
+    errors.push(
+      `Deck code (Vue/TS/JS) must not reference external URLs (decks stay offline; only localhost is allowed). Offending files: ${list(external)}`,
+    )
+  }
   const remote = findRemoteAssetFiles(courseDir)
   if (remote.length > 0) {
     errors.push(
@@ -184,11 +192,67 @@ function timedRunner(timeoutMs: number): SlidevRunner {
 export type BuildOptions = DeckFilter & {
   cwd?: string
   runner?: SlidevRunner
+  /** Copy narration clips next to the decks (default true). */
+  narration?: boolean
   /** Build timeout per deck (default: SLIDEV_BUILD_TIMEOUT_MS). */
   timeoutMs?: number
 }
 
-export type BuildResult = { courseDir: string; distDir: string; decks: Deck[]; index: string }
+export type NarrationCopy = { lessonId: string; lang: string; clips: number; dir: string }
+
+export type BuildResult = {
+  courseDir: string
+  distDir: string
+  decks: Deck[]
+  index: string
+  narration: NarrationCopy[]
+}
+
+/**
+ * Copy each built lesson's narration (audio/local/<lang>/<id>/manifest.json and the clips it lists)
+ * to dist/<id>/narration/<lang>/, where the player in every language deck of that lesson finds it
+ * (../narration/<lang>/ from the deck base). Only validated clip names are copied; symlinks are
+ * never followed. All course languages are copied so the player can switch narration language.
+ */
+export function copyNarration(
+  courseDir: string,
+  lessonIds: string[],
+  languages: string[],
+): NarrationCopy[] {
+  const copied: NarrationCopy[] = []
+  for (const lessonId of [...new Set(lessonIds)]) {
+    const target = path.join(courseDir, BUILD_DIR, lessonId, 'narration')
+    assertNoSymlinkBelow(courseDir, target, 'Build output')
+    rmSync(target, { recursive: true, force: true })
+    for (const lang of languages) {
+      const src = path.join(courseDir, 'audio', 'local', lang, lessonId)
+      const manifestFile = path.join(src, MANIFEST_FILE)
+      if (!existsSync(manifestFile)) continue
+      assertNoSymlinkBelow(courseDir, manifestFile, 'Narration manifest')
+      const manifest = parseManifest(
+        JSON.parse(readFileSync(manifestFile, 'utf8')) as unknown,
+        path.relative(courseDir, manifestFile),
+      )
+      const dir = path.join(target, lang)
+      for (const clip of manifest.clips) {
+        const from = path.join(src, clip.file)
+        const st = existsSync(from) ? lstatSync(from) : null
+        if (!st?.isFile())
+          throw new Error(
+            `Narration clip missing: ${path.relative(courseDir, from)} (run course narrate ${lessonId} --lang ${lang})`,
+          )
+        writeFileInside(courseDir, path.join(dir, clip.file), readFileSync(from))
+      }
+      writeFileInside(
+        courseDir,
+        path.join(dir, MANIFEST_FILE),
+        JSON.stringify(manifest, null, 2) + '\n',
+      )
+      copied.push({ lessonId, lang, clips: manifest.clips.length, dir })
+    }
+  }
+  return copied
+}
 
 function escapeHtml(s: string): string {
   return s.replace(
@@ -266,10 +330,19 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   if (leaks.length > 0) {
     throw new Error(
       `Built output references external servers: ${leaks
-        .map((l) => `${path.relative(courseDir, l.file)} (${l.what})`)
+        .map((l) => `${escapeControls(path.relative(courseDir, l.file))} (${l.what})`)
         .join(', ')}`,
     )
   }
+
+  const narration =
+    options.narration === false
+      ? []
+      : copyNarration(
+          courseDir,
+          decks.map((d) => d.lessonId),
+          course.languages,
+        )
 
   // The index lists every deck present in dist/, so a filtered build keeps earlier decks linked.
   const built = listDecks(courseDir, course).filter((d) =>
@@ -277,7 +350,7 @@ export function runBuild(options: BuildOptions = {}): BuildResult {
   )
   const index = path.join(distDir, 'index.html')
   writeFileInside(courseDir, index, indexHtml(built))
-  return { courseDir, distDir, decks, index }
+  return { courseDir, distDir, decks, index, narration }
 }
 
 export type DevOptions = { lesson: string; lang?: string; port?: number; cwd?: string }

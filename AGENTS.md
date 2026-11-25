@@ -3,8 +3,9 @@
 ## Purpose
 
 This repository hosts the `course` CLI and templates. Step 2 added per-lesson **context packs**;
-step 3 adds `course pin`, Slidev `course build`/`course dev` and the first real lesson
-(`examples/faktura`, lesson `01-architecture`).
+step 3 added `course pin`, Slidev `course build`/`course dev` and the first real lesson
+(`examples/faktura`, lesson `01-architecture`). Step 4 adds narration: `course narrate` (Piper or
+ElevenLabs), `course voices`, the in-deck player addon and the Polish version of that lesson.
 
 ## Commands
 
@@ -28,6 +29,11 @@ course context <lesson-id> [--files <glob...>] [--out <file>] [--json]
 course pin [-C dir] [<commit>]                 # default: target HEAD; prints old -> new
 course build [-C dir] [--lesson <id>] [--lang <code>]   # dist/<id>/<lang>/ + dist/index.html
 course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
+course narrate <lesson-id> [-C dir] [--lang en|pl|all] [--provider piper|elevenlabs] [--voice <id>]
+               [--model <id>] [--audio-quality compact|standard|high|lossless] [--force] [--prune] [--dry-run]
+               # audio/local/<lang>/<id>/ + manifest.json; course.json "audioQuality" sets the default
+course voices install piper <voice>             # pinned, sha256-checked, into ~/.cache/course_kit/piper-voices
+course voices list
 ```
 
 ## Tests
@@ -47,8 +53,20 @@ course dev <lesson-id> [-C dir] [--lang <code>] [--port <n>]
   offline headmatter, remote assets, slide imports), Slidev's environment (no API keys), post-build scan, symlinked `dist/`, and `check-deck.mjs`
   against the same cases (the example's copy must equal the template's).
 - `tests/fs-safe.test.ts` — no workspace write follows a symlink.
+- `tests/narration.test.ts` — notes -> (slide, click) steps like Slidev, EN/PL step parity of the faktura lesson,
+  WAV/MP3 durations, cache key, manifest validation, template/example sync, generated ATTRIBUTION.md.
+- `tests/narrate.test.ts` — `course narrate` with a fake provider (cache, `--force`, `--prune`, `--dry-run`),
+  never-commit audio guard, no audio tracked in this repo, narration copy in `course build`, external-URL policy.
+- `tests/quality.test.ts` — `--audio-quality` presets, precedence (flag > course.json > standard), `course pin`
+  keeps `audioQuality`, cache key per preset, no resampling (fake ffmpeg), lossless WAV byte for byte,
+  ElevenLabs output formats.
+- `tests/tts.test.ts` — Piper via `tests/helpers/fake-piper.mjs` (stdin text, WAV/MP3), voice install with sha256
+  checks, ElevenLabs with mocked HTTP (key never in output, files or errors).
+- `tests/narration-env.test.ts` — Piper and ffmpeg (recording fakes) run with the allowlisted environment: no
+  `*_API_KEY`/`*_TOKEN`/`*_SECRET`, but `PIPER_*`/`ESPEAK_*` and `PATH` arrive.
 - `tests/slidev-e2e.test.ts` — real Slidev 52.20.1 on `examples/faktura`: snippet and asset-path leaks, PlantUML, fonts, favicon, the dev
-  server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job runs it).
+  server's export page and `/__mcp`, each with a negative control (skipped unless installed; the CI `deck` job
+  runs it).
 - `tests/child-env.test.ts` — `childEnv()` allowlist; git and jdeps run without API keys (wrapper scripts on PATH);
   the git >= 2.43 check.
 
@@ -60,7 +78,12 @@ Always run lint and tests before pushing.
 - Minimal dependencies; Slidev deps belong in generated workspaces, never in the root package.
 - No PDF/PNG export, no Playwright dependency, no web fonts (ADR 0003).
 - Follow ADR [0001](docs/adr/0001-node-typescript-cli-and-repo-reference.md),
-  [0002](docs/adr/0002-context-pack-format.md) and [0003](docs/adr/0003-slidev-build-and-dev.md).
+  [0002](docs/adr/0002-context-pack-format.md), [0003](docs/adr/0003-slidev-build-and-dev.md) and
+  [0004](docs/adr/0004-narration-tts-adapters.md).
+- Piper is GPL-3.0: only ever run it as an external process (`PIPER_BIN`); never vendor, bundle, import or
+  install it from course_kit. Voices are downloaded only by `course voices install`, into the user cache.
+- ElevenLabs: the key comes only from `ELEVENLABS_API_KEY` (env or the workspace `.env`); never print, log or
+  write it. Tests use mocked HTTP only; never make live API calls.
 - Write files inside a workspace only through `src/lib/fs-safe.ts` (`writeFileInside`, `mkdirInside`): they refuse
   symlinked path components.
 
@@ -69,7 +92,8 @@ Always run lint and tests before pushing.
 - `.env` or real API keys (ElevenLabs, etc.)
 - Files under `audio/local/` or other generated narration
 - Secrets in `course.json` or lesson content
-- Generated context packs: gitignored in workspaces; force-add one only after reviewing it (secrets are
+- Generated audio (`course narrate` refuses to run if `audio/local/` is not ignored or has tracked files; a test
+  fails if this repo tracks any audio file). Context packs are gitignored in workspaces; force-add one only after reviewing it (secrets are
   denylisted and redacted, but that is a safety net)
 - `dist/` or `node_modules/` of a workspace (including `examples/faktura`)
 
@@ -77,7 +101,8 @@ Always run lint and tests before pushing.
 
 - Every child process gets `childEnv()` from `src/lib/child-env.ts` (an allowlist, plus `GIT_TERMINAL_PROMPT=0`),
   never `process.env`: an exported API key must not reach git or anything it runs. Extend the allowlist only
-  for names a tool needs to run.
+  for names a tool needs to run. Piper and ffmpeg use `piperEnv()`/`ffmpegEnv()` (`src/lib/narration/env.ts`); a
+  new spawn site gets `childEnv()` (or a wrapper like those) and a test that records the child's environment.
 - Git calls on a target repository go through `gitRead` in `src/lib/git.ts`: `GIT_HARDENING_ARGS`
   (`safe.bareRepository=explicit`, no fsmonitor, no signature checks), `--no-optional-locks`, a timeout, and a
   once-per-process check for git >= 2.43 (`MIN_GIT_VERSION`; `safe.bareRepository` needs 2.38, but 2.43 is the oldest git CI tests). Reuse these constants
@@ -94,16 +119,19 @@ Templates live in `templates/workspace/`. Lessons use `lessons/<id>/lesson.json`
 
 Decks are Mermaid-only, fully offline and export-free (ADR 0001, 0003). Every deck's headmatter (generated by
 `deckFrontmatter()`) pins `plantUmlServer` and `favicon` to `data:` URLs, `fonts` to system stacks with
-`provider: "none"`, `browserExporter: false`, `mcp: false` and `download: false`. `course build`/`course dev` refuse to start Slidev otherwise, or if
-any workspace file has a PlantUML fence or `<PlantUml>` component, references a web-font CDN or loads a remote
-resource (images, embeds, scripts, styles, `url:` iframe layouts, reference-style images, Mermaid `img:` nodes; inline
-plain links are fine), or if a slide `src:` import, `<<<` snippet or local asset path (Markdown/HTML images, `srcset`/`poster`, CSS `url()`, `image:`/`background:`
-frontmatter, Vue imports) leaves the checked files, targets a context pack or a secret-looking file (`.env*`, keys) or is a PlantUML snippet.
-Context packs are skipped by every scan. `course dev` checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with
-`childEnv()` plus `NODE_*`/`VITE_*`/`SLIDEV_*` (secret-looking names are dropped even under those wildcards) and a
-10-minute build timeout. The template's
+`provider: "none"`, `browserExporter: false`, `mcp: false` and `download: false`. `course build`/`course dev`
+refuse to start Slidev otherwise, or if any workspace file has a PlantUML fence or `<PlantUml>` component,
+references a web-font CDN or loads a remote resource (images, embeds, scripts, styles, `url:` iframe layouts,
+reference-style images, Mermaid `img:` nodes; inline plain links are fine), if deck code (Vue/TS/JS) references an
+external URL, or if a slide `src:` import, `<<<` snippet or local asset path (Markdown/HTML images, `srcset`/`poster`, CSS
+`url()`, `image:`/`background:` frontmatter, Vue imports) leaves the checked files, targets a context pack or a
+secret-looking file (`.env*`, keys) or is a PlantUML snippet. Context packs are skipped by every scan. `course dev`
+checks once at startup (Slidev hot-reloads; `course build` is the gate). Slidev runs with `childEnv()` plus
+`NODE_*`/`VITE_*`/`SLIDEV_*` (secret-looking names are dropped even under those wildcards) and a 10-minute build
+timeout. The template's
 `scripts/check-deck.mjs` applies the same rules for `npm run dev/build`. `course build` fails if the built output
-mentions plantuml.com, a font CDN or (in HTML) cdn.jsdelivr.net. Never remove these keys when editing a deck's headmatter.
+mentions plantuml.com, a font CDN or (in HTML) cdn.jsdelivr.net. Never remove these keys when editing a deck's
+headmatter.
 
 ## Writing lessons
 
@@ -114,7 +142,22 @@ mentions plantuml.com, a font CDN or (in HTML) cdn.jsdelivr.net. Never remove th
 - Speaker notes (the last HTML comment of a slide) are future narration scripts: plain spoken English, one
   `[click]` step per `v-click` reveal (use `<v-clicks depth="2">` when nested items should reveal one by one).
 - Diagrams that show code structure are copied verbatim from the pack's analyzer output.
+- Keep the EN and PL decks of a lesson in lockstep: same slides, same reveals, same `[click]` steps (tests check
+  the example), so narration clips line up across languages. Polish keeps code identifiers, paths and the
+  English terms Polish developers use.
 - Verify with `course build`; view with `npx vite preview --outDir dist`.
+
+## Narration
+
+- Steps come from notes exactly as Slidev splits them (`src/lib/narration/notes.ts`); `[click]` adds 1,
+  `[click:n]` adds n.
+- Never change the sample rate or channels of TTS output (no `-ar`/`-ac`, no upsampling); quality presets only
+  choose the container and bitrate (`src/lib/narration/quality.ts`).
+- New providers implement `TtsProvider` in `src/lib/narration/providers.ts`; everything that changes the audio
+  goes into `settings` (cache key). Add a fake/mocked test, never a live one.
+- The player lives in `templates/workspace/addons/narration` (copied into `examples/faktura/addons/narration`;
+  a test keeps them identical). It may only fetch same-origin relative URLs; deck code with external URLs fails
+  the policy.
 
 ## Context packs
 

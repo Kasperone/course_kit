@@ -359,6 +359,13 @@ describe.skipIf(!installed)('real Slidev (examples/faktura)', () => {
     // Slidev's built-in Mermaid renders client-side from the diagram source in the bundle.
     expect(en).toMatch(/mermaid/i)
     expect(en).toContain('io.github.kasperone.faktura')
+    // The narration addon (package.json "slidev.addons") is in both decks, configured per deck.
+    expect(en).toMatch(
+      /lesson:`01-architecture`,lang:`en`,langs:\[`en`,`pl`\],base:`\.\.\/narration\/`/,
+    )
+    const pl = allText(path.join(workspace, 'dist', '01-architecture', 'pl'))
+    expect(pl).toMatch(/lesson:`01-architecture`,lang:`pl`/)
+    expect(en).toContain('course-narration')
     expect(findForbiddenBuildRefs(path.join(workspace, 'dist'))).toEqual([])
     expect(existsSync(path.join(workspace, 'dist', 'index.html'))).toBe(true)
   }, 180_000)

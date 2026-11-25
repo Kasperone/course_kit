@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { createJavaAnalyzer } from '../src/analyzers/java.js'
 import { runContext } from '../src/commands/context.js'
 import { runInit } from '../src/commands/init.js'
+import { assertAudioNotCommittable } from '../src/commands/narrate.js'
 import { childEnv } from '../src/lib/child-env.js'
 import { assertGitVersion, parseGitVersion } from '../src/lib/git.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
@@ -182,6 +183,34 @@ describe('git child processes', () => {
         expect(seen, log).not.toContain(value)
       }
     }
+  })
+
+  it('the narration audio guard runs git without provider keys', async () => {
+    const bin = makeTempDir('narrate-git-wrapper')
+    const log = path.join(bin, 'env.log')
+    writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\nenv >> ${JSON.stringify(log)}\nPATH="\${PATH#*:}" exec git "$@"\n`,
+    )
+    chmodSync(path.join(bin, 'git'), 0o755)
+    // A submodule-mode workspace is a git work tree, so the guard really runs git.
+    const fx = await makeWorkspace(undefined, { submodule: true })
+    const savedPath = process.env.PATH
+    Object.assign(
+      process.env,
+      { ELEVENLABS_API_KEY: KEY },
+      { PATH: `${bin}${path.delimiter}${savedPath}` },
+    )
+    try {
+      assertAudioNotCommittable(fx.workspace, path.join(fx.workspace, 'audio', 'local', 'en', 'x'))
+    } finally {
+      process.env.PATH = savedPath
+      delete process.env.ELEVENLABS_API_KEY
+    }
+    const seen = readFileSync(log, 'utf8')
+    expect(seen).toContain('PATH=')
+    expect(seen).not.toContain('ELEVENLABS_API_KEY')
+    expect(seen).not.toContain(KEY)
   })
 
   it.each([

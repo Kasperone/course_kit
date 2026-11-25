@@ -159,7 +159,9 @@ describe('course init', () => {
   it('pins Slidev and its theme to exact versions', async () => {
     const { outDir } = await initWorkspace()
     const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
-    for (const [name, version] of Object.entries(pkg.devDependencies)) {
+    for (const [name, version] of Object.entries(pkg.devDependencies as Record<string, string>)) {
+      // Registry packages are pinned exactly; the narration addon is a local `file:` dependency.
+      if (version.startsWith('file:')) continue
       expect(version, name).toMatch(/^\d+\.\d+\.\d+$/)
     }
   })

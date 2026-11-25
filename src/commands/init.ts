@@ -22,6 +22,8 @@ import {
 } from '../lib/git.js'
 import { writeFileInside } from '../lib/fs-safe.js'
 import { defaultLessonJson, writeLessonJson, writePlaceholderSlides } from '../lib/lesson.js'
+import type { AudioQuality } from '../lib/narration/quality.js'
+import { attributionMarkdown } from '../lib/narration/voices.js'
 import { defaultOutDir, templatesDir } from '../lib/paths.js'
 import { validateLanguages } from '../lib/validate.js'
 
@@ -42,6 +44,8 @@ export type CourseJson = {
   targetRemote: string | null
   pinnedCommit: string
   languages: string[]
+  /** Default `course narrate --audio-quality` preset for this course (optional; CLI overrides). */
+  audioQuality?: AudioQuality
   referenceMode: 'pinned-path' | 'submodule'
   submodulePath: string | null
 }
@@ -96,15 +100,7 @@ function writeLessonPlaceholders(outDir: string, languages: string[]): void {
 
 function writeAudioTree(outDir: string): void {
   writeFileInside(outDir, path.join(outDir, 'audio', 'local', '.gitkeep'), '')
-  writeFileInside(
-    outDir,
-    path.join(outDir, 'audio', 'ATTRIBUTION.md'),
-    `# Audio attribution
-
-Generated narration clips belong in \`audio/local/\` (gitignored).
-Do not commit provider-generated audio or API keys.
-`,
-  )
+  writeFileInside(outDir, path.join(outDir, 'audio', 'ATTRIBUTION.md'), attributionMarkdown())
 }
 
 /** Env var that overrides course.json `targetRepo` on this machine (absolute or cwd-relative). */

