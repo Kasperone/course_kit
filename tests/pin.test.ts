@@ -162,7 +162,7 @@ describe('course pin', () => {
         verb,
       ).toBe(true)
     }
-    // ... and none without the pinned config (git >= 2.38 `safe.bareRepository`, no fsmonitor).
+    // ... and none without the pinned config (`safe.bareRepository`, no fsmonitor).
     for (const call of reads) {
       expect(call, call).toContain('safe.bareRepository=explicit')
       expect(call, call).toContain('core.fsmonitor=false')

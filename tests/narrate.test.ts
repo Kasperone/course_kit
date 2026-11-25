@@ -363,7 +363,7 @@ describe('generated audio is never committable', () => {
       return workspace
     }
 
-    it('git older than 2.38: refuses with the upgrade message instead of skipping the guard', async () => {
+    it('git older than 2.43: refuses with the upgrade message instead of skipping the guard', async () => {
       const workspace = await unignoredWorkspace()
       const runNarrateFresh = await freshNarrate()
       const { provider, calls } = fakeProvider()
@@ -374,7 +374,7 @@ describe('generated audio is never committable', () => {
             cwd: workspace,
             makeProvider: () => provider,
           }),
-        ).rejects.toThrow(/needs git >= 2\.38/)
+        ).rejects.toThrow(/needs git >= 2\.43/)
       })
       expect(calls).toEqual([])
       expect(existsSync(path.join(workspace, 'audio', 'local', 'en'))).toBe(false)

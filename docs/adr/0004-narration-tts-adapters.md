@@ -153,7 +153,7 @@ mocked `fetch`; CI needs neither Piper, voices, ffmpeg nor an API key.
   Otherwise it stops before calling any provider. Its git calls use the same hardening arguments
   as calls on a target repository (a workspace can be a clone of someone else's). The guard only
   steps aside when there is nothing to commit to: no `git` binary, or git answering "not a git
-  repository". Git older than 2.38 (the "please upgrade" error of `init` and `pin`), a timeout,
+  repository". Git older than 2.43 (the "please upgrade" error of `init` and `pin`), a timeout,
   "dubious ownership" or any other failure of `rev-parse`, `check-ignore` or `ls-files` refuses the
   run instead of passing silently.
 - course_kit's own test suite fails if the repository tracks any audio file.
