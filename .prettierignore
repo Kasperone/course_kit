@@ -1,3 +1,6 @@
 dist
 node_modules
 templates/**/node_modules
+*-course/
+# Course workspaces: Prettier would reflow Slidev slide separators and speaker notes.
+examples/

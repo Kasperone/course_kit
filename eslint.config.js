@@ -15,6 +15,7 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['dist/', 'node_modules/', 'templates/**/node_modules/'],
+    // Nested course workspaces (examples/, scratch *-course/) carry their own deps and builds.
+    ignores: ['**/dist/', '**/node_modules/', '*-course/', 'examples/'],
   },
 )

@@ -147,8 +147,11 @@ export function resolveTargetRepoPath(courseDir: string, course: CourseJson): st
   return target
 }
 
-/** course.json of the workspace at `cwd`, without touching the target repository. */
-export function readWorkspace(cwd: string = process.cwd()): Omit<Workspace, 'targetRepoPath'> {
+/** Workspace directory and validated course.json, without locating the target repo. */
+export function resolveWorkspaceConfig(cwd: string = process.cwd()): {
+  courseDir: string
+  course: CourseJson
+} {
   const courseDir = path.resolve(cwd)
   const coursePath = path.join(courseDir, 'course.json')
   if (!existsSync(coursePath)) {
@@ -163,9 +166,8 @@ export function readWorkspace(cwd: string = process.cwd()): Omit<Workspace, 'tar
   return { courseDir, course }
 }
 
-/** The workspace at `cwd` plus the path of the repository that holds its pinned commit. */
 export function resolveWorkspace(cwd: string = process.cwd()): Workspace {
-  const { courseDir, course } = readWorkspace(cwd)
+  const { courseDir, course } = resolveWorkspaceConfig(cwd)
   return { courseDir, course, targetRepoPath: resolveTargetRepoPath(courseDir, course) }
 }
 

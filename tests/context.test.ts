@@ -3,8 +3,11 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileS
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  commonPackagePrefix,
   createJavaAnalyzer,
   importedPackage,
+  ownPackageGraph,
+  packageImportGraph,
   parseJdepsSummary,
   type JdepsRunner,
 } from '../src/analyzers/java.js'
@@ -66,7 +69,7 @@ describe('course context', () => {
     expect(md).toContain(fx.pinned)
     expect(md).toContain('## Selection report')
     expect(md).toContain('## Size estimate')
-    expect(md).toContain('flowchart LR')
+    expect(md).toContain('subgraph g0["com.example"]')
     expect(md).not.toContain(fx.root)
     expect(existsSync(path.join(fx.workspace, 'lessons', LESSON, 'context-pack.json'))).toBe(true)
 
@@ -214,7 +217,7 @@ describe('course context', () => {
     // README is not a selected source, so it lands in "Project docs (excerpts)".
     setLesson(fx.workspace, { globs: ['src/**'] })
     await runContext({ lessonId: LESSON, cwd: fx.workspace })
-    const guard = path.join(fx.workspace, 'scripts', 'check-no-plantuml.mjs')
+    const guard = path.join(fx.workspace, 'scripts', 'check-deck.mjs')
     execFileSync(process.execPath, [guard, fx.workspace], { stdio: 'pipe' })
     expect(readPack(fx.workspace)).toContain('     3|```plantuml')
   })
@@ -652,8 +655,7 @@ describe('Java analyzer', () => {
       readText: (p) => files[p] ?? null,
       artifacts: [],
     }
-    const section = await createJavaAnalyzer(() => null).analyze(ctx)
-    const md = section!.markdown
+    const md = packageImportGraph(ctx).render()
     for (const label of [
       'com.example',
       'com.example.a_b',
@@ -664,5 +666,54 @@ describe('Java analyzer', () => {
       expect(md).toContain(`["${label}"]`)
     }
     expect(md.match(/-->/g)).toHaveLength(4)
+  })
+
+  it.each([
+    [['a.b.c', 'a.b.d'], 'a.b'],
+    [['a.b', 'a.b.c'], 'a.b'],
+    [['a.b', 'a.c'], null],
+    [['com.x'], 'com.x'],
+    [[], null],
+  ])('commonPackagePrefix(%j) = %j', (pkgs, expected) => {
+    expect(commonPackagePrefix(pkgs)).toBe(expected)
+  })
+
+  it('limits the analyzer graph to own packages and collapses externals', async () => {
+    const files: Record<string, string> = {
+      'backend/src/main/java/io/x/app/App.java':
+        'package io.x.app;\nimport io.x.app.api.Api;\nimport io.x.other.Gone;\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport java.util.List;\n',
+      'backend/src/main/java/io/x/app/api/Api.java':
+        'package io.x.app.api;\nimport org.springframework.web.bind.annotation.RestController;\n',
+      'backend/src/main/java/io/x/app/billing/package-info.java': 'package io.x.app.billing;\n',
+      'backend/src/test/java/io/x/app/arch/ArchTest.java':
+        'package io.x.app.arch;\nimport io.x.app.App;\nimport org.junit.jupiter.api.Test;\n',
+    }
+    const ctx: AnalyzerContext = {
+      pinnedCommit: 'x',
+      selectedPaths: Object.keys(files),
+      readText: (p) => files[p] ?? null,
+      artifacts: [],
+    }
+    const own = ownPackageGraph(ctx)
+    expect(own.ownPackages).toEqual(['io.x.app', 'io.x.app.api', 'io.x.app.billing'])
+    expect(own.testsExcluded).toBe(true)
+    expect(own.externalGroups.map((g) => g.group)).toEqual([
+      'io.x.other',
+      'java.util',
+      'org.springframework',
+    ])
+    expect(own.externalGroups.find((g) => g.group === 'org.springframework')!.importers).toBe(2)
+
+    const md = (await createJavaAnalyzer(() => null).analyze(ctx))!.markdown
+    const mermaid = md.match(/```mermaid\n([\s\S]*?)\n```/)![1]!
+    // Own packages share io.x.app: grouped in a subgraph with short labels.
+    expect(mermaid).toMatch(/^flowchart LR\n {2}subgraph g0\["io\.x\.app"\]\n/)
+    expect(mermaid).toContain('["(root)"]')
+    expect(mermaid).toContain('["billing"]')
+    expect(mermaid).toContain('["api"]')
+    expect(mermaid).not.toMatch(/springframework|java\.util|junit|io\.x\.app\.arch/)
+    expect(mermaid.match(/-->/g)).toHaveLength(1)
+    expect(md).toContain('test sources are excluded')
+    expect(md).toContain('`org.springframework` (2 package(s))')
   })
 })

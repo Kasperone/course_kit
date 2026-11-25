@@ -3,8 +3,10 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runContext } from '../src/commands/context.js'
 import { runLessonNew } from '../src/commands/lesson-new.js'
+import { runPin } from '../src/commands/pin.js'
 import { writeFileInside } from '../src/lib/fs-safe.js'
 import { makeWorkspace } from './helpers/fixture-repo.js'
+import { commitAll, writeFiles } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
 function outsideFile(root: string): string {
@@ -50,5 +52,15 @@ describe('symlink-safe workspace writes', () => {
     renameSync(path.join(workspace, 'lessons'), elsewhere)
     symlinkSync(elsewhere, path.join(workspace, 'lessons'))
     expect(() => runLessonNew({ lessonId: '02-x', cwd: workspace })).toThrow(/symlink/)
+  })
+
+  it('course pin refuses a symlinked course.json', async () => {
+    const { root, repoDir, workspace } = await makeWorkspace()
+    const real = path.join(root, 'real-course.json')
+    renameSync(path.join(workspace, 'course.json'), real)
+    symlinkSync(real, path.join(workspace, 'course.json'))
+    writeFiles(repoDir, { 'NEW.md': 'x\n' })
+    commitAll(repoDir, 'next')
+    expect(() => runPin({ cwd: workspace })).toThrow(/symlink/)
   })
 })

@@ -193,15 +193,15 @@ function physicalDir(dir: string): string {
 
 export async function runInit(
   options: InitOptions,
-): Promise<{ outDir: string; course: CourseJson; notices: string[] }> {
+): Promise<{ outDir: string; course: CourseJson; warnings: string[] }> {
   const languages = validateLanguages(options.languages)
   // Relative paths resolve against the caller's directory (CLI: process.cwd()), not the process's.
   const base = options.cwd ?? process.cwd()
   const targetRepo = resolveTargetRepo(path.resolve(base, options.targetRepo))
   const pinnedCommit = readHeadCommit(targetRepo)
-  const notices: string[] = []
+  const warnings: string[] = []
   const dirty = uncommittedWarning(targetRepo, pinnedCommit)
-  if (dirty) notices.push(dirty)
+  if (dirty) warnings.push(dirty)
   const outDir = path.resolve(base, options.outDir ?? defaultOutDir(targetRepo, options.cwd))
   assertOutsideTarget(outDir, targetRepo)
 
@@ -225,7 +225,7 @@ export async function runInit(
     const targetRel = portableRelativePath(realpathSync(outDir), targetRepo)
     const targetRemote = readShareableRemote(targetRepo)
     if (targetRel === null) {
-      notices.push(
+      warnings.push(
         `course.json has no portable target path; this machine's path is in ${LOCAL_CONFIG_FILE} (gitignored). ` +
           `Collaborators set ${TARGET_REPO_ENV} or create their own ${LOCAL_CONFIG_FILE}.`,
       )
@@ -260,14 +260,14 @@ export async function runInit(
       addSubmodule(outDir, targetRepo, SUBMODULE_PATH, targetRemote)
       checkoutSubmoduleCommit(outDir, SUBMODULE_PATH, pinnedCommit)
       if (!isCommitOnRemoteBranch(targetRepo, pinnedCommit)) {
-        notices.push(
+        warnings.push(
           `Pinned commit ${pinnedCommit} is on no \`origin\` remote-tracking branch of the target: push it, ` +
             `or \`git submodule update\` will fail for anyone who clones this course.`,
         )
       }
     }
 
-    return { outDir, course, notices }
+    return { outDir, course, warnings }
   } catch (err) {
     // Do not leave a half-written workspace behind; it would block a re-run.
     if (existedBefore) {

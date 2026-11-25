@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { installFakeSlidev } from './helpers/fake-slidev.js'
 import { commitAll, initRepoWithCommit, writeFiles } from './helpers/git.js'
 import { makeTempDir } from './helpers/tmp.js'
 
@@ -46,6 +47,28 @@ describe('built CLI (dist/cli.js)', () => {
     expect(existsSync(path.join(ws, 'slides.md'))).toBe(true)
     expect(existsSync(path.join(ws, '.gitignore'))).toBe(true)
     expect(existsSync(path.join(ws, 'package.json'))).toBe(true)
+  })
+
+  it('runs the README flow init -> pin -> build (with a stand-in Slidev)', () => {
+    const root = makeTempDir('cli-flow')
+    const target = path.join(root, 'my-repo')
+    const first = initRepoWithCommit(target)
+    runCli(['init', target, '--out', './my-course', '--lang', 'en'], root)
+    const ws = path.join(root, 'my-course')
+
+    writeFiles(target, { 'NEW.md': 'x\n' })
+    const second = commitAll(target, 'second')
+    const pin = runCli(['pin', '-C', ws], root)
+    expect(pin).toContain(`pinnedCommit: ${first} -> ${second}`)
+    expect(runCli(['pin', first.slice(0, 10)], ws)).toContain(`${second} -> ${first}`)
+
+    const log = installFakeSlidev(ws)
+    const build = runCli(['build', '-C', ws], root)
+    expect(build).toContain(
+      `Built 01-placeholder/en -> ${path.join(ws, 'dist', '01-placeholder', 'en')}`,
+    )
+    expect(existsSync(path.join(ws, 'dist', 'index.html'))).toBe(true)
+    expect(readFileSync(log, 'utf8')).toContain('"--router-mode","hash"')
   })
 
   it('prints each option default once in `init --help`', () => {
@@ -92,7 +115,7 @@ describe('built CLI (dist/cli.js)', () => {
     initRepoWithCommit(target)
     const bin = path.join(root, 'bin')
     mkdirSync(bin)
-    // git >= 2.38 for the version check; every other call fails the way git does behind a proxy.
+    // git >= 2.43 for the version check; every other call fails the way git does behind a proxy.
     writeFileSync(
       path.join(bin, 'git'),
       '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.45.0"; exit 0; fi\n' +
@@ -197,6 +220,26 @@ describe('built CLI (dist/cli.js)', () => {
     expect(failed.stderr).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/)
   })
 
+  it('rejects a --port with trailing garbage instead of truncating it', () => {
+    const root = makeTempDir('cli-port')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    runCli(['init', target, '--out', './ws', '--lang', 'en'], root)
+    const ws = path.join(root, 'ws')
+    const log = installFakeSlidev(ws)
+    for (const port of ['3000abc', '30 00', '', '0x1f90', '1e3', '1e3x', '-1']) {
+      const run = spawnSync(process.execPath, [distCli, 'dev', '01-placeholder', '--port', port], {
+        cwd: ws,
+        encoding: 'utf8',
+      })
+      expect(run.status, `--port ${JSON.stringify(port)}`).toBe(1)
+      expect(run.stderr).toContain('Invalid port')
+    }
+    expect(existsSync(log)).toBe(false) // Slidev never started
+    expect(runCli(['dev', '01-placeholder', '--port', '3031'], ws)).toBe('')
+    expect(readFileSync(log, 'utf8')).toContain('"--port","3031"')
+  })
+
   it('never lets a newline in a repository path or lesson value forge CLI output lines', () => {
     const root = makeTempDir('cli-newlines')
     const target = path.join(root, 'repo')
@@ -216,7 +259,7 @@ describe('built CLI (dist/cli.js)', () => {
     )
     expect(init.status).toBe(0)
     expect(init.stderr.trimEnd().split('\n')).toEqual([
-      expect.stringMatching(/^Note: Target repo has 1 uncommitted/),
+      expect.stringMatching(/^warning: Target repo has 1 uncommitted/),
     ])
     expect(init.stderr).toContain('dirty\\nNote: nothing to see here')
 
@@ -266,6 +309,38 @@ describe('built CLI (dist/cli.js)', () => {
     ])
   })
 
+  it('never prints raw terminal escapes from `course pin` warnings or `course build` errors', () => {
+    const root = makeTempDir('cli-pin-escapes')
+    const target = path.join(root, 'repo')
+    initRepoWithCommit(target)
+    runCli(['init', target, '--out', './ws', '--lang', 'en'], root)
+    const ws = path.join(root, 'ws')
+    // eslint-disable-next-line no-control-regex -- asserting that none are present
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/
+
+    // `pin` warns about uncommitted files; one is named like an OSC title change plus screen clear.
+    writeFileSync(path.join(target, 'evil\x1b]0;PWNED\x07\x1b[2Jname'), 'x\n')
+    const pin = spawnSync(process.execPath, [distCli, 'pin'], { cwd: ws, encoding: 'utf8' })
+    expect(pin.status).toBe(0)
+    expect(pin.stderr).toMatch(/^warning: Target repo has 1 uncommitted/)
+    expect(pin.stderr).toContain('evil\\x1b]0;PWNED\\x07\\x1b[2Jname')
+    expect(pin.stderr + pin.stdout).not.toMatch(controls)
+
+    // `build` errors quote slide imports and file names.
+    const deck = path.join(ws, 'lessons', '01-placeholder', 'en', 'slides.md')
+    writeFileSync(
+      deck,
+      `${readFileSync(deck, 'utf8')}\n---\nsrc: "../../../../\x1b]0;PWNED\x07x.md"\n---\n`,
+    )
+    writeFileSync(path.join(ws, 'lessons', 'bad\x1b[2J.md'), '<PlantUml code="x" />\n')
+    const build = spawnSync(process.execPath, [distCli, 'build'], { cwd: ws, encoding: 'utf8' })
+    expect(build.status).toBe(1)
+    expect(build.stderr).toContain('course build failed')
+    expect(build.stderr).toContain('\\x1b]0;PWNED\\x07x.md')
+    expect(build.stderr).toContain('bad\\x1b[2J.md')
+    expect(build.stderr + build.stdout).not.toMatch(controls)
+  })
+
   it('exits non-zero with a clear message on bad input', () => {
     const root = makeTempDir('cli-bad')
     let failed = false
@@ -295,7 +370,7 @@ describe('npm package contents', () => {
       'templates/workspace/.env.example',
       'templates/workspace/package.json',
       'templates/workspace/slides.md',
-      'templates/workspace/scripts/check-no-plantuml.mjs',
+      'templates/workspace/scripts/check-deck.mjs',
     ]) {
       expect(files).toContain(expected)
     }

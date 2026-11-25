@@ -3,6 +3,8 @@ import { runContext } from './commands/context.js'
 import { parseInitArgs, runInit } from './commands/init.js'
 import { terminalSafe } from './lib/terminal.js'
 import { runLessonNew } from './commands/lesson-new.js'
+import { runPin } from './commands/pin.js'
+import { runBuild, runDev } from './commands/slidev.js'
 import { packageVersion } from './lib/paths.js'
 
 const program = new Command()
@@ -33,11 +35,11 @@ program
         lang: opts.lang,
         submodule: opts.submodule,
       })
-      const { outDir, course, notices } = await runInit(options)
+      const { outDir, course, warnings } = await runInit(options)
+      for (const warning of warnings) console.error(terminalSafe(`warning: ${warning}`))
       console.log(terminalSafe(`Course workspace created at ${outDir}`))
       console.log(`Pinned commit: ${course.pinnedCommit}`)
       console.log(`Reference mode: ${course.referenceMode}`)
-      for (const notice of notices) console.warn(terminalSafe(`Note: ${notice}`))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error(terminalSafe(`course init failed: ${message}`))
@@ -95,6 +97,70 @@ program
       const message = err instanceof Error ? err.message : String(err)
       console.error(terminalSafe(`course context failed: ${message}`))
       process.exitCode = 1
+    }
+  })
+
+function fail(command: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  console.error(terminalSafe(`course ${command} failed: ${message}`))
+  process.exitCode = 1
+}
+
+program
+  .command('pin')
+  .description("Pin the course to a commit of the target repo (default: the target's HEAD)")
+  .argument('[commit]', 'Revision to pin: branch, tag, short or full SHA (default: HEAD)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .action((commit: string | undefined, opts: { cwd?: string }) => {
+    try {
+      const result = runPin({ commit, cwd: opts.cwd })
+      for (const warning of result.warnings) console.error(terminalSafe(`warning: ${warning}`))
+      console.log(
+        result.changed
+          ? `pinnedCommit: ${result.previous} -> ${result.pinned}`
+          : `pinnedCommit: ${result.pinned} (unchanged)`,
+      )
+    } catch (err) {
+      fail('pin', err)
+    }
+  })
+
+program
+  .command('build')
+  .description('Static Slidev build of lesson decks into dist/<lesson-id>/<lang>/')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lesson <id>', 'Build only this lesson')
+  .option('--lang <code>', 'Build only this language')
+  .action((opts: { cwd?: string; lesson?: string; lang?: string }) => {
+    try {
+      const result = runBuild({ cwd: opts.cwd, lesson: opts.lesson, lang: opts.lang })
+      for (const deck of result.decks) {
+        console.log(`Built ${deck.lessonId}/${deck.lang} -> ${deck.outDir}`)
+      }
+      console.log(`Index: ${result.index}`)
+      console.log(`Preview: cd ${result.courseDir} && npx vite preview --outDir dist`)
+    } catch (err) {
+      fail('build', err)
+    }
+  })
+
+program
+  .command('dev')
+  .description('Live preview of one lesson deck (Slidev dev server on localhost)')
+  .argument('<lesson-id>', 'Lesson id (directory under lessons/)')
+  .option('-C, --cwd <dir>', 'Course workspace directory (default: current directory)')
+  .option('--lang <code>', 'Deck language (default: first language in course.json)')
+  .option('--port <n>', 'Dev server port', (v) => (/^\d+$/.test(v) ? Number(v) : Number.NaN))
+  .action(async (lessonId: string, opts: { cwd?: string; lang?: string; port?: number }) => {
+    try {
+      process.exitCode = await runDev({
+        lesson: lessonId,
+        lang: opts.lang,
+        port: opts.port,
+        cwd: opts.cwd,
+      })
+    } catch (err) {
+      fail('dev', err)
     }
   })
 

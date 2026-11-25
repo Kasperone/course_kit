@@ -62,14 +62,14 @@ async function initWorkspace(opts: { languages?: string[]; submodule?: boolean }
     git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
   }
   const outDir = path.join(root, 'out-course')
-  const { course, notices } = await runInit({
+  const { course, warnings } = await runInit({
     targetRepo: repoDir,
     outDir,
     languages: opts.languages ?? ['pl', 'en'],
     submodule: opts.submodule ?? false,
     cwd: root,
   })
-  return { root, repoDir, pinned, outDir, course, notices }
+  return { root, repoDir, pinned, outDir, course, warnings }
 }
 
 describe('course init', () => {
@@ -116,8 +116,11 @@ describe('course init', () => {
       const fm = frontmatter(deck)
       expect(fm.plantUmlServer, deck).toBe(PLANTUML_DISABLED_SERVER)
       // Slidev defaults: Google Fonts and a cdn.jsdelivr.net favicon. Both must be overridden.
-      expect(fm.fonts, deck).toMatchObject({ provider: 'none' })
+      expect(fm.fonts, deck).toMatchObject({ provider: 'none', sans: 'system-ui' })
       expect(fm.favicon, deck).toBe('data:,')
+      expect(fm.browserExporter, deck).toBe(false)
+      expect(fm.download, deck).toBe(false)
+      expect(fm.mcp, deck).toBe(false)
       expect(readFileSync(deck, 'utf8'), deck).not.toMatch(/https?:\/\/(?!creativecommons)/)
     }
     for (const lang of ['pl', 'en']) {
@@ -127,11 +130,14 @@ describe('course init', () => {
     }
 
     const pkg = JSON.parse(readFileSync(path.join(outDir, 'package.json'), 'utf8'))
-    expect(pkg.scripts.predev).toContain('check:diagrams')
-    expect(pkg.scripts.prebuild).toContain('check:diagrams')
-    expect(pkg.scripts.preexport).toContain('check:diagrams')
+    expect(pkg.scripts.predev).toContain('check:deck')
+    expect(pkg.scripts.prebuild).toContain('check:deck')
+    // Static build and live preview only: no PDF/PNG export and no Playwright dependency.
+    expect(pkg.scripts.export).toBeUndefined()
+    expect(pkg.scripts.preexport).toBeUndefined()
+    expect(JSON.stringify(pkg)).not.toMatch(/playwright/i)
 
-    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const guard = path.join(outDir, 'scripts', 'check-deck.mjs')
     // Clean workspace passes.
     execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe' })
     // A plantuml block anywhere in lessons fails.
@@ -146,47 +152,8 @@ describe('course init', () => {
     } catch (err) {
       stderr = String((err as { stderr?: string }).stderr)
     }
-    expect(stderr).toMatch(/PlantUML blocks .* are not allowed/)
+    expect(stderr).toContain('PlantUML blocks are not allowed')
     expect(stderr).toContain('lessons')
-  })
-
-  it('the PlantUML guard blocks <PlantUml> components but not plain fences named like it', async () => {
-    const { outDir } = await initWorkspace()
-    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
-    const deck = path.join(outDir, 'lessons', '01-placeholder', 'en', 'slides.md')
-    const run = () => {
-      try {
-        execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
-        return null
-      } catch (err) {
-        return String((err as { stderr?: string }).stderr)
-      }
-    }
-    // A plain fence whose first line merely starts with "plantuml" is ordinary code.
-    writeFileSync(deck, '# x\n\n```\nplantuml is a tool\n```\n', 'utf8')
-    expect(run()).toBeNull()
-    // Slidev's component uses its own `server` prop and ignores plantUmlServer.
-    writeFileSync(deck, '# x\n\n<PlantUml server="https://evil.example" code="A -> B" />\n', 'utf8')
-    expect(run()).toContain('lessons')
-    // Slidev registers components/*.vue automatically; a component brings its own server prop.
-    rmSync(deck)
-    mkdirSync(path.join(outDir, 'components'))
-    const vue = path.join(outDir, 'components', 'Arch.vue')
-    writeFileSync(
-      vue,
-      '<template><PlantUml server="https://www.plantuml.com/plantuml" code="A -> B" /></template>\n',
-      'utf8',
-    )
-    expect(run()).toContain('components')
-    writeFileSync(vue, '<template><div>ok</div></template>\n', 'utf8')
-    expect(run()).toBeNull()
-    // Generated context packs quote the target repo and are not decks.
-    writeFileSync(
-      path.join(outDir, 'lessons', '01-placeholder', 'context-pack.md'),
-      '<PlantUml code="x"/>\n',
-      'utf8',
-    )
-    expect(run()).toBeNull()
   })
 
   it('pins Slidev and its theme to exact versions', async () => {
@@ -197,9 +164,40 @@ describe('course init', () => {
     }
   })
 
-  it('the PlantUML guard never follows symlinks (loops, links outside the workspace)', async () => {
+  it('ships a guard that blocks web fonts and an online or exporting root deck', async () => {
+    const { outDir } = await initWorkspace()
+    const guard = path.join(outDir, 'scripts', 'check-deck.mjs')
+    const run = () => {
+      try {
+        execFileSync(process.execPath, [guard, outDir], { stdio: 'pipe', encoding: 'utf8' })
+        return ''
+      } catch (err) {
+        return String((err as { stderr?: string }).stderr)
+      }
+    }
+    expect(run()).toBe('')
+    const css = path.join(outDir, 'styles.css')
+    writeFileSync(css, "@import url('https://fonts.googleapis.com/css2?family=Inter');\n")
+    expect(run()).toContain('Web fonts from a CDN are not allowed')
+    rmSync(css)
+
+    const rootDeck = path.join(outDir, 'slides.md')
+    const original = readFileSync(rootDeck, 'utf8')
+    writeFileSync(rootDeck, original.replace("provider: 'none'", "provider: 'google'"))
+    expect(run()).toContain('fonts.provider must be "none"')
+    writeFileSync(rootDeck, original.replace('browserExporter: false', 'browserExporter: dev'))
+    expect(run()).toContain('browserExporter must be false')
+    writeFileSync(rootDeck, original.replace('download: false', 'download: true'))
+    expect(run()).toContain('download must not be enabled')
+    writeFileSync(rootDeck, original.replace("favicon: 'data:,'\n", ''))
+    expect(run()).toContain('favicon must be a data: URL')
+    writeFileSync(rootDeck, original.replace('mcp: false', 'mcp: true'))
+    expect(run()).toContain('mcp must be false')
+  })
+
+  it('the deck guard never follows symlinks (loops, links outside the workspace)', async () => {
     const { root, outDir } = await initWorkspace()
-    const guard = path.join(outDir, 'scripts', 'check-no-plantuml.mjs')
+    const guard = path.join(outDir, 'scripts', 'check-deck.mjs')
     const outside = path.join(root, 'outside-docs')
     mkdirSync(outside)
     writeFileSync(path.join(outside, 'arch.md'), '```plantuml\nA -> B\n```\n', 'utf8')
@@ -307,7 +305,7 @@ describe('course init', () => {
     process.env.HOME = path.join(root, 'home-alice')
     try {
       const outDir = path.join(root, 'data', 'tmp', 'ws')
-      const { course, notices } = await runInit({
+      const { course, warnings } = await runInit({
         targetRepo: path.join(root, 'home-alice', 'repo'),
         outDir,
         languages: ['en'],
@@ -317,7 +315,7 @@ describe('course init', () => {
       expect(course.targetRepo).toBeNull()
       expect(readFileSync(path.join(outDir, 'course.json'), 'utf8')).not.toContain('alice')
       expect(resolveCourseTargetRepo(outDir, course.targetRepo)).toBe(repoDir)
-      expect(notices.join('\n')).toContain(LOCAL_CONFIG_FILE)
+      expect(warnings.join('\n')).toContain(LOCAL_CONFIG_FILE)
     } finally {
       process.env.HOME = previousHome
     }
@@ -332,14 +330,14 @@ describe('course init', () => {
     process.env.HOME = fakeHome
     try {
       const outDir = path.join(root, 'elsewhere', 'ws')
-      const { course, notices } = await runInit({
+      const { course, warnings } = await runInit({
         targetRepo: repoDir,
         outDir,
         languages: ['en'],
         submodule: false,
       })
       expect(course.targetRepo).toBeNull()
-      expect(notices).toEqual([expect.stringContaining('COURSE_TARGET_REPO')])
+      expect(warnings).toEqual([expect.stringContaining('COURSE_TARGET_REPO')])
       const local = JSON.parse(readFileSync(path.join(outDir, LOCAL_CONFIG_FILE), 'utf8'))
       expect(local.targetRepo).toBe(repoDir)
       expect(resolveCourseTargetRepo(outDir, course.targetRepo)).toBe(repoDir)
@@ -424,12 +422,12 @@ describe('course init', () => {
   })
 
   it('adds optional git submodule at pinned commit', async () => {
-    const { root, pinned, outDir, course, notices } = await initWorkspace({
+    const { root, pinned, outDir, course, warnings } = await initWorkspace({
       languages: ['en'],
       submodule: true,
     })
     expect(readFileSync(path.join(outDir, '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
-    expect(notices).toEqual([])
+    expect(warnings).toEqual([])
     expect(filesContaining(outDir, root)).toEqual([])
     const staged = git(outDir, ['ls-files', '-s', SUBMODULE_PATH])
     expect(staged).toContain(pinned)
@@ -460,15 +458,15 @@ describe('course init', () => {
 
     const unpushed = await init('ws1')
     expect(readFileSync(path.join(root, 'ws1', '.gitmodules'), 'utf8')).toContain(`url = ${ORIGIN}`)
-    expect(unpushed.notices).toEqual([expect.stringContaining(`${pinned} is on no \`origin\``)])
+    expect(unpushed.warnings).toEqual([expect.stringContaining(`${pinned} is on no \`origin\``)])
 
     // A commit that only another remote has is still unpushed: .gitmodules records origin.
     git(repoDir, ['update-ref', 'refs/remotes/upstream/main', pinned])
-    expect((await init('ws2')).notices).toEqual([expect.stringContaining('is on no `origin`')])
+    expect((await init('ws2')).warnings).toEqual([expect.stringContaining('is on no `origin`')])
 
     // Once an origin tracking branch contains it (as after a push), there is nothing to warn about.
     git(repoDir, ['update-ref', 'refs/remotes/origin/main', pinned])
-    expect((await init('ws3')).notices).toEqual([])
+    expect((await init('ws3')).warnings).toEqual([])
   })
 
   it('--submodule requires a network origin: a relative .gitmodules URL would break clones', async () => {
@@ -535,13 +533,13 @@ describe('course init', () => {
         submodule: false,
       })
 
-    expect((await init('clean')).notices).toEqual([])
+    expect((await init('clean')).warnings).toEqual([])
 
     writeFileSync(path.join(repoDir, 'README.md'), '# edited\n')
     writeFileSync(path.join(repoDir, 'new.txt'), 'untracked\n')
-    const { notices, course } = await init('dirty')
+    const { warnings, course } = await init('dirty')
     expect(course.pinnedCommit).toBe(pinned)
-    expect(notices).toEqual([
+    expect(warnings).toEqual([
       expect.stringMatching(/2 uncommitted change\(s\).*README\.md, new\.txt/),
     ])
     // Reading the status must not touch the target.
@@ -622,7 +620,7 @@ describe('course init', () => {
     rmSync(procMarker)
 
     touchFiles()
-    const { notices } = await runInit({
+    const { warnings } = await runInit({
       targetRepo: repoDir,
       outDir: path.join(root, 'ws'),
       languages: ['en'],
@@ -630,7 +628,7 @@ describe('course init', () => {
     })
     expect(existsSync(cleanMarker)).toBe(false)
     expect(existsSync(procMarker)).toBe(false)
-    expect(notices).toEqual([])
+    expect(warnings).toEqual([])
   })
 
   it("never runs a submodule's filter drivers either (git status descends into submodules)", () => {
@@ -707,13 +705,13 @@ describe('course init', () => {
     const names: Record<string, string> = {}
     for (let i = 0; i < 6000; i++) names[`${String(i).padStart(5, '0')}-${'x'.repeat(200)}`] = ''
     writeFiles(repoDir, names)
-    const { notices } = await runInit({
+    const { warnings } = await runInit({
       targetRepo: repoDir,
       outDir: path.join(root, 'ws'),
       languages: ['en'],
       submodule: false,
     })
-    expect(notices).toEqual([expect.stringMatching(/6000 uncommitted change\(s\)/)])
+    expect(warnings).toEqual([expect.stringMatching(/6000 uncommitted change\(s\)/)])
   })
 
   it('says so when the uncommitted-changes check cannot run', async () => {
@@ -721,14 +719,14 @@ describe('course init', () => {
     const repoDir = path.join(root, 'target')
     const pinned = initRepoWithCommit(repoDir)
     writeFileSync(path.join(repoDir, '.git', 'index'), 'not an index')
-    const { notices, course } = await runInit({
+    const { warnings, course } = await runInit({
       targetRepo: repoDir,
       outDir: path.join(root, 'ws'),
       languages: ['en'],
       submodule: false,
     })
     expect(course.pinnedCommit).toBe(pinned)
-    expect(notices).toEqual([expect.stringMatching(/Could not check .* uncommitted changes/)])
+    expect(warnings).toEqual([expect.stringMatching(/Could not check .* uncommitted changes/)])
   })
 
   it('treats a git directory (no work tree) as having no uncommitted changes', () => {

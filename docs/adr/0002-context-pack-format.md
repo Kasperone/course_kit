@@ -122,6 +122,10 @@ artifacts (at most 5, 20 MB each). Step 2 ships **Java only**:
   after the repository's file names.
 - Otherwise a **package-import graph** from `.java` sources (wildcard, static and nested-class
   imports map to packages) → Mermaid `flowchart` with generated node ids and quoted labels.
+  Since step 3 the graph is limited to the repository's **own packages** (those declared by the
+  selected sources; test sources are left out when main sources exist). External imports are
+  collapsed into groups such as `org.springframework` and listed under the graph, and packages
+  sharing a common prefix are drawn in one subgraph with short labels.
 
 Compiled classes are rarely committed; pointing jdeps at a local build of the pinned commit is a
 later step.
@@ -157,6 +161,6 @@ lessons/<lesson-id>/
 
 ## Consequences
 
-- Re-run `course context` after changing `lesson.json` or pinning a new commit (future `course pin`).
+- Re-run `course context` after changing `lesson.json` or pinning a new commit with `course pin`.
 - Large repos rely on globs and `limits` in `lesson.json`; caps are reported, never silent.
 - Additional languages add analyzers without changing the Markdown skeleton.

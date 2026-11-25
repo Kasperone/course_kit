@@ -10,6 +10,11 @@ fonts:
   serif: 'ui-serif'
   mono: 'ui-monospace'
   provider: 'none'
+# No export: no /export page in the dev server, no PDF download in builds.
+browserExporter: false
+download: false
+# No MCP server in the dev server (its tools edit the deck files, unauthenticated).
+mcp: false
 # Slidev's default favicon is loaded from cdn.jsdelivr.net; an empty data: URL loads nothing.
 favicon: 'data:,'
 drawings:

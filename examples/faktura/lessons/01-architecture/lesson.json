@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "01-architecture",
+  "files": [
+    "docs/adr/0002-session-cookie-auth-csrf.md"
+  ],
+  "globs": [
+    "backend/**",
+    "frontend/**",
+    "README.md"
+  ],
+  "focus": "Architecture overview: what the app is, monorepo layout, backend package structure, request flow, security model, testing and quality gates.",
+  "notes": "Every claim on a slide must cite a file in this pack. Diagram: own packages only (io.github.kasperone)."
+}

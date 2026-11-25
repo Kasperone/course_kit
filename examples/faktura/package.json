@@ -1,0 +1,16 @@
+{
+  "name": "course-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:deck": "node scripts/check-deck.mjs",
+    "predev": "npm run check:deck",
+    "dev": "slidev slides.md",
+    "prebuild": "npm run check:deck",
+    "build": "slidev build slides.md"
+  },
+  "devDependencies": {
+    "@slidev/cli": "52.20.1",
+    "@slidev/theme-default": "0.25.0"
+  }
+}

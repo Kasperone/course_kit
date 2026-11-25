@@ -1,0 +1,368 @@
+#!/usr/bin/env node
+// Guard for `npm run dev` / `npm run build` (the root slides.md). `course build` / `course dev`
+// run the same checks for lesson decks. Decks must stay offline and export-free:
+// - no PlantUML: Slidev renders ```plantuml blocks and <PlantUml> as <img> requests to
+//   `plantUmlServer` (default https://www.plantuml.com), sending the diagram source off-machine;
+// - no web fonts from a CDN (Google Fonts, coollabs): decks use system fonts;
+// - no remote images, embeds, scripts or styles (Markdown images, src/href on loading tags, CSS
+//   url()/@import, <Tweet>/<Youtube>, image:/background:/url: frontmatter, reference-style link
+//   definitions, Mermaid `img:` nodes); inline plain links are fine;
+// - slide imports (`src:` and `<<<` code snippets) and every local file Slidev turns into an asset
+//   import (Markdown images, src/srcset/poster attributes, CSS url(), image:/background:
+//   frontmatter, Vue imports) stay inside the scanned files (no absolute paths, paths outside the
+//   workspace, symlinks, skipped directories, context packs or secret-looking files such as
+//   `.env*` and keys) and are no PlantUML snippets;
+// - the root deck's headmatter pins plantUmlServer and favicon (default: cdn.jsdelivr.net) to data:
+//   URLs, fonts.provider to "none", browserExporter and mcp to false (no /export page, no
+//   deck-editing /__mcp endpoint) and never enables `download`.
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+
+const root = process.argv[2] ? path.resolve(process.argv[2]) : process.cwd()
+const SKIP = new Set(['node_modules', 'dist', '.git', 'target-repo', 'audio'])
+// [ \t]*, not \s*: a plain fence whose first line starts with "plantuml" is ordinary code.
+const FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*plantuml\b/im
+// The name must end at whitespace, `/` or `>`: a quoted `<plantuml.version>` is not the component.
+const COMPONENT = /<\s*plant-?uml(?=[\s/>])/i
+const WEB_FONTS = /fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.coollabs\.io/i
+const REMOTE_URL = String.raw`(?:https?:[\\/]*|[\\/]{2})(?!(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/"'\s)>]|$))[\w[]`
+const REMOTE_ASSET = new RegExp(
+  [
+    String.raw`!\[[^\]]*\]\(\s*<?` + REMOTE_URL,
+    String.raw`<\s*(?:img|iframe|frame|script|link|video|audio|source|track|embed|object|image|use)\b[^>]*?\s(?::|v-bind:)?(?:src|srcset|href|xlink:href|poster|data)\s*=\s*["'\x60\s]*` +
+      REMOTE_URL,
+    String.raw`url\(\s*["']?\s*` + REMOTE_URL,
+    String.raw`@import\s+["']\s*` + REMOTE_URL,
+    String.raw`<\s*(?:tweet|youtube)\b`,
+    String.raw`^\s*(?:background|image|url)\s*:\s*["']?\s*` + REMOTE_URL,
+    String.raw`^ {0,3}\[[^\]]+\]:\s*<?` + REMOTE_URL,
+    String.raw`\bimg\s*:\s*["']\s*` + REMOTE_URL,
+  ].join('|'),
+  'im',
+)
+
+function isSymlink(p) {
+  try {
+    return lstatSync(p).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+// `src:` values anywhere in a Markdown file. Slidev reads slide frontmatter in more spellings than
+// the canonical `---` block: a ```yaml code block at the start of a slide, a quoted key, an indented
+// mapping, the flow form `{ src: x }` and a value on the next line. Every line is scanned, fences
+// included: a false positive only matters when the path itself is refused.
+function slideImports(text) {
+  const out = []
+  const clean = (v) =>
+    // A quoted value ends at its closing quote (a trailing comment may follow); `#2-3` is a slide range.
+    (/^(["'])(.*?)\1/.exec(v.trim())?.[2] ?? v).replace(/#.*$/, '').trim()
+  const lines = text.split(/\r?\n/)
+  lines.forEach((line, i) => {
+    const block = line.match(/^[ \t]*(?:-[ \t]+)?["']?src["']?[ \t]*:[ \t]*(.*?)[ \t]*$/)
+    if (block) {
+      let value = block[1]
+      if (value === '' || /^[|>][+-]?\d?$/.test(value)) {
+        value = lines.slice(i + 1).find((l) => l.trim() !== '') ?? ''
+      }
+      if (clean(value) !== '') out.push(clean(value))
+    }
+    for (const m of line.matchAll(
+      /[{,][ \t]*["']?src["']?[ \t]*:[ \t]*("[^"]*"|'[^']*'|[^,}]*)/g,
+    )) {
+      if (clean(m[1]) !== '') out.push(clean(m[1]))
+    }
+  })
+  return out
+}
+
+// Slidev's own pattern for `<<< path#region lang {meta}` code-snippet imports.
+const SNIPPET_IMPORT = /^<<<[ \t]*(\S.*?)(#[\w-]+)?[ \t]*(?:[ \t](\S+?))?[ \t]*(\{.*)?$/
+
+// Code-snippet imports of a Markdown file. Every line is scanned, fences included: Slidev resolves
+// them inside ```md magic-move blocks, block quotes and lists too.
+function snippetImports(text) {
+  const out = []
+  for (const line of text.split(/\r?\n/)) {
+    const bare = line.replace(/^(?:[ \t>]|(?:[-*+]|\d+[.)])[ \t])*/, '')
+    const m = bare.startsWith('<<<') ? bare.match(SNIPPET_IMPORT) : null
+    if (m)
+      out.push({ path: m[1], lang: (m[3]?.trim() || path.extname(m[1]).slice(1)).toLowerCase() })
+  }
+  return out
+}
+
+// Files that must never be rendered or shown as code: the shapes of course_kit's context-pack
+// denylist (src/lib/context-pack/sensitive.ts; a test keeps the two in step) plus the workspace's
+// own course.local.json.
+const SECRET_FILE = [
+  /(^|\/)\.env$/i,
+  /(^|\/)\.env\.(?!(?:example|sample|template|dist)$)[^/]*$/i,
+  /\.env$/i,
+  /(^|\/)\.envrc$/i,
+  /(^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$/i,
+  /\.(?:pem|key|ppk|p8|p12|pfx|jks|keystore|truststore|gpg|pgp|kdbx|ovpn)$/i,
+  /(^|\/)(?:\.npmrc|\.pypirc|\.netrc|_netrc|\.git-credentials|\.htpasswd|\.pgpass|\.dockercfg)$/i,
+  /(^|\/)\.docker\/config\.json$/i,
+  /(^|\/)(?:\.kube\/config|kubeconfig|[^/]*\.kubeconfig)$/i,
+  /(^|\/)(?:credentials|credentials\.[^/]*|[^/]*credentials[^/]*\.json|[^/]*-credentials\.[^/]*)$/i,
+  /(^|\/)(?:secret|secrets)\.[^/]*$/i,
+  /(^|\/)(?:secret|secrets)\//i,
+  /\.(?:tfstate|tfvars)$/i,
+  /\.tfstate\.[^/]*$/i,
+  /(^|\/)service-account[^/]*\.json$/i,
+  /(^|\/)application-(?:prod|production|secret|secrets|local)[^/]*\.(?:properties|ya?ml)$/i,
+  /(^|\/)course\.local\.json$/i,
+]
+
+// True if Slidev must not read `target` (absolute) for an import of `ref`.
+function importLeavesTree(target, ref) {
+  const rel = path.relative(root, target)
+  if (path.isAbsolute(ref)) return true
+  if (rel === '' || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) {
+    return true
+  }
+  if (SKIP.has(rel.split(path.sep)[0])) return true
+  let current = root
+  for (const segment of rel.split(path.sep)) {
+    current = path.join(current, segment)
+    if (isSymlink(current)) return true
+  }
+  // A context pack is data quoted from the target repository and is never scanned.
+  if (path.basename(rel) === 'context-pack.md') return true
+  return SECRET_FILE.some((re) => re.test(rel.split(path.sep).join('/')))
+}
+
+// A reference that is not a local file: a URL scheme (but `file:` is local), `//host`, `#id`.
+const NON_LOCAL_REF = /^(?:(?!file:)[a-z][a-z0-9+.-]+:|\/\/|#)/i
+
+// Quoted string literals inside a Vue bound attribute value (`:src="'../a.png'"`).
+const stringLiterals = (expr) => [...expr.matchAll(/(["'`])((?:\\.|(?!\1).)*)\1/g)].map((m) => m[2])
+
+// Local file references that Slidev (Vite) turns into asset imports at build time, whatever their
+// extension: Markdown images and reference definitions, src/srcset/poster/... attributes (also Vue
+// :src string literals), CSS url() and @import, image:/background: frontmatter and
+// import/import()/new URL() specifiers in Vue code. Every line is scanned, fences included.
+function localAssetRefs(text) {
+  const refs = []
+  const add = (ref, code = false) => {
+    if (ref === undefined) return
+    const r = ref.trim()
+    if (r === '' || (code && !/^(?:\.|\/|@\/)/.test(r))) return
+    refs.push(r)
+  }
+  for (const m of text.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]*)>|([^\s)]+))/g)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/gm)) add(m[1] ?? m[2])
+  for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)/gi)) {
+    add(m[1] ?? m[2] ?? m[3])
+  }
+  for (const m of text.matchAll(/@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)')/gi)) {
+    add(m[1] ?? m[2])
+  }
+  for (const m of text.matchAll(/^[ \t]*(?:image|background)[ \t]*:[ \t]*(.+?)[ \t]*$/gim)) {
+    add(m[1].replace(/^(["'])(.*)\1$/, '$2').replace(/[ \t]+#.*$/, ''))
+  }
+  for (const m of text.matchAll(/\b(?:from|import)\s*(?:\(\s*)?(["'`])([^"'`]+)\1/g)) {
+    add(m[2], true)
+  }
+  for (const m of text.matchAll(/\bnew\s+URL\s*\(\s*(["'`])([^"'`]+)\1/g)) add(m[2], true)
+
+  const tag = /<\s*([A-Za-z][\w:.-]*)((?:[^>"'`]|"[^"]*"|'[^']*'|`[^`]*`)*)>/g
+  const attr = /([\w:.@#-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`=<>]+))/g
+  for (const t of text.matchAll(tag)) {
+    const name = t[1].toLowerCase()
+    for (const a of t[2].matchAll(attr)) {
+      const bound = /^(?::|v-bind:)/i.test(a[1])
+      const key = a[1].replace(/^(?::|v-bind:)/i, '').toLowerCase()
+      const value = a[2] ?? a[3] ?? a[4] ?? ''
+      const wanted =
+        ['src', 'srcset', 'poster', 'xlink:href', 'background'].includes(key) ||
+        (key === 'href' && name !== 'a') ||
+        (key === 'data' && name === 'object')
+      if (!wanted) continue
+      for (const v of bound ? stringLiterals(value) : [value]) {
+        if (key === 'srcset') for (const c of v.split(',')) add(c.trim().split(/\s+/)[0])
+        else add(v)
+      }
+    }
+  }
+  return [...new Set(refs)]
+}
+
+// Absolute paths a local reference can resolve to. Relative references start at the file's own
+// directory (`@/` is the deck's directory). A leading `/` is Vite's: the public/ directory or the
+// root, an existing filesystem path, or `/@fs/<path>`. Query and fragment are dropped; the raw,
+// percent-decoded and backslash-normalised spellings are all tried.
+// `@/` is Slidev's userRoot: the directory of the entry deck, also inside a file pulled in with
+// `src:`. The entry is not known here, so the importing file's directory and every deck directory
+// (a `slides.md`) are all checked.
+function atTargets(file, rest, deckDirs) {
+  return [path.dirname(file), ...deckDirs].map((dir) => path.resolve(dir, rest))
+}
+
+function assetTargets(file, ref, deckDirs) {
+  if (NON_LOCAL_REF.test(ref)) return []
+  const base = ref.replace(/^file:\/\//i, '').replace(/[?#].*$/s, '')
+  if (base === '') return []
+  const spellings = new Set([base, base.replace(/\\/g, '/')])
+  try {
+    spellings.add(decodeURIComponent(base).replace(/\\/g, '/'))
+  } catch {
+    // not percent-encoded: the raw spelling is all there is
+  }
+  const targets = []
+  for (const v of spellings) {
+    if (v.startsWith('/@fs/')) targets.push(v.slice(4))
+    else if (v.startsWith('/')) {
+      targets.push(path.join(root, 'public', v), path.join(root, v))
+      if (existsSync(v)) targets.push(v)
+    } else if (v.startsWith('@/')) targets.push(...atTargets(file, v.slice(2), deckDirs))
+    else targets.push(path.resolve(path.dirname(file), v))
+  }
+  return targets
+}
+
+function mentionsRemoteAsset(file) {
+  try {
+    return lstatSync(file).isFile() && REMOTE_ASSET.test(readFileSync(file, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+function* files(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (SKIP.has(entry.name)) continue
+    const abs = path.join(dir, entry.name)
+    // Symlinks are not followed.
+    if (entry.isDirectory()) yield* files(abs)
+    else if (entry.isFile() && /\.(md|vue|css|html)$/i.test(entry.name)) yield abs
+  }
+}
+
+// File names and import paths can hold control characters: print them escaped, one line each.
+const printable = (text) =>
+  text.replace(
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    /[\x00-\x1f\x7f-\x9f]/g,
+    (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  )
+
+const plantUml = []
+const webFonts = []
+const remote = []
+const imports = []
+const allFiles = [...files(root)]
+const deckDirs = allFiles
+  .filter((f) => path.basename(f) === 'slides.md')
+  .map((f) => path.dirname(f))
+for (const file of allFiles) {
+  // Context packs quote the target repository as data; they are not slides (and no deck may import one).
+  if (path.basename(file) === 'context-pack.md') continue
+  const text = readFileSync(file, 'utf8')
+  const rel = path.relative(root, file)
+  if (/\.(md|vue)$/i.test(file) && (FENCE.test(text) || COMPONENT.test(text))) plantUml.push(rel)
+  if (WEB_FONTS.test(text)) webFonts.push(rel)
+  if (REMOTE_ASSET.test(text)) remote.push(rel)
+  for (const ref of localAssetRefs(text)) {
+    if (assetTargets(file, ref, deckDirs).some((t) => importLeavesTree(t, ''))) {
+      imports.push(`${rel.split(path.sep).join('/')} -> asset ${ref}`)
+    }
+  }
+  if (/\.md$/i.test(file)) {
+    for (const src of slideImports(text)) {
+      if (importLeavesTree(path.resolve(path.dirname(file), src), src)) {
+        imports.push(`${rel} -> ${src}`)
+      }
+    }
+    for (const snippet of snippetImports(text)) {
+      const targets = snippet.path.startsWith('@/')
+        ? atTargets(file, snippet.path.slice(2), deckDirs)
+        : [path.resolve(path.dirname(file), snippet.path)]
+      const bad =
+        targets.some(
+          (target) =>
+            importLeavesTree(target, snippet.path) ||
+            (snippet.lang === 'mermaid' && mentionsRemoteAsset(target)),
+        ) || ['plantuml', 'puml'].includes(snippet.lang)
+      if (bad) imports.push(`${rel} -> <<< ${snippet.path}`)
+    }
+  }
+}
+
+function headmatterProblems(text) {
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/)
+  if (!m) return ['no headmatter']
+  const lines = m[1].split(/\r?\n/)
+  const key = (k) => {
+    const i = lines.findIndex((l) => l.startsWith(`${k}:`))
+    if (i < 0) return null
+    const children = []
+    for (const l of lines.slice(i + 1)) {
+      if (l.trim() !== '' && !/^[ \t]/.test(l)) break
+      children.push(l)
+    }
+    return { inline: lines[i].slice(k.length + 1), children }
+  }
+  const problems = []
+  if (!/^\s*["']?data:/.test(key('plantUmlServer')?.inline ?? '')) {
+    problems.push('plantUmlServer must be a data: URL')
+  }
+  const fonts = key('fonts')
+  const none = /^\s*["']?none["']?\s*(?:#.*)?$/
+  const flow = fonts?.inline.match(/\{([^}]*)\}/)
+  const provider = flow
+    ? flow[1]
+        .split(',')
+        .map((p) => p.split(':'))
+        .find(([k]) => k.trim() === 'provider')?.[1]
+    : fonts?.children.map((l) => l.match(/^\s+provider:(.*)$/)?.[1]).find((v) => v !== undefined)
+  if (provider === undefined || !none.test(provider)) problems.push('fonts.provider must be "none"')
+  if (!/^\s*["']?data:/.test(key('favicon')?.inline ?? '')) {
+    problems.push('favicon must be a data: URL')
+  }
+  if (!/^\s*false\s*(?:#.*)?$/.test(key('browserExporter')?.inline ?? '')) {
+    problems.push('browserExporter must be false')
+  }
+  if (!/^\s*false\s*(?:#.*)?$/.test(key('mcp')?.inline ?? '')) problems.push('mcp must be false')
+  if (/^\s*["']?(?:true|auto)["']?\s*(?:#.*)?$/i.test(key('download')?.inline ?? '')) {
+    problems.push('download must not be enabled')
+  }
+  return problems
+}
+
+const deck = headmatterProblems(readFileSync(path.join(root, 'slides.md'), 'utf8'))
+let failed = false
+if (plantUml.length > 0) {
+  failed = true
+  console.error(
+    'PlantUML blocks are not allowed (diagram source would be sent to a PlantUML server).',
+  )
+  console.error('Use Mermaid instead. Offending files:')
+  for (const f of plantUml) console.error(`  - ${printable(f)}`)
+}
+if (webFonts.length > 0) {
+  failed = true
+  console.error('Web fonts from a CDN are not allowed (decks use system fonts). Offending files:')
+  for (const f of webFonts) console.error(`  - ${printable(f)}`)
+}
+if (remote.length > 0) {
+  failed = true
+  console.error(
+    'Remote images, embeds, scripts and styles are not allowed (plain links are fine). Offending files:',
+  )
+  for (const f of remote) console.error(`  - ${printable(f)}`)
+}
+if (imports.length > 0) {
+  failed = true
+  console.error(
+    'Slide imports (src: and <<< snippets) and asset paths (images, url(), image:/background:, Vue imports) must stay inside the scanned workspace files (no context packs, secret-looking files or PlantUML snippets):',
+  )
+  for (const f of imports) console.error(`  - ${printable(f)}`)
+}
+if (deck.length > 0) {
+  failed = true
+  console.error(`slides.md headmatter: ${deck.join('; ')}`)
+}
+if (failed) process.exit(1)

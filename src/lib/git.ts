@@ -91,10 +91,13 @@ function gitRead(repoPath: string, args: string[], opts: { trim?: boolean } = {}
   return opts.trim === false ? out : out.trim()
 }
 
-/** Git call that writes inside the workspace we are creating (`cwd`). */
-function gitWrite(cwd: string, args: string[]): void {
+/**
+ * Git call that writes inside the workspace we are creating (`cwd`). `hardened` adds the pinned
+ * config for calls that run in, or read, the target repository's submodule clone.
+ */
+function gitWrite(cwd: string, args: string[], hardened = false): void {
   requireModernGit()
-  execFileSync('git', args, {
+  execFileSync('git', hardened ? [...GIT_HARDENING_ARGS, ...args] : args, {
     cwd,
     stdio: 'pipe',
     env: childEnv(),
@@ -130,6 +133,50 @@ export function readHeadCommit(repoPath: string): string {
   }
   if (!FULL_SHA_RE.test(hash)) {
     throw new Error(`Unexpected commit hash from ${repoPath}: ${JSON.stringify(hash)}`)
+  }
+  return hash
+}
+
+/** A revision a user may type: `HEAD`, a branch, tag or (short) SHA; never an option. */
+const REV_RE = /^[\w./@^~{}+-]{1,200}$/
+
+/**
+ * Resolve a user-supplied revision (default HEAD) to a full commit SHA. The revision must exist
+ * as a commit in `repoPath`; it is passed after `--end-of-options`, so it can never be an option.
+ *
+ * `preferOrigin` is for a submodule checkout, whose local branches are frozen at clone time while
+ * `origin/*` moves with every fetch: `main` then means `refs/remotes/origin/main` if that exists,
+ * and only otherwise the name as given (tags, SHAs, `origin/feature-x`).
+ */
+export function resolveCommit(
+  repoPath: string,
+  rev = 'HEAD',
+  opts: { preferOrigin?: boolean } = {},
+): string {
+  if (!REV_RE.test(rev) || rev.startsWith('-') || rev.includes('..')) {
+    throw new Error(`Invalid revision ${JSON.stringify(rev)}`)
+  }
+  const candidates = opts.preferOrigin ? [`refs/remotes/origin/${rev}`, rev] : [rev]
+  let hash: string | null = null
+  for (const candidate of candidates) {
+    try {
+      hash = gitRead(repoPath, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        '--end-of-options',
+        `${candidate}^{commit}`,
+      ])
+      break
+    } catch {
+      // try the next spelling
+    }
+  }
+  if (hash === null) {
+    throw new Error(`Commit ${JSON.stringify(rev)} not found in ${repoPath}`)
+  }
+  if (!FULL_SHA_RE.test(hash)) {
+    throw new Error(`Unexpected commit hash from ${repoPath}: ${hash}`)
   }
   return hash
 }
@@ -245,7 +292,7 @@ export function uncommittedWarning(repoPath: string, commit: string): string | n
   const more = changes.length > 5 ? ` and ${changes.length - 5} more` : ''
   return (
     `Target repo has ${changes.length} uncommitted change(s) that are not part of the pinned commit ` +
-    `${commit.slice(0, 12)}: ${shown}${more}. Commit them and re-run \`course init\` if the course should cover them.`
+    `${commit.slice(0, 12)}: ${shown}${more}. Commit them and run \`course pin\` if the course should cover them.`
   )
 }
 
@@ -329,12 +376,39 @@ export function addSubmodule(
   gitWrite(courseDir, ['add', '--', '.gitmodules'])
 }
 
+/** A fetch over the network can be slow, but must not hang `course pin` forever. */
+const FETCH_TIMEOUT_MS = 300_000
+
+/**
+ * Fetch a submodule checkout's `origin` (branches and tags, then its HEAD) and return the commit
+ * the remote's HEAD points at. In submodule mode the checkout's own HEAD is the current pin, so
+ * new target commits are only visible after this. Writes only to the workspace's submodule.
+ */
+export function fetchSubmoduleOrigin(subDir: string): string {
+  for (const args of [
+    ['fetch', '--quiet', 'origin'],
+    ['fetch', '--quiet', 'origin', 'HEAD'],
+  ]) {
+    try {
+      requireModernGit()
+      execFileSync('git', [...GIT_HARDENING_ARGS, '-C', subDir, ...args], {
+        stdio: 'pipe',
+        timeout: FETCH_TIMEOUT_MS,
+        env: childEnv(),
+      })
+    } catch (err) {
+      throw new Error(`Could not fetch origin in ${subDir}: ${gitErrorDetail(err)}`)
+    }
+  }
+  return resolveCommit(subDir, 'FETCH_HEAD')
+}
+
 export function checkoutSubmoduleCommit(
   courseDir: string,
   submodulePath: string,
   commit: string,
 ): void {
   if (!FULL_SHA_RE.test(commit)) throw new Error(`Not a full commit SHA: ${commit}`)
-  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit])
-  gitWrite(courseDir, ['add', '--', submodulePath])
+  gitWrite(path.join(courseDir, submodulePath), ['checkout', '-q', '--detach', commit], true)
+  gitWrite(courseDir, ['add', '--', submodulePath], true)
 }

@@ -53,8 +53,15 @@ describe('lesson ids', () => {
       expect(fm.title).toBe(lang === 'pl' ? 'Lekcja: 02-billing' : 'Lesson: 02-billing')
       expect(fm.lang).toBe(lang)
       expect(fm.plantUmlServer).toBe(PLANTUML_DISABLED_SERVER)
-      expect(fm.fonts).toMatchObject({ provider: 'none' })
+      expect(fm.fonts).toEqual({
+        sans: 'system-ui',
+        serif: 'ui-serif',
+        mono: 'ui-monospace',
+        provider: 'none',
+      })
+      expect(fm.browserExporter).toBe(false)
       expect(fm.favicon).toBe('data:,')
+      expect(fm.mcp).toBe(false)
     }
   })
 })
